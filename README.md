@@ -1,7 +1,7 @@
 # Chicago Ventra — Mars Cubic Analysis
 
 Predictive maintenance platform for the Chicago Transit Authority (CTA) Ventra fare device network.
-Built on AWS + Databricks, covering 300 devices (CTA00001–CTA00300) across 25 facilities.
+Built on AWS + Databricks medallion architecture (raw → bronze → silver → gold) with Hub & Spoke VPC topology.
 
 **Client:** Cubic MARS  
 **Engagement owner:** Pavan Kumar (Mars-Techs)  
@@ -32,23 +32,102 @@ SageMaker MMEs (one per PS) serve inference via FastAPI on ECS Fargate.
 ## Repo Structure
 
 ```
-├── docs/                  Architecture docs, PS playbooks, data dictionaries
+├── .github/workflows/          CI/CD (data-pipeline, ml-training, ml-deploy, api-deploy, terraform)
+│
+├── docs/
+│   ├── architecture/           Hub & Spoke, Medallion, VPC diagrams
+│   ├── playbooks/              PS1–PS5 ML playbooks
+│   └── data_dictionary/        Column references, schema docs
+│
 ├── sql/
-│   ├── bronze/            DDL + load scripts for 61 Oracle source tables
-│   ├── silver/            S01–S13 silver transformation views
-│   └── gold/              G01–G05 gold feature engineering tables
+│   ├── bronze/                 DDL + load scripts for 61 Oracle source tables
+│   ├── silver/                 S01–S13 silver transformation views
+│   └── gold/                   G01–G05 gold feature engineering tables
+│
 ├── notebooks/
 │   ├── ps1_failure_prediction/
 │   ├── ps2_cascading_failure/
 │   ├── ps3_root_cause_analysis/
 │   ├── ps4_anomaly_detection/
 │   └── ps5_remaining_useful_life/
-├── glue/                  AWS Glue ETL jobs (bronze / silver / gold)
-├── sagemaker/             Training scripts + inference handlers (per PS)
-├── fastapi_app/           REST API layer — routers, models, tests
-├── monitoring/            Grafana dashboards + Great Expectations DQ checks
-├── infrastructure/        IaC for Hub VPC + 6 spokes
-└── tooling/               Build and utility scripts
+│
+├── glue/
+│   ├── jobs/                   7 Glue jobs (bronze-ingest, silver-transform, gold-features,
+│   │                           quality-check, ml-trigger, monitoring-sync, maintenance-window)
+│   ├── step_functions/         ETL + ML Step Functions state machines
+│   ├── bronze/                 Bronze layer Glue scripts
+│   ├── silver/                 Silver layer Glue scripts
+│   └── gold/                   Gold layer Glue scripts
+│
+├── sagemaker/
+│   ├── training/               Training scripts per PS (ps1_training.py … ps5_training.py)
+│   ├── mme/                    Multi-Model Endpoint configs + Model Monitor
+│   ├── inference/              Inference handlers + predictor
+│   ├── ps1/ … ps5/             PS-specific configs and artifacts
+│
+├── api/
+│   ├── lambda/                 5 Lambda functions (webhook, servicenow_integration,
+│   │                           jwt_authorizer, keep_warm, shap_async)
+│   └── tests/
+│
+├── fastapi_app/                FastAPI inference service (API Spoke — App Runner)
+│   ├── routers/
+│   ├── models/
+│   └── tests/
+│
+├── dashboard/                  React UI (App Spoke — App Runner)
+│   └── src/
+│       ├── components/
+│       ├── pages/
+│       └── auth/               Cognito SAML SSO integration
+│
+├── mlops/
+│   ├── eks/                    EKS Argo Rollouts canary configs (0→10→50→100%)
+│   └── monitoring/             Evidently AI drift reports + retrain trigger
+│
+├── monitoring/
+│   ├── grafana/                Grafana dashboard JSON definitions (25+ dashboards)
+│   ├── cloudwatch/             CloudWatch alarms (50+) + log groups
+│   └── data_quality/           Great Expectations suites + DQ checks
+│
+├── infrastructure/
+│   ├── terraform/
+│   │   ├── modules/            14 reusable Terraform modules:
+│   │   │   ├── vpc/            Hub VPC + 6 spoke VPCs
+│   │   │   ├── transit_gateway/
+│   │   │   ├── network_firewall/ Suricata IDPS + TLS inspection
+│   │   │   ├── rds/            PostgreSQL (app state) + SQL Server (predictions)
+│   │   │   ├── sagemaker/      MME endpoints + Model Monitor
+│   │   │   ├── lambda/
+│   │   │   ├── app_runner/     FastAPI + React containerized services
+│   │   │   ├── cognito/        SAML SSO + city-scoped RBAC
+│   │   │   ├── kms/            3 CMKs (data, ML, secrets)
+│   │   │   ├── secrets_manager/ Oracle creds + 90-day rotation
+│   │   │   ├── cloudwatch/
+│   │   │   ├── iam/
+│   │   │   ├── ecr/            Container repos + Trivy scanning
+│   │   │   ├── eks/            EKS cluster (m5.2xlarge, 2–6 autoscale)
+│   │   │   └── waf/            WAF v2 — rate limiting + geo-blocking
+│   │   └── environments/
+│   │       ├── dev/
+│   │       ├── staging/
+│   │       └── prod/
+│   ├── hub_vpc/
+│   ├── data_spoke/             S3, Glue, Databricks, Lake Formation
+│   ├── ml_spoke/               SageMaker training + MMEs + Studio
+│   ├── api_spoke/              API Gateway, Lambda, ElastiCache Redis, Cognito
+│   ├── app_spoke/              App Runner (FastAPI + React), RDS
+│   ├── devops_spoke/           ECR, CodeBuild, EKS, GitHub Actions runners
+│   └── integration_spoke/      SQS FIFO (ServiceNow), SNS, EventBridge
+│
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   ├── load/                   Locust load testing
+│   └── e2e/
+│
+├── tooling/                    Build and utility scripts
+└── diagrams/                   Architecture diagrams
 ```
 
 ---

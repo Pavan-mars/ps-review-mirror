@@ -1,0 +1,43 @@
+# Core data stack
+pandas>=2.0
+numpy>=1.24
+pyarrow>=14.0
+sqlalchemy>=2.0
+cx_Oracle>=8.3
+
+# ML
+scikit-learn>=1.4
+xgboost>=2.0
+catboost>=1.2
+lightgbm>=4.0
+lifelines>=0.27         # Weibull AFT, CoxPH
+scikit-survival>=0.22   # RSF (PS5)
+hdbscan>=0.8.33         # PS4 anomaly clustering
+shap>=0.44              # PS3 root cause
+dowhy>=0.11             # PS3 causal inference
+mlxtend>=0.23           # PS2 association rules
+pomegranate>=1.0        # PS2 HMM
+
+# Hyperparameter tuning
+optuna>=3.5
+
+# AWS
+boto3>=1.34
+sagemaker>=2.200
+
+# API
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.0
+
+# Data quality
+great_expectations>=0.18
+
+# Monitoring / MLflow
+mlflow>=2.10
+
+# Notebook / viz
+jupyter>=1.0
+matplotlib>=3.8
+seaborn>=0.13
+plotly>=5.18

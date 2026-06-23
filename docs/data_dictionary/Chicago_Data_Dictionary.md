@@ -105,7 +105,7 @@
 | AE_TRANSIT_DAY_KEY | NUMBER | Transit day key YYYYMMDD
 | AE_EVENT_ID | NUMBER | FK to EDW.AVAILABILITY_EVENTS.EVENT_ID
 | AE_FAULT_STATE | VARCHAR2 | Fault state from availability event
-| AE_FAILURE_LEVEL | NUMBER | 1/2/3 — PS3 prediction target
+| AE_FAILURE_LEVEL | NUMBER | Ventra failure level (confirmed by Michael 2026-06-23). Hardware faults (is_device_fault=TRUE): 1=NONPAYMENT, 2=PURCHASE_CARD, 3=PURCHASE_PRODUCT, 4=ALL_PURCHASE, 5=ALL_FUNCTIONS, 16=BUS_READER_ASSEMBLY. Decoded in silver.dim_failure_level (S18). PS3 prediction target.
 | AE_START_DTM | TIMESTAMP | Outage start
 | AE_END_DTM | TIMESTAMP | Outage end
 | AE_FAULT_DESCRIPTION | VARCHAR2 | Primary text feature for PS3 NLP
@@ -133,7 +133,7 @@
 | SALE_TRANSACTION_TYPE | VARCHAR2 | Transaction type code (TVM vs other)
 
 **Silver output:** `silver.tvm_sale_daily` — key features: `daily_sales_count`, `error_txn_rate_pct`, `cash_sales_pct`, `total_revenue_cents`, `sales_active_hours`
-**Gold use:** `gold.tvm_ps1_daily` — sales decline is a leading TVM failure indicator
+**Gold use:** `gold.device_ps1_daily` — sales decline is a leading TVM failure indicator
 
 ---
 
@@ -160,10 +160,10 @@ Derived in `silver.dim_device` from `DEVICE_TYPE_NAME` and `DEVICE_CONTROL_GROUP
 | TVM | `%TVM%` OR `%FMVD%` | —
 | GATE | `%GATE%` OR — | `RVG` OR `HBG` OR `SAG`
 | VALIDATOR | `%VALIDATOR%` OR `%BMV%` OR `%FBX%` OR `%DCU%` | —
-| READER | `%READER%` OR `%RMV%` OR `%CSC%` | —
 | OTHER | none of the above | —
 
-Evaluation order: TVM → GATE → VALIDATOR → READER → OTHER.
+Evaluation order: TVM → GATE → VALIDATOR → OTHER.
+**READER removed 2026-06-23** — RSV/CSC devices are COMPONENT_TYPE entries inside parent VALIDATOR/GATE devices, not standalone devices. Any residual READER-named device type maps to OTHER.
 
 ### component_subsystem
 
@@ -197,15 +197,36 @@ CASE
 END
 ```
 
-### is_oos_event
+### is_oos_event / is_hardware_oos_event / is_commanded_oos_event
 
+All three flags are derived in `silver.dim_event_type` (S02) from the explicit Cubic doc 9604-60007 OOS whitelist (rewritten 2026-06-16). Previous SEVERITY-based logic flagged only 7 events; the whitelist captures 60+.
+
+**`is_oos_event`** — ALL OOS events (hardware + commanded + maintenance). 102 codes total.
 ```sql
-et.is_oos_event = (
-    et.SEVERITY >= 2
-    AND et.EVENT_TYPE_ID BETWEEN one of {BHU/CHU/PRINTER/GATE_MECH/SCRST ranges}
-)
+et.EVENT_TYPE_ID IN (101, 106, 108, 109, 110, 113, 118, 119, 131, 132, 138, 141, 143,
+    144, 151, 152, 153, 158, 171, 172, 201, 204, 205, 208, 209, 212, 220, 221, 222,
+    223, 228, 229, 230, 231, 304, 305, 308--317, 401--410, 504--543, 603, 604, 611,
+    1203, 1228, 1401--1409, 2102, 2201--2213, 50101, ...)
+OR UPPER(EVENT_TYPE_NAME) LIKE '%OOS%'
+OR UPPER(EVENT_TYPE_DESC) LIKE '%OUT OF SERVICE%'
 ```
-Additionally overridden TRUE in `device_event_enriched` when `EVENT_STATE_TYPE_NAME ILIKE '%out%of%service%'` or `ILIKE '%fault%'`.
+**Do NOT use `is_oos_event` for PS1 failure labels** — it includes commanded/maintenance OOS.
+
+**`is_hardware_oos_event`** — Hardware failures only. Commanded codes removed.
+```sql
+-- Same whitelist as is_oos_event MINUS:
+--   106 (Employee Logon), 110 (Commanded OOS), 151 (Maintenance Mode),
+--   208 (SCT Commanded OOS), 519 (CHU OOS by Command),
+--   1603 (No Credit by Cmd), 1604 (No Debit by Cmd)
+OR (UPPER(name) LIKE '%OOS%' AND EVENT_TYPE_ID NOT IN (106,110,151,208,519,1603,1604))
+```
+**Use `is_hardware_oos_event` for PS1 labels and silver.device_outage (S04).**
+
+**`is_commanded_oos_event`** — Operator-triggered OOS only (not hardware failures).
+```sql
+et.EVENT_TYPE_ID IN (106, 110, 151, 208, 519, 1603, 1604)
+```
+Useful for PS3 root-cause context. Exclude from all failure label computation.
 
 ### transit_day (day key conversion)
 

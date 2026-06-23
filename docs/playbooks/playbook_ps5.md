@@ -32,7 +32,7 @@ reduces maintenance cost, and ensures SLA compliance for the Chicago Transit Aut
 | Grain | (DEVICE_ID, COMPONENT_SERIAL_NBR) |
 | Censored rows | 1,429 (95.3%) — `is_censored = True` |
 | Uncensored rows | 71 (4.7%) — `is_censored = False` |
-| Device categories | SAG, HBG, TVM, RMV, FBX, CSC READER, BMV, RVG, FMVD, DCU |
+| Device categories | SAG, HBG, TVM, RMV, FBX, BMV, RVG, FMVD, DCU (CSC READER maps to `mars_device_category=OTHER` as of 2026-06-23) |
 | Component types | OTHER (717), CSC_READER (492), GATE_MECH (182), PRINTER (40), BHU (37), CHU (32) |
 
 **Gold table path:**

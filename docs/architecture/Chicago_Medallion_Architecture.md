@@ -123,34 +123,44 @@ Oracle schemas: `EDW`, `NCS_STAGE`, `CTA`
 ### Purpose
 Cleaned, de-duplicated, and enriched tables with derived business fields. Joins device context onto all fact tables. Converts Oracle integer day keys (YYYYMMDD) to date type.
 
-### 13 Silver Tables
+### 18 Silver Tables (S01–S18)
 
-| Table | Source Bronze Tables | Key Derivations
-|---|---|---
-| `silver.dim_device` | bronze.device_dimension + bronze.ncs_device + bronze.ncs_device_type | `mars_device_category`, `bus_device_flag` (from NCS_STAGE.DEVICE_TYPE), `is_current`
-| `silver.dim_facility` | bronze.ncs_transit_facility (1,862 rows) | NEW — replaces zero-row EDW.FACILITY_DIMENSION; `latitude`, `longitude`, `transit_mode`
-| `silver.dim_event_type` | bronze.event_type_dimension, bronze.ncs_event | `component_subsystem`, `severity_label`, `is_oos_event`
-| `silver.device_event_enriched` | bronze.device_event + bronze.ncs_device_event_history + dim tables | `transit_day`, `hour_bucket`, `effective_severity` (NCS direct SEVERITY), `ncs_severity`
-| `silver.device_outage` | device_event_enriched (is_oos_event=TRUE) | `outage_start/end`, `duration_min`, LEAD-based end estimation
-| `silver.device_uptime_intervals` | bronze.device_last_state + bronze.ncs_device_end_of_day_msg_count | `last_heartbeat`, `downtime_proxy_seconds`
-| `silver.hw_config_current` | bronze.edw_device_current_hw_config (EDW-only, 11,736 rows) + bronze.ncs_cashbox_manual_counts | `component_age_days`, `cashbox_service_count` (TVM only) — NCS_STAGE source removed 2026-06-12
-| `silver.metric_daily` | bronze.device_metric + bronze.metric_dimension + bronze.aj_metric_fact + bronze.cta_mm_daily_transaction_timing | Pivot 800/810/401, `delta`, `counter_reset_flag`, `avg_tap_timing_ms`
-| `silver.kpi_avail_enriched` | bronze.availability_events + bronze.cta_servicenow_availability_events + bronze.cta_availability_levels | `failure_level_desc` (from AVAILABILITY_LEVELS), `svn_data_available`
-| `silver.kpi_daily` | bronze.kpi_detail_events_by_day + KPI tables + bronze.cta_kpi_monthly_summary | `kpi_vs_target_gap`, `sldc_monthly_trend`, `kpi_breach_flag`
-| `silver.tap_event_daily` | bronze.abp_tap + bronze.cta_abp_use_tran_timing_data + bronze.cta_mm_daily_transaction_timing | `tap_reject_rate_pct`, `avg_tap_timing_ms`, `p95_timing_ms`
-| `silver.incident_root_cause` | bronze.cta_servicenow_availability_events (CTA mirror only — SVN_STAGE=0) | `root_cause_category`, `failure_level` (1/2/3)
-| `silver.tvm_sale_daily` | bronze.ncs_sale_transaction (152M rows) | `daily_sales_count`, `error_txn_rate_pct`, `cash_sales_pct`, `total_revenue_cents`
-| ~~`silver.bus_realtime_daily`~~ | ~~bronze.cta_real_time_bus_data (530M rows)~~ | **REMOVED FROM PIPELINE 2026-06-12** — CTA_REAL_TIME_BUS_DATA dropped
+| Table | S-Code | Source Bronze Tables | Key Derivations
+|---|---|---|---
+| `silver.dim_device` | S01 | bronze.device_dimension + bronze.ncs_device + bronze.ncs_device_type | `mars_device_category`, `bus_device_flag` (from NCS_STAGE.DEVICE_TYPE), `is_current`
+| `silver.dim_event_type` | S02 | bronze.event_type_dimension, bronze.ncs_event | `component_subsystem`, `severity_label`, `is_oos_event`, `is_hardware_oos_event`, `is_commanded_oos_event`
+| `silver.device_event_enriched` | S03 | bronze.device_event + bronze.ncs_device_event_history + dim tables | `transit_day`, `hour_bucket`, `effective_severity` (NCS direct SEVERITY), `ncs_severity`
+| `silver.device_outage` | S04 | device_event_enriched (is_hardware_oos_event=TRUE) | `outage_start/end`, `duration_min`, LEAD-based end estimation
+| `silver.device_uptime_intervals` | S05 | bronze.device_last_state + bronze.ncs_device_end_of_day_msg_count | `last_heartbeat`, `downtime_proxy_seconds`
+| `silver.hw_config_current` | S06 | bronze.edw_device_current_hw_config (EDW-only, 11,736 rows) + bronze.ncs_cashbox_manual_counts | `component_age_days`, `cashbox_service_count` (TVM only) — NCS_STAGE source removed 2026-06-12
+| `silver.metric_daily` | S07 | bronze.device_metric + bronze.metric_dimension + bronze.aj_metric_fact + bronze.cta_mm_daily_transaction_timing | Pivot 800/810/401, `delta`, `counter_reset_flag`, `avg_tap_timing_ms`
+| `silver.kpi_avail_enriched` | S08 | bronze.availability_events + bronze.cta_servicenow_availability_events + bronze.cta_availability_levels | `failure_level_desc` (from AVAILABILITY_LEVELS), `svn_data_available`
+| `silver.kpi_daily` | S09 | bronze.kpi_detail_events_by_day + KPI tables + bronze.cta_kpi_monthly_summary | `kpi_vs_target_gap`, `sldc_monthly_trend`, `kpi_breach_flag`
+| `silver.tap_event_daily` | S10 | bronze.abp_tap + bronze.cta_abp_use_tran_timing_data + bronze.cta_mm_daily_transaction_timing | `tap_reject_rate_pct`, `avg_tap_timing_ms`, `p95_timing_ms`
+| `silver.incident_root_cause` | S11 | bronze.cta_servicenow_availability_events (CTA mirror only — SVN_STAGE=0) | `root_cause_category`, `failure_level` (AE_FAILURE_LEVEL Ventra taxonomy)
+| `silver.dim_facility` | S12 | bronze.ncs_transit_facility (1,862 rows) | Replaces zero-row EDW.FACILITY_DIMENSION; `latitude`, `longitude`, `transit_mode`
+| `silver.tvm_sale_daily` | S13 | bronze.ncs_sale_transaction (152M rows) | `daily_sales_count`, `error_txn_rate_pct`, `cash_sales_pct`, `total_revenue_cents`
+| `silver.metric_hourly` | S14 | bronze.device_metric + bronze.edw_aj_metric_fact | Sub-daily metric aggregation at 1-hour grain; `metric_800_hourly_avg`, `metric_810_hourly_avg` — feeds PS4 anomaly detection
+| `silver.maintenance_ledger` | S15 | bronze.ncs_cashbox_manual_counts + bronze.ncs_activity_code | Unified maintenance event log per device; `activity_code`, `maintenance_date`, `maintenance_type`
+| `silver.usage_lifecycle_daily` | S16 | bronze.cta_kpi_tvm_date_table + bronze.ncs_device_end_of_day | Daily device lifecycle state; `service_days_cumulative`, `days_since_last_maintenance`
+| `silver.incident_history` | S17 | bronze.cta_servicenow_availability_events + silver.device_outage | Enriched incident timeline (design-pending — awaiting SVN_STAGE load via Robin)
+| `silver.dim_failure_level` | S18 | bronze.cta_availability_levels | Failure level dimension decode: Ventra AE_FAILURE_LEVEL taxonomy (1=NONPAYMENT, 2=PURCHASE_CARD, 3=PURCHASE_PRODUCT, 4=ALL_PURCHASE, 5=ALL_FUNCTIONS, 16=BUS_READER_ASSEMBLY); `is_device_fault` flag
+| ~~`silver.bus_realtime_daily`~~ | ~~S15 (old)~~ | ~~bronze.cta_real_time_bus_data (530M rows)~~ | **REMOVED FROM PIPELINE 2026-06-12** — CTA_REAL_TIME_BUS_DATA dropped
 
 ### Key Derived Fields
 
-**mars_device_category** (4 values: TVM, GATE, READER, VALIDATOR)
-Derived from `DEVICE_TYPE_NAME` + `DEVICE_CONTROL_GROUP_TYPE_NAME` + `NCS_STAGE.DEVICE_TYPE.BUS_DEVICE_FLAG`
+**mars_device_category** (4 values: TVM, GATE, VALIDATOR, OTHER — READER removed 2026-06-23)
+Derived from `DEVICE_TYPE_NAME` + `DEVICE_CONTROL_GROUP_TYPE_NAME` + `NCS_STAGE.DEVICE_TYPE.BUS_DEVICE_FLAG`.
+RSV/CSC devices formerly mapped to READER are now COMPONENT_TYPE entries inside parent VALIDATOR devices; `mars_device_category = 'OTHER'` for any residual device type not matching TVM/GATE/VALIDATOR.
 
-**bus_device_flag** (TRUE for VALIDATOR/READER) — from `NCS_STAGE.DEVICE_TYPE` (replaces 0-row `EDW.DEVICE_TYPE_DIMENSION`)
+**bus_device_flag** (TRUE for VALIDATOR only — from `NCS_STAGE.DEVICE_TYPE`, replaces 0-row `EDW.DEVICE_TYPE_DIMENSION`)
 
-**component_subsystem** (from EVENT_TYPE_ID ranges)
-SYSTEM (100-199), CSC_READER (200-299), SCRST (300-399), BHU (400-499), CHU (500-599), PIN_PAD (800-899), PRINTER (900-999), GATE_MECH (1200-1299), ALARM (1400-1499), BANKCARD (1600-1699), COMMS (>=50000)
+**component_subsystem** (from EVENT_TYPE_ID ranges — all 441 event types mapped)
+SYSTEM (100-199, 600-699, 700-799, 1300-1399, 1500-1599, 1700-1899, 1900-1999), CSC_READER (200-299), SCRST (300-399), BHU (400-499), CHU (500-599), PIN_PAD (800-899), PRINTER (900-1099 + 11131), GATE_MECH (1200-1299), ALARM (1400-1499), BANKCARD (1600-1699), FAREBOX (2000-2099, bus farebox), DEVICE_STATE (2100-2199, DSOOS trigger), DOPP (2200-2299, contactless bankcard module), LEGACY (10000-49999, cross-property MARTA codes), COMMS (>=50000)
+
+**is_oos_event** — all OOS events (hardware + commanded + maintenance). Do NOT use as PS1 failure label.
+**is_hardware_oos_event** — hardware failures only. Excludes commanded codes 106/110/151/208/519/1603/1604. **Use this for PS1 labels and silver.device_outage (S04).**
+**is_commanded_oos_event** — operator-triggered OOS only (codes 106, 110, 151, 208, 519, 1603, 1604). Useful for PS3 root-cause context; NOT a failure event.
 
 **effective_severity** = `COALESCE(ncs_severity, event_type_severity)` — uses direct NCS SEVERITY first
 
@@ -167,7 +177,7 @@ ML-ready feature tables, one per problem statement covering all device types. Ta
 
 | Gold Table | Grain | Target | Device Types |
 |---|---|---|---
-| `device_ps1_daily` | (device_id, transit_day) | `will_fail_7d` (binary) | TVM / GATE / VALIDATOR / READER |
+| `device_ps1_daily` | (device_id, transit_day) | `will_fail_7d` (binary) | TVM / GATE / VALIDATOR |
 | `device_ps2_chains` | (device_id, transit_day) ≥2 faults | `subsystem_chain` (deterministic) | All device types |
 | `device_ps3_incident` | (device_id, avail_event_id) | `failure_level_label` (MINOR/MAJOR/CRITICAL) | All device types |
 | `device_ps4_hourly` | (device_id, hour_bucket) | `ensemble_anomaly_flag` (binary, 3 signals) | All device types |
@@ -183,9 +193,11 @@ Key features: `event_count`, `critical_events`, subsystem event counts, `events_
 **PS2 — Cascade Chain Analysis** (~85% feasible)
 Key features: `subsystem_chain` (STRING_AGG), `effective_severity` (direct NCS SEVERITY), `cascade_severity_score`, `markov_entropy`. SVN CMDB not available.
 
-**PS3 — Root Cause Classification** (~50% feasible, SIMPLIFIED)
-Simplified target: `failure_level` (1/2/3 from CTA.AVAILABILITY_LEVELS decode) instead of fc_description/ac_description.
-Key features: `events_24h_prior`, `critical_7d_prior`, `component_age_days`, `fault_description` text, `failure_level_desc` (NEW decode).
+**PS3 — Root Cause Classification** (~70% feasible — updated 2026-06-23 after AE_FAILURE_LEVEL Ventra taxonomy confirmed)
+Target: `AE_FAILURE_LEVEL` (Ventra taxonomy, confirmed by Michael 2026-06-23):
+- Hardware faults (`is_device_fault=TRUE`): 1=NONPAYMENT, 2=PURCHASE_CARD, 3=PURCHASE_PRODUCT, 4=ALL_PURCHASE, 5=ALL_FUNCTIONS, 16=BUS_READER_ASSEMBLY
+- Decoded via `silver.dim_failure_level` (S18). Replaces former 1/2/3 tertile-binned `failure_level`.
+Key features: `events_24h_prior`, `critical_7d_prior`, `component_age_days`, `fault_description` text, `failure_level_desc`.
 
 **PS4 — Anomaly Detection** (~95% feasible)
 3-signal ensemble:
@@ -194,38 +206,43 @@ Key features: `events_24h_prior`, `critical_7d_prior`, `component_age_days`, `fa
 - Signal 3: `reject_rate_anomaly` (tap reject > 5%)
 `ensemble_anomaly_flag` = 1 if >= 2 of 3 signals active.
 
-**PS5 — Survival Analysis** (~45% feasible)
+**PS5 — Survival Analysis** (~50% feasible)
 Key features: `component_age_days`, `failures_total`, `mtbf_proxy_days`, `device_location_tenure_days`.
 NEW: `cashbox_service_count` (TVM only — from NCS_STAGE.CASHBOX_MANUAL_COUNTS 442K rows).
 GATE/READER/VALIDATOR: still limited by SVN_STAGE=0 rows.
 
 ---
 
-## Build Order (13 Silver + 5 unified Gold)
+## Build Order (18 Silver + 5 unified Gold)
 
 ```
 -- Step 1: Silver dimensions (no upstream silver dependencies)
 01_dim_device__create.sql          -- uses: DEVICE_DIMENSION + ncs_device + ncs_device_type
-02_dim_event_type__create.sql
-12_dim_facility__create.sql        -- NEW: uses NCS_STAGE.TRANSIT_FACILITY
+02_dim_event_type__create.sql      -- produces: is_oos_event, is_hardware_oos_event, is_commanded_oos_event
+12_dim_facility__create.sql        -- uses NCS_STAGE.TRANSIT_FACILITY
+18_dim_failure_level__create.sql   -- AE_FAILURE_LEVEL Ventra taxonomy decode (S18)
 
 -- Step 2: Silver facts (depend on silver dims)
 03_device_event_enriched__create.sql   -- uses: DEVICE_EVENT + ncs_device_event_history
-04_device_outage__create.sql
+04_device_outage__create.sql           -- uses is_hardware_oos_event (not is_oos_event)
 05_device_uptime_intervals__create.sql
 06_hw_config_current__create.sql       -- uses: edw_device_current_hw_config (EDW-only) + ncs_cashbox_manual_counts (TVM cashbox)
 07_metric_daily__create.sql            -- uses: DEVICE_METRIC + MM_DAILY_TRANSACTION_TIMING
-08_kpi_avail_enriched__create.sql      -- uses: cta_availability_levels (NEW)
-09_kpi_daily__create.sql               -- uses: cta_kpi_monthly_summary (NEW)
-10_tap_event_daily__create.sql         -- uses: cta_mm_daily_transaction_timing (NEW)
-11_incident_root_cause__create.sql
+08_kpi_avail_enriched__create.sql      -- uses: cta_availability_levels
+09_kpi_daily__create.sql               -- uses: cta_kpi_monthly_summary
+10_tap_event_daily__create.sql         -- uses: cta_mm_daily_transaction_timing
+11_incident_root_cause__create.sql     -- uses AE_FAILURE_LEVEL Ventra taxonomy
 13_tvm_sale_daily__create.sql          -- uses ncs_sale_transaction (152M rows)
+14_metric_hourly__create.sql           -- uses DEVICE_METRIC + edw_aj_metric_fact (sub-daily grain for PS4)
+15_maintenance_ledger__create.sql      -- uses ncs_cashbox_manual_counts + ncs_activity_code
+16_usage_lifecycle_daily__create.sql   -- uses cta_kpi_tvm_date_table + ncs_device_end_of_day
+17_incident_history__design.sql        -- design-pending (awaiting SVN_STAGE load via Robin)
 -- 14_bus_realtime_daily__create.sql  -- REMOVED 2026-06-12 (cta_real_time_bus_data dropped)
 
 -- Step 3: Gold tables (depend on all silver tables) — 5 unified files (one per PS)
--- PS1 (1 unified file) device_ps1_daily          -- TVM +8 sales cols; VALIDATOR/READER +bus_ops+pace_tap cols
+-- PS1 (1 unified file) device_ps1_daily          -- TVM +8 sales cols; all types use is_hardware_oos_event labels
 -- PS2 (1 unified file) device_ps2_chains
--- PS3 (1 unified file) device_ps3_incident        -- uses failure_level_label from AVAILABILITY_LEVELS
--- PS4 (1 unified file) device_ps4_hourly           -- 3-signal ensemble (event_rate_anomaly, metric_anomaly, reject_rate_anomaly)
+-- PS3 (1 unified file) device_ps3_incident        -- uses AE_FAILURE_LEVEL Ventra taxonomy via dim_failure_level (S18)
+-- PS4 (1 unified file) device_ps4_hourly           -- 3-signal ensemble; metric_hourly (S14) feeds hourly anomaly signal
 -- PS5 (1 unified file) device_ps5_component        -- cashbox_service_count for TVM; survival analysis all types
 ```

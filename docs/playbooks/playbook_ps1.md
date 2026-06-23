@@ -4,7 +4,7 @@
 
 Predict whether a fare-collection device will fail within the next 7 calendar days, using daily telemetry aggregates. A positive label (`will_fail_7d = 1`) means at least one availability event was recorded for that device in the 7-day window following `transit_day`.
 
-**Why it matters:** Early identification of at-risk devices (TVM, GATE, READER, VALIDATOR) enables preventive maintenance scheduling, reducing unplanned out-of-service time and improving passenger throughput at Chicago transit stations.
+**Why it matters:** Early identification of at-risk devices (TVM, GATE, VALIDATOR) enables preventive maintenance scheduling, reducing unplanned out-of-service time and improving passenger throughput at Chicago transit stations. (READER removed as a `mars_device_category` 2026-06-23 — RSV/CSC devices are components inside VALIDATOR/GATE, not standalone devices.)
 
 **Grain:** One row per (DEVICE_ID, transit_day).  
 **Target:** `will_fail_7d` — binary, 0 = no failure in next 7 days, 1 = failure expected.  

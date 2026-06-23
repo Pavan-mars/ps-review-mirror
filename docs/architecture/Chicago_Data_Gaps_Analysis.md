@@ -43,8 +43,8 @@ CMDB CI dependency features (related-device cascade via shared CI relationships)
 
 **PS5 — Survival Analysis:**
 Work-order history unavailable. Component lifetime estimated from:
-- `REPORTED_CHANGED_DTM` in `NCS_STAGE.DEVICE_CURRENT_HW_CONFIG` (installation date proxy)
-- `silver.device_outage` OOS events as failure proxy
+- `REPORTED_CHANGED_DTM` in `EDW.DEVICE_CURRENT_HW_CONFIG` (installation date proxy — NCS_STAGE source removed 2026-06-12)
+- `silver.device_outage` OOS events (is_hardware_oos_event=TRUE) as failure proxy
 - `is_censored = TRUE` where no OOS failure observed
 
 All PS5 gold tables include `has_work_order_data = FALSE` and `has_maintenance_log = FALSE` flags.
@@ -140,7 +140,7 @@ Bus validators have limited KPI coverage. `CTA.KPI_TVM_DATE_TABLE` covers TVM se
 
 **Root cause:** The 530M-row bus data table's `BUS_ID` linkage to VALIDATOR/READER fare devices was unreliable — the fare device schema does not maintain a consistent bus-to-device mapping that could be joined at prediction time without introducing significant data leakage.
 
-**Resolution:** Bus operational context features (`bus_active_ratio`, `bus_in_service_ratio`, `bus_has_work_order`, `bus_unavailable_flag`) removed from PS1 VALIDATOR/READER feature set. PS4 ensemble remains a pure 3-signal model. Bronze count reduced from 63 to 61; Silver count reduced from 14 to 13.
+**Resolution:** Bus operational context features (`bus_active_ratio`, `bus_in_service_ratio`, `bus_has_work_order`, `bus_unavailable_flag`) removed from PS1 VALIDATOR feature set. PS4 ensemble remains a pure 3-signal model. Bronze count reduced from 63 to 61; Silver count reduced from 14 to 13 at this point, then expanded to 18 (S01–S18) with additions on 2026-06-22/23 (S14 metric_hourly, S15 maintenance_ledger, S16 usage_lifecycle_daily, S17 incident_history, S18 dim_failure_level).
 
 **PS impact:**
 - PS1: VALIDATOR/READER feature set reduced (bus health features removed). Core failure prediction still feasible from event + metric signals.

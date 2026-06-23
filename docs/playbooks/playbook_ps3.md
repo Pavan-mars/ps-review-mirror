@@ -4,8 +4,9 @@
 
 Given an availability event (incident) for a fare-collection device, classify:
 
-**Task A — Failure Severity:** How severe is this incident?  
-- Encoded from the numeric `failure_level` score, tertile-binned into: **Minor (0)**, **Major (1)**, **Critical (2)**
+**Task A — Failure Severity:** How severe is this incident?
+- **Real Oracle data (2026-06-23 onward):** `AE_FAILURE_LEVEL` uses the confirmed Ventra taxonomy — hardware faults (`is_device_fault=TRUE`): 1=NONPAYMENT, 2=PURCHASE_CARD, 3=PURCHASE_PRODUCT, 4=ALL_PURCHASE, 5=ALL_FUNCTIONS, 16=BUS_READER_ASSEMBLY. Decoded via `silver.dim_failure_level` (S18).
+- **Synthetic gold data:** `failure_level_label` is all `Unknown`; notebook derives `failure_severity` via tertile-binning as a proxy.
 
 **Task B — Root Cause Category:** What subsystem caused this failure?  
 - 8-class multiclass: `BHU_FAULT`, `CHU_FAULT`, `GATE_FAULT`, `READER_FAULT`, `COMMS_FAULT`, `POWER_FAULT`, `PRINTER_FAULT`, `OTHER`
@@ -25,7 +26,7 @@ Given an availability event (incident) for a fare-collection device, classify:
 | Row count | 25,411 |
 | Grain | (device_id, availability_event_id) |
 | Date range | 2025-03-01 → 2026-04-30 (approx) |
-| Device categories | RMV, FBX, HBG, SAG, BMV, RVG, TVM, DCU, FMVD, CSC READER |
+| Device categories | RMV, FBX, HBG, SAG, BMV, RVG, TVM, DCU, FMVD (CSC READER maps to `mars_device_category=OTHER` as of 2026-06-23) |
 
 **Gold table path:**
 ```
@@ -245,4 +246,4 @@ Run all cells top-to-bottom. Expected runtime: 8–15 minutes (25K rows × two t
 | Update tertile cut-points | Monthly | Failure_level distribution shifts as fleet ages |
 | Retrain LabelEncoder | When new device types added | CSC READER, FMVD are newer categories |
 | SHAP analysis review | Quarterly | Verify feature importance stability |
-| Gold table rebuild | After each silver pipeline run | PS3 gold depends on silver `14_tvm_sale_daily` + AE tables |
+| Gold table rebuild | After each silver pipeline run | PS3 gold depends on silver S11 (`incident_root_cause`) + S18 (`dim_failure_level`) + AE tables |

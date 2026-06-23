@@ -58,15 +58,16 @@ SELECT
     dd.FACILITY_NAME,
     dd.OPERATOR_ID,
     dd.OPERATOR_NAME,
-    TO_DATE(
-        CASE
-            WHEN LENGTH(CAST(ae.TRANSIT_DAY_KEY AS STRING)) = 6
-            THEN TO_DATE(CAST(ae.TRANSIT_DAY_KEY AS STRING), 'yyMMdd')
-            WHEN LENGTH(CAST(ae.TRANSIT_DAY_KEY AS STRING)) = 8
-            THEN TO_DATE(CAST(ae.TRANSIT_DAY_KEY AS STRING), 'yyyyMMdd')
-            ELSE NULL
-        END
-    , 'yyyy-MM-dd')                                         AS ledger_date,
+    -- Fix (2026-06-23): removed redundant outer TO_DATE(<DATE>, 'yyyy-MM-dd') wrapper —
+    -- TO_DATE with a format string expects a STRING and returns NULL on a DATE input.
+    -- The CASE already yields a DATE.
+    CASE
+        WHEN LENGTH(CAST(ae.TRANSIT_DAY_KEY AS STRING)) = 6
+        THEN TO_DATE(CAST(ae.TRANSIT_DAY_KEY AS STRING), 'yyMMdd')
+        WHEN LENGTH(CAST(ae.TRANSIT_DAY_KEY AS STRING)) = 8
+        THEN TO_DATE(CAST(ae.TRANSIT_DAY_KEY AS STRING), 'yyyyMMdd')
+        ELSE NULL
+    END                                                    AS ledger_date,
     ae.START_DTM                                            AS event_dtm,
     ae.END_DTM                                              AS event_end_dtm,
     CASE

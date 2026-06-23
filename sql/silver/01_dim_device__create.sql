@@ -160,7 +160,11 @@ SELECT
         ELSE 'OTHER'
     END                                                                  AS mars_device_category,
 
-    (d.CURRENT_FLAG = 1)                                                 AS is_current,
+    -- SCD2 hardening (2026-06-23): is_current = latest version per DEVICE_ID (effective_to IS NULL),
+    -- so exactly ONE current row per device by construction (was CURRENT_FLAG=1, which fans out
+    -- every downstream is_current join if a device has >1 CURRENT_FLAG=1 row). Verify after build:
+    -- SUM(is_current) should equal COUNT(DISTINCT DEVICE_ID).
+    (LEAD(CAST(d.INSERTED_DTM AS DATE)) OVER (PARTITION BY d.DEVICE_ID ORDER BY d.INSERTED_DTM) IS NULL) AS is_current,
     (d.DEVICE_STATUS_ID = 1)                                             AS is_active
 
 FROM      mars_dev.bronze.edw_device_dimension                                                                     d

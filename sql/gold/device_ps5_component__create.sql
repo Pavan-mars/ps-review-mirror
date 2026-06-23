@@ -75,7 +75,7 @@ WITH all_hw AS (
         hwc.hw_source,
         hwc.mars_device_category
     FROM mars_dev.silver.hw_config_current hwc
-    WHERE hwc.mars_device_category IN ('TVM','GATE','READER','VALIDATOR')
+    WHERE hwc.mars_device_category IN ('TVM','GATE','VALIDATOR')
       AND hwc.COMPONENT_SERIAL_NBR IS NOT NULL
 ),
 -- Pre-compute LEAD before aggregation (Spark cannot nest window functions inside aggregates)
@@ -92,7 +92,7 @@ component_outages_lead AS (
             ORDER BY do_.outage_start
         )                                                             AS next_outage_start
     FROM mars_dev.silver.device_outage do_
-    WHERE do_.mars_device_category IN ('TVM','GATE','READER','VALIDATOR')
+    WHERE do_.mars_device_category IN ('TVM','GATE','VALIDATOR')
       AND do_.COMPONENT_SERIAL_NBR IS NOT NULL
 ),
 component_failures AS (

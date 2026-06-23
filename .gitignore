@@ -44,3 +44,6 @@ credentials
 # OS
 .DS_Store
 Thumbs.db
+
+# local context file — kept local, never shared in the repo
+local-notes.md

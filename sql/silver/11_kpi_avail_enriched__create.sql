@@ -24,7 +24,7 @@
 --     Guard: END_DTM >= START_DTM to exclude any negative durations
 --
 -- Dimension joined:
---   mars_dev.silver.dim_device (S01) — joined on DEVICE_ID (not DEVICE_KEY)
+--   mars_dev.silver.dim_device (S06) — joined on DEVICE_ID (not DEVICE_KEY)
 --   AVAILABILITY_EVENTS has both; DEVICE_ID gives better dim match rate
 --
 -- Validation run 2026-06-15 — bugs fixed from original:
@@ -51,7 +51,7 @@
 --                            END_DTM, NOTES
 --           Join fixed: EVENT_ID → DEVICE_ID + FAILURE_LEVEL + date range overlap
 --   BUG 10: DROP TABLE IF EXISTS silver.* → mars_dev.silver.*
---   BUG 11: sn_jumpbox CTE column names wrong (confirmed 2026-06-15 from S11 V-01b):
+--   BUG 11: sn_jumpbox CTE column names wrong (confirmed 2026-06-15 from S17 V-01b):
 --           jb.DEVICE_ID           → jb.U_DEVICE_ID
 --           jb.INCIDENT_NUMBER     → jb.U_EVENT_ID (WOT#, aliased jb_wot_number)
 --           jb.INCIDENT_STATE      → jb.U_WOT_STATE + jb.U_FAULT_STATE
@@ -152,13 +152,13 @@ sn_events AS (
     FROM mars_dev.bronze.cta_servicenow_availability_events sn
 ),
 sn_jumpbox AS (
-    -- BUG S08-A (CRITICAL): Pre-build dry-run 2026-06-18 found max_rows_per_device=17
+    -- BUG S11-A (CRITICAL): Pre-build dry-run 2026-06-18 found max_rows_per_device=17
     -- in jumpbox (356 rows / 355 devices). SELECT DISTINCT on all columns keeps all 17
     -- rows for that device; JOIN ON DEVICE_ID then fans out availability_events.
     -- Confirmed: total_output_rows=752,718 vs 752,510 source (208 extra rows).
     -- Fix: ROW_NUMBER() OVER (PARTITION BY U_DEVICE_ID ORDER BY SYS_CREATED_ON DESC)
     -- picks the single most-recent jumpbox record per device — eliminates fan-out.
-    -- Actual column names confirmed 2026-06-15 from S11 V-01b schema check.
+    -- Actual column names confirmed 2026-06-15 from S17 V-01b schema check.
     -- All fields are U_ prefixed; no INCIDENT_NUMBER/CATEGORY/SUBCATEGORY/ASSIGNED_TO/PRIORITY
     SELECT
         jb_device_id, jb_wot_number, jb_wot_state, jb_fault_state,

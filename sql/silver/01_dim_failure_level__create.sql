@@ -1,5 +1,5 @@
 -- =============================================================================
--- silver.dim_failure_level  (S18)
+-- silver.dim_failure_level  (S01)
 -- Ventra KPI Failure Level taxonomy — 41 levels across 5 metric categories
 --
 -- Source: Michael's "Ventra KPI Failure Levels" sheet (2026-06-22)

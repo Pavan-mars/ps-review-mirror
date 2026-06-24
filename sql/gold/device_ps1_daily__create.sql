@@ -7,21 +7,21 @@
 -- Training window: transit_day >= 2024-01-01 (pre-2024 legacy data excluded)
 --
 -- Sources (silver):
---   S01  mars_dev.silver.dim_device
---   S03  mars_dev.silver.device_event_enriched
---   S04  mars_dev.silver.device_outage
---   S07  mars_dev.silver.metric_daily          (26% device coverage — DEVICE_ID sparse)
---   S09  mars_dev.silver.kpi_daily             (10% coverage — pre-aggregated to 1 row/device/day)
---   S10  mars_dev.silver.tap_event_daily        (27% coverage — VALIDATOR+GATE only; TVM=0)
---   S13  mars_dev.silver.tvm_sale_daily         (3% coverage — TVM only)
+--   S06  mars_dev.silver.dim_device
+--   S16  mars_dev.silver.device_event_enriched
+--   S18  mars_dev.silver.device_outage
+--   S10  mars_dev.silver.metric_daily          (26% device coverage — DEVICE_ID sparse)
+--   S12  mars_dev.silver.kpi_daily             (10% coverage — pre-aggregated to 1 row/device/day)
+--   S13  mars_dev.silver.tap_event_daily        (27% coverage — VALIDATOR+GATE only; TVM=0)
+--   S14  mars_dev.silver.tvm_sale_daily         (3% coverage — TVM only)
 --
 -- Fixes applied 2026-06-19 (pre-validation run):
 --   FIX 1: READER excluded from mars_device_category filter (0 events confirmed)
 --   FIX 2: kpi_daily pre-aggregated to 1 row per (DEVICE_ID, transit_day) —
 --           5.37 KPI rows per device-day caused fan-out without this CTE
---   FIX 3: kpi.AVAILABILITY_PCT and kpi.FAULT_COUNT removed — do not exist in S09
---           (removed as BUG 18/19 during S09 build)
---   FIX 4: metric_daily columns renamed to actual S07 names:
+--   FIX 3: kpi.AVAILABILITY_PCT and kpi.FAULT_COUNT removed — do not exist in S12
+--           (removed as BUG 18/19 during S12 build)
+--   FIX 4: metric_daily columns renamed to actual S10 names:
 --             metric_800_txn_count → m401_daily_txn_count
 --             metric_800_delta     → m401_txn_count_delta
 --             metric_401_fault_count  removed (does not exist)
@@ -38,13 +38,17 @@
 --   FIX 9: All silver./gold. prefixes → mars_dev.silver. / mars_dev.gold.
 --   FIX 10: CREATE INDEX removed (not supported on Delta) → OPTIMIZE/ZORDER after build
 --
--- Device scope (confirmed 2026-06-15 validation):
---   TVM:       6,682 current devices — BTP/RTL/AVM/EVM/TVM/POS/POI
---   GATE:      1,953 current devices — RVG/SAG/HBG/TT_
+-- Device scope (updated 2026-06-24):
+--   TVM:       4,512 current devices — BTP/AVM/EVM/TVM (RTL/POS moved to OTHER 2026-06-24)
+--   GATE:      2,342 current devices — RVG/SAG/HBG/TT_/TTC/TWA/TEX
 --   VALIDATOR: 6,734 current devices — BMV/FBX/BTP PortableFarebox
---   NOTE: READER removed as a device category (reframed 2026-06-23 — reader is a component,
---         not a standalone device; RSV/CSC are COMPONENT_TYPE codes inside parent devices)
---   Total spine: 15,369 TVM+GATE+VALIDATOR
+--   NOTE: READER removed 2026-06-23 — reader is a component, not a standalone device
+--   NOTE: RTL+POS moved to OTHER 2026-06-24 per Michael R2-6 (no availability/WO records)
+--   Total spine: ~13,588 TVM+GATE+VALIDATOR
+--
+-- Michael R2 additions (2026-06-24):
+--   R2-1: is_chargeable + failure_level from S18 device_outage (failure_level > 0 = real hardware fault)
+--   R2-14: TRANSIT_ARRAY_ID + ARRAY_POSITION from S06 dim_device (GATE devices — PS2 gate-bank cascade)
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.gold.device_ps1_daily;
@@ -57,7 +61,11 @@ WITH all_devices AS (
         mars_device_category,
         DEVICE_CONTROL_GROUP_TYPE_NAME,
         BUS_ID,
-        TRANSIT_MODE_NAME
+        TRANSIT_MODE_NAME,
+        -- Gate-bank cascade context (R2-14: GATE devices — PS2 array grouping)
+        TRANSIT_ARRAY_ID,
+        ARRAY_POSITION,
+        FARE_CONTROL_AREA
     FROM mars_dev.silver.dim_device
     WHERE is_current = TRUE
       AND mars_device_category IN ('TVM','GATE','VALIDATOR')
@@ -81,7 +89,7 @@ event_daily AS (
         SUM(CASE WHEN dee.is_oos_event = TRUE                THEN 1 ELSE 0 END) AS oos_event_count,
         -- hardware_oos_count: hardware-only OOS fault onsets.
         -- is_hardware_oos_event excludes commanded codes (106/110/151/208/519/1603/1604) at source.
-        -- NOT IN ('SYSTEM','COMMS') dropped — commanded codes were the noise source; excluded precisely via S02.
+        -- NOT IN ('SYSTEM','COMMS') dropped — commanded codes were the noise source; excluded precisely via S07.
         SUM(CASE WHEN dee.is_hardware_oos_event = TRUE
                   AND dee.EVENT_STATE_TYPE_NAME = 'Set'              THEN 1 ELSE 0 END) AS hardware_oos_count
     FROM mars_dev.silver.device_event_enriched dee
@@ -94,7 +102,12 @@ outage_daily AS (
         do_.transit_day,
         COUNT(*)                                                              AS outage_count,
         SUM(COALESCE(do_.duration_min, 0))                                    AS total_outage_min,
-        MAX(COALESCE(do_.duration_min, 0))                                    AS max_outage_min
+        MAX(COALESCE(do_.duration_min, 0))                                    AS max_outage_min,
+        -- Chargeable outages: failure_level > 0 = real hardware failure, SLA-chargeable (R2-1)
+        SUM(CASE WHEN do_.is_chargeable = TRUE THEN 1 ELSE 0 END)            AS chargeable_outage_count,
+        SUM(CASE WHEN do_.is_chargeable = TRUE
+                 THEN COALESCE(do_.duration_min, 0) ELSE 0 END)              AS chargeable_outage_min,
+        MAX(COALESCE(do_.failure_level, 0))                                   AS max_failure_level
     FROM mars_dev.silver.device_outage do_
     WHERE do_.mars_device_category IN ('TVM','GATE','VALIDATOR')
       AND do_.duration_min > 0
@@ -126,7 +139,7 @@ rolling AS (
         w30 AS (PARTITION BY ed.DEVICE_ID ORDER BY ed.transit_day ROWS BETWEEN 29 PRECEDING AND CURRENT ROW)
 ),
 -- FIX 2/3: kpi_daily pre-aggregated — 5.37 rows/device-day without this causes fan-out
--- AVAILABILITY_PCT and FAULT_COUNT removed (do not exist in S09 — BUG 18/19)
+-- AVAILABILITY_PCT and FAULT_COUNT removed (do not exist in S12 — BUG 18/19)
 kpi_device_daily AS (
     SELECT
         kd.DEVICE_ID,
@@ -140,7 +153,7 @@ kpi_device_daily AS (
     WHERE kd.DEVICE_ID IS NOT NULL
     GROUP BY kd.DEVICE_ID, kd.transit_day
 ),
--- FIX: tvm_sale_daily — column names confirmed against S13 SQL
+-- FIX: tvm_sale_daily — column names confirmed against S14 SQL
 tvm_sales AS (
     SELECT
         tsd.DEVICE_ID,
@@ -203,6 +216,10 @@ SELECT
     ad.DEVICE_CONTROL_GROUP_TYPE_NAME,
     ad.BUS_ID,
     ad.TRANSIT_MODE_NAME,
+    -- Gate-bank cascade context (R2-14: GATE devices for PS2 chain analysis; NULL for TVM/VALIDATOR)
+    ad.TRANSIT_ARRAY_ID,
+    ad.ARRAY_POSITION,
+    ad.FARE_CONTROL_AREA,
     -- Daily event features
     COALESCE(ed.event_count, 0)             AS event_count,
     COALESCE(ed.critical_events, 0)         AS critical_events,
@@ -221,6 +238,10 @@ SELECT
     COALESCE(od.outage_count, 0)            AS outage_count,
     COALESCE(od.total_outage_min, 0)        AS total_outage_min,
     COALESCE(od.max_outage_min, 0)          AS max_outage_min,
+    -- Chargeable outage features (R2-1: failure_level > 0 = real hardware fault, SLA-chargeable)
+    COALESCE(od.chargeable_outage_count, 0) AS chargeable_outage_count,
+    COALESCE(od.chargeable_outage_min, 0)   AS chargeable_outage_min,
+    COALESCE(od.max_failure_level, 0)       AS max_failure_level,
     -- Rolling window features
     COALESCE(rw.events_7d, 0)               AS events_7d,
     COALESCE(rw.critical_events_7d, 0)      AS critical_events_7d,
@@ -238,13 +259,13 @@ SELECT
     COALESCE(tap.unique_cards, 0)           AS unique_cards,
     COALESCE(tap.tap_reject_rate_pct, 0)    AS tap_reject_rate_pct,
     COALESCE(tap.peak_hour_tap_count, 0)    AS peak_hour_tap_count,
-    -- KPI features (pre-aggregated; AVAILABILITY_PCT / FAULT_COUNT removed — not in S09)
+    -- KPI features (pre-aggregated; AVAILABILITY_PCT / FAULT_COUNT removed — not in S12)
     kp.avg_kpi_value,
     kp.max_kpi_value,
     COALESCE(kp.kpi_count, 0)              AS kpi_count,
     COALESCE(kp.kpi_targets_met, 0)        AS kpi_targets_met,
     COALESCE(kp.kpi_targets_missed, 0)     AS kpi_targets_missed,
-    -- Metric features (S07 actual column names; METRIC_ID 800/810 absent in Chicago)
+    -- Metric features (S10 actual column names; METRIC_ID 800/810 absent in Chicago)
     COALESCE(md.m401_daily_txn_count, 0)   AS metric_txn_count,
     COALESCE(md.m401_txn_count_delta, 0)   AS metric_txn_delta,
     COALESCE(md.m401_avg_txn_time_ms, 0)   AS metric_avg_txn_ms,

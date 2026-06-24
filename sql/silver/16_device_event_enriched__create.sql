@@ -6,8 +6,12 @@
 --   EDW.DEVICE_EVENT  (1.12 billion rows, 49 cols)
 --
 -- Dimensions joined (must be created first):
---   mars_dev.silver.dim_device     (S01 — device master + mars_device_category)
---   mars_dev.silver.dim_event_type (S02 — component_subsystem + is_oos_event + is_hardware_oos_event + is_commanded_oos_event)
+--   mars_dev.silver.dim_device     (S06 — device master + mars_device_category)
+--   mars_dev.silver.dim_event_type (S07 — component_subsystem + is_oos_event + is_hardware_oos_event
+--                                          + is_commanded_oos_event + is_reader_event
+--                                          + S03 KPI flags: event_priority, oos_counted_*_kpi,
+--                                            requires_service_call, is_set_clear)
+-- Build order: S03 → S06 → S07 → S16 → S18 → S17
 --
 -- De-dup logic: ROW_NUMBER() PARTITION BY DW_DEVICE_EVENT_ID
 --               ORDER BY EDW_UPDATED_DTM DESC NULLS LAST
@@ -172,7 +176,7 @@ SELECT
         ELSE NULL
     END                                                         AS duration_to_clear_min,
 
-    -- Device enrichment from silver.dim_device (S01)
+    -- Device enrichment from silver.dim_device (S06)
     dd.DEVICE_NAME,
     dd.DEVICE_TYPE_ID,
     dd.DEVICE_TYPE_NAME,
@@ -187,7 +191,7 @@ SELECT
     dd.DEVICE_SERIAL_NUMBER,
     dd.mars_device_category,
 
-    -- Event type enrichment from silver.dim_event_type (S02)
+    -- Event type enrichment from silver.dim_event_type (S07)
     et.EVENT_TYPE_ID,
     et.EVENT_SOURCE,
     et.EVENT_TYPE_NAME,
@@ -210,12 +214,25 @@ SELECT
     -- — none contain 'fault' or 'out of service', so those patterns are removed
     COALESCE(et.is_oos_event, FALSE)                            AS is_oos_event,
 
-    -- is_hardware_oos_event: hardware failures only — use this for PS1 labels and S04
+    -- is_hardware_oos_event: hardware failures only — use this for PS1 labels and S18
     -- Excludes commanded/maintenance codes (106, 110, 151, 208, 519, 1603, 1604)
     COALESCE(et.is_hardware_oos_event, FALSE)                   AS is_hardware_oos_event,
 
     -- is_commanded_oos_event: operator-triggered OOS — useful for PS3 context
-    COALESCE(et.is_commanded_oos_event, FALSE)                  AS is_commanded_oos_event
+    COALESCE(et.is_commanded_oos_event, FALSE)                  AS is_commanded_oos_event,
+
+    -- is_reader_event: CSC_READER subsystem (EVENT_TYPE_ID 200-299) — added 2026-06-24
+    COALESCE(et.is_reader_event, FALSE)                         AS is_reader_event,
+
+    -- S03 dim_event_matrix enrichment (via S07 JOIN — added 2026-06-24)
+    -- Authoritative per-code KPI counting rules and service flags from Michael's Device Event Matrix Excel.
+    -- NULL for event codes absent from S03 (codes not in Michael's 155-row matrix).
+    et.event_priority,          -- 1=critical, 2=high, 3=medium, 4=low (NULL if not in S03)
+    et.oos_counted_gate_kpi,    -- TRUE = this OOS counts toward gate availability KPI
+    et.oos_counted_bus_kpi,     -- TRUE = this OOS counts toward bus availability KPI
+    et.oos_counted_fmvd_kpi,    -- TRUE = this OOS counts toward FMVD/TVM availability KPI
+    et.requires_service_call,   -- TRUE = event requires field technician dispatch
+    et.is_set_clear             -- TRUE = event fires in Set/Clear pairs (not one-shot)
 
 FROM base b
 -- Join on DEVICE_ID (business key), not DEVICE_KEY (SCD2 surrogate).

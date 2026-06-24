@@ -31,7 +31,7 @@
 -- volume_drop_flag: today < yesterday (possible downtime or reduced service)
 --
 -- Dimension joined:
---   mars_dev.silver.dim_device (S01)
+--   mars_dev.silver.dim_device (S06)
 --   NOTE: DEVICE_METRIC has DEVICE_KEY but no DEVICE_ID.
 --         DEVICE_KEY join to dim_device may miss historical SCD2 keys.
 --

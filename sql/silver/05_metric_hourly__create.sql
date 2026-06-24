@@ -1,22 +1,22 @@
 -- =============================================================================
--- silver.metric_hourly  (S14)
+-- silver.metric_hourly  (S05)
 -- Hourly aggregated device transaction timing metrics — METRIC_ID=401 only
 -- Grain: (DEVICE_KEY, hour_bucket = DATE_TRUNC('HOUR', TIME_INCREMENT_KEY))
 --
--- Source (mars_dev.bronze catalog — same tables as S07 metric_daily):
+-- Source (mars_dev.bronze catalog — same tables as S10 metric_daily):
 --   EDW.DEVICE_METRIC    (592M rows, 19 cols) — one row per card-tap event
 --     Key cols: DEVICE_KEY, TRANSIT_DAY_KEY (YYYYMMDD int), TIME_INCREMENT_KEY (HHMM int),
 --               METRIC_KEY (FK to METRIC_DIMENSION), METRIC_VALUE (ms)
 --   EDW.METRIC_DIMENSION (62 rows) — metric ID/name lookup
 --
 -- Governance note (2026-06-23):
---   Updated to read from mars_dev.bronze.edw_device_metric catalog table (same as S07).
+--   Updated to read from mars_dev.bronze.edw_device_metric catalog table (same as S10).
 --   Removed direct S3 parquet reads — all sources now go through governed bronze Delta tables.
 --   This silver table was created to fix the gold-layer governance violation in PS4, which
 --   was reading S3 parquet directly from within the gold DDL.
 --
--- Why not reuse S07 metric_daily?
---   S07 collapses TIME_INCREMENT_KEY to day grain — hourly bucket cannot be reconstructed.
+-- Why not reuse S10 metric_daily?
+--   S10 collapses TIME_INCREMENT_KEY to day grain — hourly bucket cannot be reconstructed.
 --   PS4 anomaly detection (Signal 2) requires hour-bucket grain for EWMA baseline.
 --
 -- Chicago data facts (validated 2026-06-15, confirmed 2026-06-22):

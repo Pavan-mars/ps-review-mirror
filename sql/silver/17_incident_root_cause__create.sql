@@ -3,58 +3,44 @@
 -- Incident / root-cause records for root-cause analysis (PS3)
 --
 -- Sources (mars_dev.bronze catalog):
---   CTA.SERVICENOW_AVAILABILITY_EVENTS  (375,578 rows, 57 cols) → mars_dev.bronze.cta_servicenow_availability_events
---   CTA.SERVICENOW_DATA_FROM_JUMPBOX    (604 rows,    27 cols)  → mars_dev.bronze.cta_servicenow_data_from_jumpbox
+--   CTA.SERVICENOW_AVAILABILITY_EVENTS  (375,578 rows, 57 cols) -> mars_dev.bronze.cta_servicenow_availability_events
+--   CTA.SERVICENOW_DATA_FROM_JUMPBOX    (604 rows,    27 cols)  -> mars_dev.bronze.cta_servicenow_data_from_jumpbox
+--   silver.incident_history (S15)       (7,028,048 rows)        -- sn_category / sn_maintenance_type enrichment
 --
--- CRITICAL DATA GAP — SVN_STAGE TABLES ALL HAVE 0 ROWS IN ORACLE:
+-- CRITICAL DATA GAP -- SVN_STAGE TABLES ALL HAVE 0 ROWS IN ORACLE:
 --   SVN_STAGE.INCIDENT, FAULT, WORK_ORDER, WORK_ORDER_TASK, CMDB_CI, CHANGE_REQUEST
 --   (+ 29 more SVN_STAGE tables) all empty in Oracle EDW staging environment.
 --   WORKAROUND: CTA.SERVICENOW_AVAILABILITY_EVENTS is the CTA-curated ServiceNow
 --   mirror joined to availability events. Used as the sole incident source.
 --   CTA.SERVICENOW_DATA_FROM_JUMPBOX (604 rows) supplements with additional SN fields.
 --   IMPACT: No work-order lifecycle, no CMDB CI lineage, no technician detail.
+--   UPDATE 2026-06-24: silver.incident_history (S15) now provides full SN incident
+--   data (7M rows). Joined here on device_id + date to enrich with sn_category.
 --
 -- Notes:
 --   - AE_TRANSIT_DAY_KEY: 8-digit YYYYMMDD confirmed (no mixed-format issue)
 --   - Grain: one row per availability event (same as silver.kpi_avail_enriched)
 --   - AE_FAULT_DESCRIPTION, AE_SYMPTOM, AE_PROBLEM, AE_RESOLUTION = PS3 NLP features
---   - AE_FAILURE_LEVEL: 0=informational, 1=MINOR, 2=MAJOR, 3=CRITICAL (PS3 target)
---     Validation 2026-06-15 (1 week): AE_FAILURE_LEVEL distribution:
---       0=2,404 (informational/unknown), 2=126 (major), 3=10 (critical), 1=0
---   - Jumpbox joined on U_EVENT_ID = SN_U_EVENT_ID (WOT# match — 1:1, no fan-out)
---     Jumpbox is a 2026 extract; match rate for historical records will be low
---   - dim_device joined on AE_DEVICE_ID: 91.9% match (some older/retired devices)
+--   - AE_FAILURE_LEVEL: Ventra KPI taxonomy (Michael R2 confirmed 2026-06-22)
+--       is_chargeable = AE_FAILURE_LEVEL > 0 (hardware failure, chargeable to SLA)
+--       is_device_fault = AE_FAILURE_LEVEL IN (1,2,3,4,5,16) (PS3 training scope)
+--   - Jumpbox joined on U_EVENT_ID = SN_U_EVENT_ID (WOT# -- 1:1, no fan-out)
+--   - S15 joined on wm_asset = device_id AND DATE(opened_dtm) = transit_day
+--     Using first incident per device-day (ROW_NUMBER) to prevent fan-out
+--   - dim_device joined on AE_DEVICE_ID: 91.9% match rate
+--
+-- Michael R2 changes applied 2026-06-24:
+--   R2-1: is_chargeable = (AE_FAILURE_LEVEL > 0) added as explicit column
+--         PS1/PS3 label = is_device_fault = TRUE (subset of is_chargeable)
+--   R2-3: sn_category / sn_maintenance_type from silver.incident_history (S15) added
+--         Corrective Maintenance = real breakdown, Planned Maintenance = scheduled
 --
 -- Validation run 2026-06-15:
 --   Dry-run 2025-01-01 to 07: 2,540 rows, 1,170 devices
 --   has_duration=100%, dim_device=91.9%, jumpbox=0% (2026 extract vs Jan-2025 filter)
 --
--- Bugs fixed from original (22 total):
---   BUG 1:  silver.incident_root_cause → mars_dev.silver.incident_root_cause
---   BUG 2:  AE_TRANSIT_DAY_KEY::text + ::date → CAST(... AS STRING), no ::date
---   BUG 3:  EXTRACT(EPOCH FROM (end - start))/60 → (unix_timestamp(end)-unix_timestamp(start))/60.0
---   BUG 4:  bronze.cta_servicenow_availability_events → parquet S3 path
---   BUG 5:  bronze.cta_servicenow_data_from_jumpbox   → parquet S3 path
---   BUG 6:  silver.dim_device → mars_dev.silver.dim_device AND dd.is_current = TRUE
---           dim_device is now full SCD2 (189,570 rows); is_current=TRUE is required to
---           select the single active row per DEVICE_ID and prevent fan-out.
---   BUG 7:  CREATE INDEX (x8) → not supported on Delta; OPTIMIZE/ZORDER comment only
---   BUG 8:  jb.DEVICE_ID        → jb.U_DEVICE_ID (actual column name in jumpbox)
---   BUG 9:  jb.INCIDENT_NUMBER  → jb.U_EVENT_ID (WOT# e.g. WOT4062983; no INCIDENT_NUMBER col)
---   BUG 10: jb.INCIDENT_STATE   → mapped to jb.U_WOT_STATE + jb.U_FAULT_STATE
---   BUG 11: jb.INCIDENT_CATEGORY    → does not exist in jumpbox; removed
---   BUG 12: jb.INCIDENT_SUBCATEGORY → does not exist in jumpbox; removed
---   BUG 13: jb.SHORT_DESCRIPTION    → jb.U_FAULT_DESCRIPTION
---   BUG 14: jb.ASSIGNED_TO          → does not exist in jumpbox; removed
---   BUG 15: jb.ASSIGNMENT_GROUP     → does not exist in jumpbox; removed
---   BUG 16: jb.OPENED_AT            → jb.SYS_CREATED_ON (SN record creation timestamp)
---   BUG 17: jb.RESOLVED_AT          → jb.U_END_DTM
---   BUG 18: jb.CLOSE_NOTES          → jb.U_RESOLUTION
---   BUG 19: jb.PRIORITY             → does not exist in jumpbox; removed
---   BUG 20: jb.IMPACT               → does not exist in jumpbox; removed
---   BUG 21: jb.URGENCY              → does not exist in jumpbox; removed
---   BUG 22: jb_base join ON jb.DEVICE_ID → wrong join key causes fan-out;
---           fix: join ON jb.U_EVENT_ID = c.SN_U_EVENT_ID (WOT# → 1:1, no fan-out)
+-- Bugs fixed from original (22 total -- see original design file for full list):
+--   BUG 1-22: silver.* paths, EXTRACT(EPOCH), column names, join keys all corrected.
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.silver.incident_root_cause;
@@ -62,7 +48,6 @@ DROP TABLE IF EXISTS mars_dev.silver.incident_root_cause;
 CREATE TABLE mars_dev.silver.incident_root_cause AS
 WITH sn_base AS (
     -- CTA.SERVICENOW_AVAILABILITY_EVENTS: primary incident source (SVN_STAGE=0 workaround)
-    -- AE_TRANSIT_DAY_KEY: 8-digit YYYYMMDD (validated 2026-06-15)
     SELECT
         sn.SN_U_EVENT_ID,
         sn.SN_SYS_ID,
@@ -99,9 +84,7 @@ WITH sn_base AS (
     WHERE sn.AE_DEVICE_ID IS NOT NULL
 ),
 jb_base AS (
-    -- CTA.SERVICENOW_DATA_FROM_JUMPBOX: supplemental incident fields (604 rows, 2026 extract)
-    -- Joined on U_EVENT_ID = SN_U_EVENT_ID (both are WOT# — 1:1 match, no fan-out)
-    -- Actual column names differ completely from assumed schema (see BUG 8-22 above)
+    -- CTA.SERVICENOW_DATA_FROM_JUMPBOX: supplemental fields (604 rows, 2026 extract)
     SELECT
         jb.U_EVENT_ID             AS jb_event_id,
         jb.U_DEVICE_ID            AS jb_device_id,
@@ -119,10 +102,33 @@ jb_base AS (
         jb.U_FACILITY_NAME        AS jb_facility_name
     FROM mars_dev.bronze.cta_servicenow_data_from_jumpbox jb
 ),
+
+-- ── S15 enrichment: first incident per device+day (prevent fan-out) ───────────
+-- Join key: wm_asset (SAG00901) = AE_DEVICE_ID, DATE(opened_dtm) = transit_day
+-- Provides: category (Corrective/Planned Maintenance), maintenance_type, priority
+s17_first AS (
+    SELECT
+        wm_asset,
+        CAST(DATE(opened_dtm) AS DATE)          AS incident_date,
+        category                                AS sn_category,
+        maintenance_type                        AS sn_maintenance_type,
+        priority                                AS sn_priority,
+        priority_label                          AS sn_priority_label,
+        chargeable_level                        AS sn_chargeable_level,
+        event_code_id                           AS sn_event_code_id,
+        event_code_name                         AS sn_event_code_name,
+        ROW_NUMBER() OVER (
+            PARTITION BY wm_asset, CAST(DATE(opened_dtm) AS DATE)
+            ORDER BY opened_dtm
+        )                                       AS rn
+    FROM mars_dev.silver.incident_history
+    WHERE wm_asset IS NOT NULL
+),
+
 classified AS (
-    -- Rule-based root-cause categorisation from free-text fields (for PS3 target engineering)
     SELECT
         sb.*,
+        -- Root-cause categorisation from free-text fields (PS3 target engineering)
         CASE
             WHEN UPPER(sb.AE_FAULT_DESCRIPTION)    LIKE '%CASH%'
               OR UPPER(sb.AE_SYMPTOM)               LIKE '%CASH%'
@@ -145,15 +151,9 @@ classified AS (
               OR UPPER(sb.AE_FAULT_DESCRIPTION)    LIKE '%FIRMWARE%'
               OR UPPER(sb.AE_FAULT_DESCRIPTION)    LIKE '%REBOOT%'  THEN 'SOFTWARE'
             ELSE 'UNKNOWN'
-        END                       AS root_cause_category,
-        -- failure_level_label: Ventra KPI taxonomy (Michael 2026-06-22 + KPI Failure Levels sheet)
-        -- Category 2 (device hardware faults) — the PdM scope:
-        --   1  = Nonpayment Functions           4 = All Purchase Functions
-        --   2  = Purchase Card Functions         5 = All Functions (total failure)
-        --   3  = Purchase Product Functions     16 = Bus Reader Assembly Failure
-        -- Category 2 operational (not hardware failures):
-        --   0  = Fully Functional    6 = All Lines Busy   98 = Non-Avail Pull Out   99 = Insufficient Inv
-        -- Note: previous labels MINOR/MAJOR/CRITICAL were incorrect — replaced with taxonomy names.
+        END                                     AS root_cause_category,
+
+        -- Ventra KPI failure level taxonomy (Michael 2026-06-22 confirmed)
         CASE sb.AE_FAILURE_LEVEL
             WHEN 0  THEN 'FULLY_FUNCTIONAL'
             WHEN 1  THEN 'NONPAYMENT'
@@ -166,11 +166,14 @@ classified AS (
             WHEN 98 THEN 'NON_AVAIL_PULLOUT'
             WHEN 99 THEN 'INSUFFICIENT_INVENTORY'
             ELSE         'BACK_OFFICE_OR_UNKNOWN'
-        END                       AS failure_level_label,
-        -- is_device_fault: Category 2 hardware levels only (PS3 training scope)
-        -- Excludes operational (0/6/98/99) and back-office categories (3/4/5)
-        sb.AE_FAILURE_LEVEL IN (1, 2, 3, 4, 5, 16)
-                                  AS is_device_fault
+        END                                     AS failure_level_label,
+
+        -- is_chargeable: failure_level > 0 = real hardware failure chargeable to SLA (R2-1)
+        (sb.AE_FAILURE_LEVEL > 0)               AS is_chargeable,
+
+        -- is_device_fault: Category-2 hardware levels only (PS3 training scope)
+        sb.AE_FAILURE_LEVEL IN (1, 2, 3, 4, 5, 16) AS is_device_fault
+
     FROM sn_base sb
 )
 SELECT
@@ -185,6 +188,8 @@ SELECT
     c.AE_FAULT_STATE,
     c.AE_FAILURE_LEVEL,
     c.failure_level_label,
+    c.is_chargeable,
+    c.is_device_fault,
     c.incident_duration_min,
     c.AE_FAULT_DESCRIPTION,
     c.AE_SYMPTOM,
@@ -203,7 +208,17 @@ SELECT
     c.AE_END_DTM,
     c.EDW_INSERTED_DTM,
     c.EDW_UPDATED_DTM,
-    -- Jumpbox supplemental fields (actual column names — see BUG 8-22)
+
+    -- S15 enrichment (category from full ServiceNow incident export -- R2-3)
+    s17.sn_category,            -- 'Corrective Maintenance' = real breakdown; 'Planned Maintenance' = scheduled
+    s17.sn_maintenance_type,    -- 'Corrective Maintenance' / 'Planned Maintenance'
+    s17.sn_priority,
+    s17.sn_priority_label,
+    s17.sn_chargeable_level,
+    s17.sn_event_code_id,
+    s17.sn_event_code_name,
+
+    -- Jumpbox supplemental fields (actual column names)
     jb.jb_event_id              AS jb_wot_number,
     jb.jb_device_id,
     jb.jb_wot_state,
@@ -218,6 +233,7 @@ SELECT
     jb.jb_opened_at,
     jb.jb_caller,
     jb.jb_facility_name,
+
     -- Device enrichment
     dd.DEVICE_KEY,
     dd.DEVICE_NAME,
@@ -227,6 +243,7 @@ SELECT
     dd.FACILITY_NAME,
     dd.OPERATOR_NAME,
     dd.DEVICE_SERIAL_NUMBER,
+
     -- Data source flags
     TRUE                        AS from_cta_sn_mirror,
     FALSE                       AS from_svn_stage
@@ -236,7 +253,11 @@ LEFT JOIN mars_dev.silver.dim_device dd
     ON dd.DEVICE_ID  = c.AE_DEVICE_ID
    AND dd.is_current = TRUE
 LEFT JOIN jb_base jb
-    ON jb.jb_event_id = c.SN_U_EVENT_ID;
+    ON jb.jb_event_id = c.SN_U_EVENT_ID
+LEFT JOIN s17_first s17
+    ON  s17.wm_asset     = c.AE_DEVICE_ID
+    AND s17.incident_date = c.transit_day
+    AND s17.rn            = 1;
 
 -- Post-load optimisation:
 -- OPTIMIZE mars_dev.silver.incident_root_cause ZORDER BY (device_id, transit_day);

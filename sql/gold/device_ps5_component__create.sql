@@ -8,8 +8,8 @@
 --   READER is NOT a mars_device_category — confirmed Michael 2026-06-22.
 --   Reader failures live inside parent TVM/BMV/RVG/HBG/SAG/RTL as COMPONENT_TYPE events.
 -- Sources (silver):
---   S04  mars_dev.silver.device_outage
---   S06  mars_dev.silver.hw_config_current
+--   S18  mars_dev.silver.device_outage
+--   S09  mars_dev.silver.hw_config_current
 -- Sources (bronze):
 --   mars_dev.bronze.ncs_stage_cashbox_tracking  (TVM/VALIDATOR only)
 --
@@ -17,16 +17,16 @@
 --   1. SVN_STAGE.WORK_ORDER, MAINTENANCE_ACTIVITY_COUNT = 0 rows → no work-order data
 --   2. EDW.MAINTENANCE_ACTIVITY, MAINTENANCE_ACTIVITY_COUNT = 0 rows → no maintenance log
 --   WORKAROUND: Component lifetime from REPORTED_CHANGED_DTM (NCS_STAGE hw config)
---              + OOS outages as failure proxy (silver.device_outage S04)
+--              + OOS outages as failure proxy (silver.device_outage S18)
 --              + is_censored = TRUE if no OOS outage found (still running)
 --
 -- ⚠️ COMPONENT_TYPE_NAME / DESC NOTE:
---   These columns do NOT exist in silver.hw_config_current (S06).
---   S06 has COMPONENT_DESCRIPTION (free-text), COMPONENT_SERIAL_NBR.
---   COMPONENT_TYPE_NAME comes from silver.device_outage (S04) via component_failures join;
+--   These columns do NOT exist in silver.hw_config_current (S09).
+--   S09 has COMPONENT_DESCRIPTION (free-text), COMPONENT_SERIAL_NBR.
+--   COMPONENT_TYPE_NAME comes from silver.device_outage (S18) via component_failures join;
 --   NULL for components with no failures (is_censored = TRUE).
 --
--- Fixes applied 2026-06-19 (pre-build read of S04/S06 before validation):
+-- Fixes applied 2026-06-19 (pre-build read of S18/S09 before validation):
 --   FIX 1: gold./silver. prefixes → mars_dev.gold. / mars_dev.silver.
 --   FIX 2: silver.hw_config_current → mars_dev.silver.hw_config_current
 --   FIX 3: silver.device_outage    → mars_dev.silver.device_outage
@@ -37,10 +37,10 @@
 --              - unix_timestamp(CAST(hw.REPORTED_CHANGED_DTM AS TIMESTAMP))) / 86400.0
 --   FIX 6: STRING_AGG(DISTINCT component_subsystem, ',')
 --           → array_join(array_sort(array_distinct(collect_list(component_subsystem))), ',')
---   FIX 7: hwc.COMPONENT_TYPE_NAME in all_hw → REMOVED (not in hw_config_current S06)
---   FIX 8: hwc.COMPONENT_TYPE_DESC in all_hw → REMOVED (not in hw_config_current S06)
+--   FIX 7: hwc.COMPONENT_TYPE_NAME in all_hw → REMOVED (not in hw_config_current S09)
+--   FIX 8: hwc.COMPONENT_TYPE_DESC in all_hw → REMOVED (not in hw_config_current S09)
 --   FIX 9: hw.COMPONENT_TYPE_NAME in final SELECT → cf.COMPONENT_TYPE_NAME
---           (available from component_failures via device_outage S04)
+--           (available from component_failures via device_outage S18)
 --           NULL for censored components (no failures found)
 --   FIX 10: hw.COMPONENT_TYPE_DESC in final SELECT → REMOVED entirely
 --   FIX 11: bronze.ncs_cashbox_tracking → mars_dev.bronze.ncs_stage_cashbox_tracking
@@ -57,7 +57,7 @@ DROP TABLE IF EXISTS mars_dev.gold.device_ps5_component;
 
 CREATE TABLE mars_dev.gold.device_ps5_component AS
 WITH all_hw AS (
-    -- FIX 7+8: COMPONENT_TYPE_NAME and COMPONENT_TYPE_DESC removed — not in S06
+    -- FIX 7+8: COMPONENT_TYPE_NAME and COMPONENT_TYPE_DESC removed — not in S09
     SELECT
         hwc.DEVICE_ID,
         hwc.DEVICE_KEY,
@@ -87,6 +87,8 @@ component_outages_lead AS (
         do_.outage_start,
         do_.duration_min,
         do_.component_subsystem,
+        do_.is_chargeable,
+        do_.failure_level,
         LEAD(do_.outage_start) OVER (
             PARTITION BY do_.DEVICE_ID, do_.COMPONENT_SERIAL_NBR
             ORDER BY do_.outage_start
@@ -114,7 +116,10 @@ component_failures AS (
         -- FIX 6: STRING_AGG(DISTINCT ...) → array_join + array_sort + array_distinct + collect_list
         array_join(
             array_sort(array_distinct(collect_list(component_subsystem))), ','
-        )                                                             AS failure_subsystems
+        )                                                             AS failure_subsystems,
+        -- Chargeable failure counts (R2-1: is_chargeable = failure_level > 0)
+        SUM(CASE WHEN is_chargeable = TRUE THEN 1 ELSE 0 END)        AS chargeable_failure_count,
+        MAX(COALESCE(failure_level, 0))                               AS max_failure_level
     FROM component_outages_lead
     GROUP BY DEVICE_ID, COMPONENT_SERIAL_NBR, COMPONENT_TYPE_NAME
 ),
@@ -175,6 +180,11 @@ SELECT
         ELSE hw.component_age_days
     END                                                               AS days_to_failure,
     (cf.failure_count IS NULL OR cf.failure_count = 0)                AS is_censored,
+    -- is_not_censored: explicit alias for PS5 notebook compatibility (EVENT_COL = "is_not_censored")
+    NOT (cf.failure_count IS NULL OR cf.failure_count = 0)            AS is_not_censored,
+    -- Chargeable component failures (R2-1, added 2026-06-24)
+    COALESCE(cf.chargeable_failure_count, 0)                         AS chargeable_failure_count,
+    COALESCE(cf.max_failure_level, 0)                                AS max_failure_level,
     cf.avg_days_between_failures                                      AS mtbf_days,
     -- Cashbox context (TVM/VALIDATOR only; FIX 14: cashbox_jam_count → bill_cashbox_events)
     COALESCE(cs.total_cashbox_events, 0)                              AS cashbox_events_total,
@@ -216,5 +226,5 @@ WHERE hw.component_age_days IS NOT NULL;
 -- GROUP BY mars_device_category;
 -- Note: COMPONENT_TYPE_NAME = NULL when is_censored=TRUE (no failure in device_outage)
 -- Note: cashbox_events_total > 0 only for TVM/VALIDATOR devices
--- Note: S07 note: 41.4% dim_device match rate for DEVICE_KEY; all devices should appear
---       via hw_config_current (LEFT JOIN from dim_device in S06)
+-- Note: S10 note: 41.4% dim_device match rate for DEVICE_KEY; all devices should appear
+--       via hw_config_current (LEFT JOIN from dim_device in S09)

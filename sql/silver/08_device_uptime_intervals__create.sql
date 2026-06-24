@@ -8,7 +8,7 @@
 --   EDW.DEVICE_LAST_STATE (catalog)     (90,689 rows, 7 cols)  — last heartbeat per device
 --
 -- Dimension joined:
---   mars_dev.silver.dim_device (S01)
+--   mars_dev.silver.dim_device (S06)
 --
 -- Notes:
 --   - LAST_HEART_BEAT_DTM in DEVICE_LAST_STATE = last device communication timestamp

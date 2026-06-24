@@ -5,34 +5,34 @@
 -- Target: ensemble_anomaly_flag (>= 2 of 3 signals active)
 -- Device types: TVM, GATE, VALIDATOR  (READER removed 2026-06-23 — reader is a component, not device category)
 -- Sources (silver):
---   S01  mars_dev.silver.dim_device
---   S03  mars_dev.silver.device_event_enriched  (has hour_bucket column, S03:L159)
---   S10  mars_dev.silver.tap_event_daily
+--   S06  mars_dev.silver.dim_device
+--   S16  mars_dev.silver.device_event_enriched  (has hour_bucket column, S16:L159)
+--   S13  mars_dev.silver.tap_event_daily
 -- Sources (silver):
---   S01  mars_dev.silver.dim_device
---   S03  mars_dev.silver.device_event_enriched  (has hour_bucket column, S03:L159)
---   S10  mars_dev.silver.tap_event_daily
---   S14  mars_dev.silver.metric_hourly  (METRIC_ID=401 hourly tap timing — was direct S3 parquet, fixed 2026-06-22)
+--   S06  mars_dev.silver.dim_device
+--   S16  mars_dev.silver.device_event_enriched  (has hour_bucket column, S16:L159)
+--   S13  mars_dev.silver.tap_event_daily
+--   S05  mars_dev.silver.metric_hourly  (METRIC_ID=401 hourly tap timing — was direct S3 parquet, fixed 2026-06-22)
 -- bus_realtime_daily JOIN REMOVED (CTA_REAL_TIME_BUS_DATA dropped 2026-06-12)
 --
 -- Anomaly signals (3 → ensemble):
 --   Signal 1: event_rate_anomaly  — hourly events > 2*stddev of same-hour baseline
 --   Signal 2: metric_anomaly      — METRIC_ID 401 avg_ms deviates > 2*stddev from baseline
---             ⚠️  METRIC_IDs 800 and 810 have 0 rows for Chicago (S07 validation 2026-06-15)
+--             ⚠️  METRIC_IDs 800 and 810 have 0 rows for Chicago (S10 validation 2026-06-15)
 --             Original SQL used METRIC_ID 800 — redesigned for 401 (Transaction Time ms)
 --   Signal 3: reject_rate_anomaly — tap_reject_rate > 5% (daily grain)
 --
--- Fixes applied 2026-06-19 (pre-build read of S07/S10/S03 before validation):
+-- Fixes applied 2026-06-19 (pre-build read of S10/S13/S16 before validation):
 --   FIX 1: gold./silver./bronze. → mars_dev.gold./silver. + S3 parquet paths
 --   FIX 2: bronze.device_metric → parquet S3 path (superseded by FIX 15)
 --   FIX 3: bronze.metric_dimension → parquet S3 path (superseded by FIX 15)
---   FIX 15: raw parquet S3 reads (device_metric + metric_dimension) → mars_dev.silver.metric_hourly (S14)
+--   FIX 15: raw parquet S3 reads (device_metric + metric_dimension) → mars_dev.silver.metric_hourly (S05)
 --            Gold-layer governance fix 2026-06-22: gold tables must not read S3 parquet directly
 --   FIX 4: EXTRACT(HOUR FROM ...)::int → CAST(HOUR(...) AS INT) (Spark SQL)
 --   FIX 5: EXTRACT(DOW FROM ...)::int  → CAST(DAYOFWEEK(...) AS INT)
 --           Note: Spark DAYOFWEEK = 1 (Sunday) … 7 (Saturday)
 --   FIX 6: metric_hourly CTE — METRIC_IDs 800 and 810 = 0 rows for Chicago:
---           Confirmed in S07 header: "Only METRIC_ID=401 has data; 800 and 810 absent"
+--           Confirmed in S10 header: "Only METRIC_ID=401 has data; 800 and 810 absent"
 --           OLD: pivot on METRIC_ID IN (800, 810, 401) → metric_800_hourly always 0
 --           NEW: only METRIC_ID=401; produces metric_401_tap_count_hour + metric_401_avg_ms_hour
 --   FIX 7: TO_DATE(TRANSIT_DAY_KEY::text,'YYYYMMDD')::date
@@ -47,7 +47,7 @@
 --             → ABS(metric_401_avg_ms_hour - baseline_mean_metric401)
 --   FIX 11: Ensemble score / ensemble_anomaly_flag — same metric_800 → metric_401 fix
 --   FIX 12: avg_timing_ms in tap subquery → removed (CTA.ABP_USE_TRAN_TIMING_DATA = PATH_NOT_FOUND)
---           avg_tap_timing_ms feature → replaced with peak_hour_tap_count (from S10)
+--           avg_tap_timing_ms feature → replaced with peak_hour_tap_count (from S13)
 --   FIX 13: transit_day <= CURRENT_DATE() added to tap subquery (2032 future dates confirmed PS1)
 --           transit_day >= '2024-01-01' added to hourly_events (ML training window)
 --   FIX 14: CREATE INDEX (×6) → removed; not supported on Delta
@@ -110,8 +110,8 @@ event_baseline AS (
 ),
 metric_hourly AS (
     -- FIX 15: replaced raw parquet.`s3://...device_metric/` + parquet.`s3://...metric_dimension/`
-    -- with mars_dev.silver.metric_hourly (S14) — gold-layer governance fix 2026-06-22
-    -- TIMESTAMPADD/LPAD/TRANSIT_DAY_KEY parsing + date filters live in S14 DDL
+    -- with mars_dev.silver.metric_hourly (S05) — gold-layer governance fix 2026-06-22
+    -- TIMESTAMPADD/LPAD/TRANSIT_DAY_KEY parsing + date filters live in S05 DDL
     SELECT
         DEVICE_KEY,
         hour_bucket,
@@ -256,5 +256,5 @@ LEFT JOIN mars_dev.silver.dim_device dd
 --     SUM(CASE WHEN metric_401_avg_ms_hour > 0 THEN 1 END) AS hours_with_metric401
 -- FROM mars_dev.gold.device_ps4_hourly
 -- GROUP BY mars_device_category;
--- Note: metric_401 matches only ~2,784 DEVICE_KEYs (41.4% dim_device match rate from S07)
+-- Note: metric_401 matches only ~2,784 DEVICE_KEYs (41.4% dim_device match rate from S10)
 -- Note: tap features match only bus-capable devices (VALIDATOR + some TVM)

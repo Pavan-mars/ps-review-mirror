@@ -51,7 +51,7 @@
 --   BUG 18: dd.BUS_ID → t.BUS_ID (exists in ABP_TAP; not in dim_device)
 --   BUG 19: t.FACILITY_ID → does not exist in ABP_TAP; sourced from dim_device join
 --   BUG 20: mars_device_category → not in bronze device_dimension parquet;
---           available after S01 creates mars_dev.silver.dim_device
+--           available after S06 creates mars_dev.silver.dim_device
 --   BUG 21: TAP_STATUS_ID = 0 → wrong approved code (0 never appears in data);
 --           approved = IN (1, 900, 904); rejected = NOT IN (1, 900, 904)
 -- =============================================================================

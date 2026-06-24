@@ -1,15 +1,15 @@
 -- =============================================================================
--- silver.usage_lifecycle_daily  (S16)
+-- silver.usage_lifecycle_daily  (S20)
 -- Cumulative device lifecycle and wear features — daily grain
 -- Primary input for PS5 (Remaining Useful Life) wear and age features
 --
 -- Sources (all silver — must be built first):
---   mars_dev.silver.metric_daily          (S07) — daily tap counts (usage proxy)
---   mars_dev.silver.device_outage         (S04) — daily failure/outage summary
---   mars_dev.silver.maintenance_ledger    (S15) — daily maintenance visit summary
---   mars_dev.silver.dim_device            (S01) — device age reference
+--   mars_dev.silver.metric_daily          (S10) — daily tap counts (usage proxy)
+--   mars_dev.silver.device_outage         (S18) — daily failure/outage summary
+--   mars_dev.silver.maintenance_ledger    (S19) — daily maintenance visit summary
+--   mars_dev.silver.dim_device            (S06) — device age reference
 --
--- Build order: S01 → S02 → S03 → S04 → S07 → S15 → S16
+-- Build order: S06 → S07 → S16 → S18 → S10 → S19 → S20
 --
 -- Why these columns?
 --   PS5 RUL needs "how worn is this device today" — the key inputs are:
@@ -28,7 +28,7 @@
 --   If all devices are needed, drive from dim_device and LEFT JOIN metric_daily.
 --
 -- Validation run 2026-06-23:
---   metric_daily data: 2024-01-01 to 2025-11-07 (bronze ingestion stalled, see S07 note)
+--   metric_daily data: 2024-01-01 to 2025-11-07 (bronze ingestion stalled, see S10 note)
 --   device_outage: filtered to is_hardware_oos_event = TRUE (hardware failures only)
 --   maintenance_ledger: REPAIR_EPISODE + TECH_LOGIN + MAINTENANCE_MODE
 -- =============================================================================
@@ -38,7 +38,7 @@ DROP TABLE IF EXISTS mars_dev.silver.usage_lifecycle_daily;
 CREATE TABLE mars_dev.silver.usage_lifecycle_daily AS
 WITH
 
--- ── Daily outage summary per device (hardware failures only via S04) ──────────
+-- ── Daily outage summary per device (hardware failures only via S18) ──────────
 daily_outage AS (
     SELECT
         do.DEVICE_ID,
@@ -49,7 +49,7 @@ daily_outage AS (
     GROUP BY do.DEVICE_ID, do.transit_day
 ),
 
--- ── Daily maintenance visit count per device (S15) ───────────────────────────
+-- ── Daily maintenance visit count per device (S19) ───────────────────────────
 -- Counts each ledger_type separately and combined
 daily_maint AS (
     SELECT

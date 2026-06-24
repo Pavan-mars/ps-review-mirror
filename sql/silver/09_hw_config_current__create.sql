@@ -6,7 +6,7 @@
 --   EDW.DEVICE_CURRENT_HW_CONFIG  (11,736 rows, 17 cols)
 --
 -- Dimension joined:
---   mars_dev.silver.dim_device (S01 — must be created first)
+--   mars_dev.silver.dim_device (S06 — must be created first)
 --
 -- Notes:
 --   - COMPONENT_SERIAL_NBR: NULLIF(TRIM(...), '') cleans blank strings

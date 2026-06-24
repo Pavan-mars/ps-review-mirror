@@ -4,7 +4,7 @@
 -- Grain: (device_id, availability_event_id) — exactly 1 row per incident
 -- Target: AE_FAILURE_LEVEL (cat-2 device faults: 1/2/3/4/5/16) — confirmed taxonomy 2026-06-23
 -- Device types: TVM, GATE, VALIDATOR (READER removed — reader is a component, not device category)
--- Primary source: silver.incident_root_cause (S11)
+-- Primary source: silver.incident_root_cause (S17)
 --   backed by CTA.SERVICENOW_AVAILABILITY_EVENTS via SN mirror (from_cta_sn_mirror = TRUE)
 --   SVN_STAGE tables have 0 rows (from_svn_stage is always FALSE)
 --
@@ -201,7 +201,19 @@ SELECT
     ai.DEVICE_SERIAL_NUMBER,
     -- Data source flags
     ai.from_cta_sn_mirror,
-    ai.from_svn_stage   -- Always FALSE (SVN_STAGE = 0 rows)
+    ai.from_svn_stage,  -- Always FALSE (SVN_STAGE = 0 rows)
+    -- Chargeable / fault classification (R2-1, added 2026-06-24)
+    -- is_chargeable = failure_level > 0 (real hardware fault, SLA-chargeable)
+    -- is_device_fault = failure_level IN (1,2,3,4,5,16) (PS3 cat-2 training scope)
+    ai.is_chargeable,
+    ai.is_device_fault,
+    -- ServiceNow category enrichment from S15 incident_history (R2-3, added 2026-06-24)
+    -- sn_category: 'Corrective Maintenance' = real breakdown, 'Planned Maintenance' = scheduled
+    ai.sn_category,
+    ai.sn_maintenance_type,
+    ai.sn_priority,
+    ai.sn_event_code_id,
+    ai.sn_event_code_name
 FROM all_incidents ai
 LEFT JOIN events_24h_prior e24  ON e24.availability_event_id = ai.availability_event_id
 LEFT JOIN critical_7d_prior c7d ON c7d.availability_event_id = ai.availability_event_id

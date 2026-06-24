@@ -3,9 +3,12 @@
 -- Event type dimension — component_subsystem, severity_label,
 -- applies_to_* device flags, and is_oos_event
 --
--- Sources (mars_dev.bronze catalog):
+-- Sources (mars_dev.bronze / silver catalog):
 --   EDW.EVENT_TYPE_DIMENSION  (441 rows, 6 cols)  — primary source
 --   NCS_STAGE.EVENT           (422 rows)           — SHORT_DESC + DESCRIPTION
+--   silver.dim_event_matrix   (S03, 155 rows)     — event_priority, oos_counted_*_kpi,
+--                                                    requires_service_call, is_set_clear
+--                                                    LEFT JOIN: NULL for codes not in S03
 --
 -- Validation run 2026-06-15:
 --   NCS join: 97.7% match rate (431/441); join key ne.EVENT_ID = et.EVENT_TYPE_ID ✓
@@ -287,7 +290,7 @@ SELECT
 
     -- ── is_hardware_oos_event ─────────────────────────────────────────────────
     -- Hardware failures only — commanded + maintenance OOS codes removed.
-    -- USE THIS for PS1 failure labels and silver.device_outage (S04).
+    -- USE THIS for PS1 failure labels and silver.device_outage (S18).
     -- Do NOT use is_oos_event for labels — it includes operator-triggered OOS.
     --
     -- Removed vs is_oos_event:
@@ -329,8 +332,18 @@ SELECT
     -- ── is_commanded_oos_event ────────────────────────────────────────────────
     -- Operator-triggered OOS — NOT hardware failures.
     -- Exclude from PS1 labels. Useful for PS3 root-cause context.
+    -- NOTE: Code 156 "Commanded OOS by Tables" also appears commanded-OOS in Device
+    --       Event Matrix but is NOT listed here pending Michael clarification (Rail too?).
     et.EVENT_TYPE_ID IN (106, 110, 151, 208, 519, 1603, 1604)
                                                           AS is_commanded_oos_event,
+
+    -- ── is_reader_event ──────────────────────────────────────────────────────
+    -- CSC_READER subsystem: all events in the 200-299 range.
+    -- Captures both gate/bus reader events (201 CSC Target Fault, 220 Missing Keys,
+    -- 237 Bad Sam) and FMVD smart card transport events (205/221/222/223 SCT/SCRST).
+    -- Use this flag to filter device_event_enriched to reader-component grain for PS2/PS3.
+    -- Downstream: WHERE is_reader_event = TRUE AND COMPONENT_TYPE = 'CSC_READER'
+    (et.EVENT_TYPE_ID BETWEEN 200 AND 299)                AS is_reader_event,
 
     -- ── Device applicability flags ───────────────────────────────────────────
     -- Derived from Cubic doc Gate/Bus/FMVD columns (doc 9604-60007)
@@ -417,11 +430,26 @@ SELECT
     -- ── NCS event reference ──────────────────────────────────────────────────
     -- NCS_STAGE.EVENT has SHORT_DESC and DESCRIPTION (not EVENT_NAME/EVENT_DESCRIPTION)
     ne.SHORT_DESC                                         AS ncs_event_name,
-    ne.DESCRIPTION                                        AS ncs_event_description
+    ne.DESCRIPTION                                        AS ncs_event_description,
 
-FROM      mars_dev.bronze.edw_event_type_dimension                                                                   et
-LEFT JOIN mars_dev.bronze.ncs_stage_event                                                                            ne
-    ON ne.EVENT_ID = et.EVENT_TYPE_ID;
+    -- ── S03 dim_event_matrix enrichment (Michael R2 Device Event Matrix Excel) ──
+    -- 155-row lookup from "Copy of Device Event Matrix with Context.xlsx"
+    -- NULL for event codes not in Michael's Device Event Matrix (codes absent from S03)
+    -- S03 is the authoritative source for KPI counting rules and service call flags.
+    em.event_priority,          -- 1=critical, 2=high, 3=medium, 4=low (NULL if not in S03)
+    em.oos_counted_gate_kpi,    -- TRUE = this OOS event counts toward gate availability KPI
+    em.oos_counted_bus_kpi,     -- TRUE = this OOS event counts toward bus availability KPI
+    em.oos_counted_fmvd_kpi,    -- TRUE = this OOS event counts toward FMVD/TVM KPI
+    em.requires_service_call,   -- TRUE = event requires field technician dispatch
+    em.is_set_clear             -- TRUE = event fires in Set/Clear pairs (not one-shot)
+
+FROM      mars_dev.bronze.edw_event_type_dimension et
+LEFT JOIN mars_dev.bronze.ncs_stage_event          ne
+    ON ne.EVENT_ID = et.EVENT_TYPE_ID
+LEFT JOIN mars_dev.silver.dim_event_matrix         em
+    ON em.event_code_id = et.EVENT_TYPE_ID;
+-- NOTE: S03 must be built before S07 (dim_event_type depends on dim_event_matrix).
+-- Build order: S03 → S07 → S16 → S18 → ...
 
 -- Post-load optimisation:
 -- OPTIMIZE mars_dev.silver.dim_event_type ZORDER BY (EVENT_TYPE_ID);

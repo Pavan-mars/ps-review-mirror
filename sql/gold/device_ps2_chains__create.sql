@@ -5,8 +5,8 @@
 -- Target: subsystem_chain — ordered sequence of component subsystems per fault day
 -- Device types: TVM, GATE, VALIDATOR
 -- Sources (silver):
---   S01  mars_dev.silver.dim_device
---   S03  mars_dev.silver.device_event_enriched
+--   S06  mars_dev.silver.dim_device
+--   S16  mars_dev.silver.device_event_enriched
 -- Sources (bronze):
 --   mars_dev.bronze.ncs_stage_cashbox_tracking  (TVM only — 140M rows)
 --   mars_dev.bronze.ncs_stage_cashbox_type      (15 rows — cashbox type dimension)
@@ -23,7 +23,7 @@
 --             NEW: is_hardware_oos_event = TRUE             (commanded codes 106/110/151/208/519 excluded)
 --                  AND EVENT_STATE_TYPE_NAME = 'Set'        -- fault onset only (not Clear)
 --                  -- NOT IN ('SYSTEM','COMMS') dropped — commanded codes were the SYSTEM/COMMS noise;
---                  -- is_hardware_oos_event excludes them at source (S02 column). Updated 2026-06-23.
+--                  -- is_hardware_oos_event excludes them at source (S07 column). Updated 2026-06-23.
 --                  -- After filter: avg 3.99 fault onsets/day expected (same volume; cleaner signal)
 --   FIX 3: STRING_AGG(... ORDER BY ...) → struct sort approach (Spark SQL equivalent):
 --             array_join(transform(array_sort(collect_list(struct(dt, val))), x->x.val), '->')
@@ -212,6 +212,14 @@ SELECT
     dd.DEVICE_SERIAL_NUMBER,
     dd.DEVICE_CONTROL_GROUP_TYPE_NAME,
     dd.BUS_ID,
+    -- Gate-bank cascade features (R2-14): group GATE devices at same turnstile bank
+    -- TRANSIT_ARRAY_ID + ARRAY_POSITION identify physically co-located gates → cascade correlation
+    -- NULL for TVM/VALIDATOR (not part of a gate array)
+    dd.TRANSIT_ARRAY_ID,
+    dd.ARRAY_POSITION,
+    dd.FARE_CONTROL_AREA,
+    dd.TURNSTILE_DEVICE_TYPE,
+    dd.TURNSTILE_DEVICE_NUMBER,
     -- CI dependency features UNAVAILABLE (SVN_STAGE = 0 rows)
     CAST(NULL AS STRING)                      AS ci_related_devices,
     CAST(NULL AS STRING)                      AS shared_facility_chain,

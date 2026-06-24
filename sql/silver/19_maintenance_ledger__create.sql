@@ -1,5 +1,5 @@
 -- =============================================================================
--- silver.maintenance_ledger  (S15)
+-- silver.maintenance_ledger  (S19)
 -- Unified maintenance and repair history for PS5 RUL and PS1 feature engineering
 --
 -- Source A — Repair episodes (corrective maintenance):
@@ -8,7 +8,7 @@
 --   = the primary "failure+repair" event log for PS5 label and time-between-failures
 --
 -- Source B — Maintenance-mode + tech-login events (maintenance visits):
---   mars_dev.silver.device_event_enriched  (S03)
+--   mars_dev.silver.device_event_enriched  (S16)
 --   Filtered to is_commanded_oos_event = TRUE:
 --     106 = Employee Logon    (tech login to device)
 --     110 = Commanded OOS     (operator-initiated OOS)
@@ -24,7 +24,7 @@
 --   See Maintenance_History_Source_22Jun2026.md for full details.
 --
 -- NOTE: EVENT_TYPE_IDs for maintenance slice are identified via is_commanded_oos_event
---   flag in S02/S03 (added 2026-06-23). Run the analysis queries in the MD doc to
+--   flag in S07/S16 (added 2026-06-23). Run the analysis queries in the MD doc to
 --   confirm additional maintenance-related IDs before expanding the filter.
 --
 -- Grain: one row per maintenance or repair event
@@ -40,7 +40,7 @@
 --   PS5 RUL: time-between-failures, repair frequency, time-since-last-repair features
 --   PS1:     maintenance_visit_count rolling window, days_since_last_maintenance
 --
--- Build order: S01 → S02 → S03 → S15
+-- Build order: S06 → S07 → S16 → S19
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.silver.maintenance_ledger;

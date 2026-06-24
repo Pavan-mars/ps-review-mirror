@@ -235,7 +235,7 @@ LEFT JOIN (
     WHERE transit_day <= CURRENT_DATE()
 ) tap ON tap.DEVICE_ID = he.DEVICE_ID AND tap.transit_day = he.transit_day
 LEFT JOIN mars_dev.silver.dim_device dd
-    ON dd.DEVICE_KEY = he.DEVICE_KEY AND dd.is_current = TRUE;
+    ON dd.DEVICE_ID = he.DEVICE_ID AND dd.is_current = TRUE;
 
 -- FIX 14: CREATE INDEX (×6) removed — not supported on Delta tables
 -- Post-build:

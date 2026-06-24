@@ -226,7 +226,7 @@ SELECT
     FALSE                                     AS svn_ci_data_available
 FROM chain_agg ca
 LEFT JOIN mars_dev.silver.dim_device dd
-    ON dd.DEVICE_KEY = ca.DEVICE_KEY AND dd.is_current = TRUE
+    ON dd.DEVICE_ID = ca.DEVICE_ID AND dd.is_current = TRUE
 LEFT JOIN cashbox_daily cb
     ON cb.DEVICE_ID = ca.DEVICE_ID AND cb.cbx_date = ca.transit_day;
 

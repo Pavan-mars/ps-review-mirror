@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- silver.kpi_daily
 -- Daily KPI metrics per device, enriched with KPI definitions and device context
 --

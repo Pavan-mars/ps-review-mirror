@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- silver.usage_lifecycle_daily  (S20)
 -- Cumulative device lifecycle and wear features - daily grain
 -- Primary input for PS5 (Remaining Useful Life) wear and age features

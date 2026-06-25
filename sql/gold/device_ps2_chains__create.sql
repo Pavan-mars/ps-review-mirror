@@ -1,15 +1,15 @@
 -- =============================================================================
 -- gold.device_ps2_chains
--- PS2 — Cascade / Fault-Chain Analysis: fault-chain features per device per day
+-- PS2 -- Cascade / Fault-Chain Analysis: fault-chain features per device per day
 -- Grain: (device_id, transit_day) where device had >= 2 fault-onset OOS events
--- Target: subsystem_chain — ordered sequence of component subsystems per fault day
+-- Target: subsystem_chain -- ordered sequence of component subsystems per fault day
 -- Device types: TVM, GATE, VALIDATOR
 -- Sources (silver):
 --   S06  mars_dev.silver.dim_device
 --   S16  mars_dev.silver.device_event_enriched
 -- Sources (bronze):
---   mars_dev.bronze.ncs_stage_cashbox_tracking  (TVM only — 140M rows)
---   mars_dev.bronze.ncs_stage_cashbox_type      (15 rows — cashbox type dimension)
+--   mars_dev.bronze.ncs_stage_cashbox_tracking  (TVM only -- 140M rows)
+--   mars_dev.bronze.ncs_stage_cashbox_type      (15 rows -- cashbox type dimension)
 --
 -- DATA GAP NOTE:
 --   SVN_STAGE tables all have 0 rows. CI dependency features are UNAVAILABLE.
@@ -19,35 +19,35 @@
 --   FIX 1: READER excluded from category filter (0 events confirmed)
 --   FIX 2: Severity filter replaced with fault-onset filter:
 --             OLD: severity IN ('WARN','CRITICAL')
---                  — V01 confirmed: 100% INFO, CRITICAL=22, WARN=0 → near-zero rows
+--                  -- V01 confirmed: 100% INFO, CRITICAL=22, WARN=0 -> near-zero rows
 --             NEW: is_hardware_oos_event = TRUE             (commanded codes 106/110/151/208/519 excluded)
 --                  AND EVENT_STATE_TYPE_NAME = 'Set'        -- fault onset only (not Clear)
---                  -- NOT IN ('SYSTEM','COMMS') dropped — commanded codes were the SYSTEM/COMMS noise;
+--                  -- NOT IN ('SYSTEM','COMMS') dropped -- commanded codes were the SYSTEM/COMMS noise;
 --                  -- is_hardware_oos_event excludes them at source (S07 column). Updated 2026-06-23.
 --                  -- After filter: avg 3.99 fault onsets/day expected (same volume; cleaner signal)
---   FIX 3: STRING_AGG(... ORDER BY ...) → struct sort approach (Spark SQL equivalent):
+--   FIX 3: STRING_AGG(... ORDER BY ...) -> struct sort approach (Spark SQL equivalent):
 --             array_join(transform(array_sort(collect_list(struct(dt, val))), x->x.val), '->')
---   FIX 4: FILTER (WHERE event_seq = 1) → MAX(CASE WHEN event_seq = 1 THEN col END)
---   FIX 5: FILTER (WHERE event_seq = subquery) → MAX(CASE WHEN event_seq = dc.fault_event_count ...)
---   FIX 6: ILIKE on STRING_AGG result → MAX(CASE WHEN component_subsystem = 'BHU' ...) approach
---             — more reliable than substring match on aggregated string
---   FIX 7: EXTRACT(EPOCH FROM (a-b)) / 60.0 → (unix_timestamp(a) - unix_timestamp(b)) / 60.0
---   FIX 8: fe.EVENT_TYPE_ID::text → CAST(fe.EVENT_TYPE_ID AS STRING)
---   FIX 9: cashbox_daily CTE — 3 column bugs fixed:
---             DATE_KEY (does not exist) → TRANSIT_DAY_KEY  (decimal 8,0 YYYYMMDD)
+--   FIX 4: FILTER (WHERE event_seq = 1) -> MAX(CASE WHEN event_seq = 1 THEN col END)
+--   FIX 5: FILTER (WHERE event_seq = subquery) -> MAX(CASE WHEN event_seq = dc.fault_event_count ...)
+--   FIX 6: ILIKE on STRING_AGG result -> MAX(CASE WHEN component_subsystem = 'BHU' ...) approach
+--             -- more reliable than substring match on aggregated string
+--   FIX 7: EXTRACT(EPOCH FROM (a-b)) / 60.0 -> (unix_timestamp(a) - unix_timestamp(b)) / 60.0
+--   FIX 8: fe.EVENT_TYPE_ID::text -> CAST(fe.EVENT_TYPE_ID AS STRING)
+--   FIX 9: cashbox_daily CTE -- 3 column bugs fixed:
+--             DATE_KEY (does not exist) -> TRANSIT_DAY_KEY  (decimal 8,0 YYYYMMDD)
 --             TO_DATE(DATE_KEY::text, 'YYYYMMDD')::date
---               → TO_DATE(CAST(ct.TRANSIT_DAY_KEY AS STRING), 'yyyyMMdd')
---             TRANSACTION_TYPE (does not exist) → CASHBOX_TYPE_ID-based features:
+--               -> TO_DATE(CAST(ct.TRANSIT_DAY_KEY AS STRING), 'yyyyMMdd')
+--             TRANSACTION_TYPE (does not exist) -> CASHBOX_TYPE_ID-based features:
 --               Type 1 = Bill Cashbox, Type 2 = Coin Cashbox,
 --               Type 5 = Bus Cashbox (VALIDATOR farebox)
---             cashbox_jam_count  → bill_cashbox_events  (TYPE_ID = 1)
---             cashbox_full_count → coin_cashbox_events  (TYPE_ID = 2)
---             cashbox_empty_count → bus_cashbox_events  (TYPE_ID = 5)
+--             cashbox_jam_count  -> bill_cashbox_events  (TYPE_ID = 1)
+--             cashbox_full_count -> coin_cashbox_events  (TYPE_ID = 2)
+--             cashbox_empty_count -> bus_cashbox_events  (TYPE_ID = 5)
 --             Added: total_cash_value_cents, total_dump_count
---   FIX 10: bronze.ncs_cashbox_tracking → mars_dev.bronze.ncs_stage_cashbox_tracking
---   FIX 11: NULL::text → CAST(NULL AS STRING)
---   FIX 12: silver./gold. prefixes → mars_dev.silver. / mars_dev.gold.
---   FIX 13: CREATE INDEX (x6) → removed (not supported on Delta); use OPTIMIZE/ZORDER
+--   FIX 10: bronze.ncs_cashbox_tracking -> mars_dev.bronze.ncs_stage_cashbox_tracking
+--   FIX 11: NULL::text -> CAST(NULL AS STRING)
+--   FIX 12: silver./gold. prefixes -> mars_dev.silver. / mars_dev.gold.
+--   FIX 13: CREATE INDEX (x6) -> removed (not supported on Delta); use OPTIMIZE/ZORDER
 --   FIX 14: transit_day >= 2024-01-01 added to fault_events (ML training window)
 --
 -- Expected output: ~1.06M rows (V06b: VALIDATOR 563K + GATE 255K + TVM 245K)
@@ -97,7 +97,7 @@ chain_agg AS (
         fe.DEVICE_KEY,
         fe.mars_device_category,
         fe.transit_day,
-        -- FIX 3: STRING_AGG(... ORDER BY ...) → struct sort (Spark SQL)
+        -- FIX 3: STRING_AGG(... ORDER BY ...) -> struct sort (Spark SQL)
         -- struct(EVENT_DTM, val) sorts by EVENT_DTM; transform extracts val field
         array_join(
             transform(
@@ -120,18 +120,18 @@ chain_agg AS (
         COUNT(*)                                                             AS chain_length,
         MIN(fe.EVENT_DTM)                                                    AS chain_start_dtm,
         MAX(fe.EVENT_DTM)                                                    AS chain_end_dtm,
-        -- FIX 7: EXTRACT EPOCH → unix_timestamp
+        -- FIX 7: EXTRACT EPOCH -> unix_timestamp
         (unix_timestamp(MAX(fe.EVENT_DTM)) - unix_timestamp(MIN(fe.EVENT_DTM))) / 60.0
                                                                              AS chain_span_min,
-        -- FIX 4: FILTER(WHERE event_seq=1) → MAX(CASE WHEN ...)
+        -- FIX 4: FILTER(WHERE event_seq=1) -> MAX(CASE WHEN ...)
         MAX(CASE WHEN fe.event_seq = 1               THEN fe.component_subsystem END)
                                                                              AS first_subsystem,
-        -- FIX 5: FILTER with correlated subquery → dc.fault_event_count (already computed)
+        -- FIX 5: FILTER with correlated subquery -> dc.fault_event_count (already computed)
         MAX(CASE WHEN fe.event_seq = dc.fault_event_count
                  THEN fe.component_subsystem END)                            AS last_subsystem,
         COUNT(CASE WHEN fe.severity = 'CRITICAL' THEN 1 END)                AS critical_in_chain,
         COUNT(CASE WHEN fe.is_hardware_oos_event = TRUE THEN 1 END)          AS oos_in_chain,
-        -- FIX 6: ILIKE on STRING_AGG → subsystem presence flags (more reliable)
+        -- FIX 6: ILIKE on STRING_AGG -> subsystem presence flags (more reliable)
         -- has_cash_cascade: BHU AND CHU both appear on same device-day (bill+coin jam cascade)
         (MAX(CASE WHEN fe.component_subsystem = 'BHU' THEN 1 ELSE 0 END)
          + MAX(CASE WHEN fe.component_subsystem = 'CHU' THEN 1 ELSE 0 END)) >= 2
@@ -154,7 +154,7 @@ chain_agg AS (
        AND dc.transit_day = fe.transit_day
     GROUP BY fe.DEVICE_ID, fe.DEVICE_KEY, fe.mars_device_category, fe.transit_day
 ),
--- FIX 9+10: cashbox_daily — DATE_KEY→TRANSIT_DAY_KEY, TRANSACTION_TYPE→CASHBOX_TYPE_ID
+-- FIX 9+10: cashbox_daily -- DATE_KEY->TRANSIT_DAY_KEY, TRANSACTION_TYPE->CASHBOX_TYPE_ID
 -- ncs_stage_cashbox_tracking confirmed schema (V07a): TRANSIT_DAY_KEY decimal(8,0) YYYYMMDD
 -- CASHBOX_TYPE_ID: 1=Bill CBX, 2=Coin CBX, 3=Coin Hopper, 5=Bus Cashbox, 6=Mobile Safe
 cashbox_daily AS (
@@ -196,7 +196,7 @@ SELECT
     ca.has_dopp_in_chain,
     ca.has_scrst_in_chain,
     -- Cashbox context (TVM/VALIDATOR only; 0 for GATE)
-    -- FIX 9: cashbox_jam/full/empty_count → type-based counts (TRANSACTION_TYPE absent)
+    -- FIX 9: cashbox_jam/full/empty_count -> type-based counts (TRANSACTION_TYPE absent)
     COALESCE(cb.cashbox_events, 0)            AS cashbox_events,
     COALESCE(cb.bill_cashbox_events, 0)       AS bill_cashbox_events,
     COALESCE(cb.coin_cashbox_events, 0)       AS coin_cashbox_events,
@@ -213,7 +213,7 @@ SELECT
     dd.DEVICE_CONTROL_GROUP_TYPE_NAME,
     dd.BUS_ID,
     -- Gate-bank cascade features (R2-14): group GATE devices at same turnstile bank
-    -- TRANSIT_ARRAY_ID + ARRAY_POSITION identify physically co-located gates → cascade correlation
+    -- TRANSIT_ARRAY_ID + ARRAY_POSITION identify physically co-located gates -> cascade correlation
     -- NULL for TVM/VALIDATOR (not part of a gate array)
     dd.TRANSIT_ARRAY_ID,
     dd.ARRAY_POSITION,

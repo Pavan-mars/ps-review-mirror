@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- silver.tvm_sale_daily
 -- Daily aggregated TVM sale transactions per device
 --
@@ -55,7 +55,7 @@ WITH sale_agg AS (
         SUM(COALESCE(st.CASH_COLLECTED, 0))                      AS total_cash_cents,
         SUM(COALESCE(st.CR_DB_AMOUNT, 0))                        AS total_card_cents,
         -- Operational window
-        COUNT(DISTINCT EXTRACT(HOUR FROM st.TRANSACTION_DTM))    AS sales_active_hours,
+        COUNT(DISTINCT HOUR(st.TRANSACTION_DTM))    AS sales_active_hours,
         MIN(st.TRANSACTION_DTM)                                  AS first_sale_dtm,
         MAX(st.TRANSACTION_DTM)                                  AS last_sale_dtm
     FROM mars_dev.bronze.ncs_stage_sale_transaction st

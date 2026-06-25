@@ -1,8 +1,8 @@
 -- =============================================================================
 -- gold.device_ps1_daily
--- PS1 — Predictive Failure: daily feature table for TVM / GATE / VALIDATOR
+-- PS1 -- Predictive Failure: daily feature table for TVM / GATE / VALIDATOR
 -- Grain: (device_id, transit_day)
--- Target: will_fail_7d — 1 if device has a real outage (duration_min > 0)
+-- Target: will_fail_7d -- 1 if device has a real outage (duration_min > 0)
 --         within the next 7 calendar days
 -- Training window: transit_day >= 2024-01-01 (pre-2024 legacy data excluded)
 --
@@ -10,47 +10,47 @@
 --   S06  mars_dev.silver.dim_device
 --   S16  mars_dev.silver.device_event_enriched
 --   S18  mars_dev.silver.device_outage
---   S10  mars_dev.silver.metric_daily          (26% device coverage — DEVICE_ID sparse)
---   S12  mars_dev.silver.kpi_daily             (10% coverage — pre-aggregated to 1 row/device/day)
---   S13  mars_dev.silver.tap_event_daily        (27% coverage — VALIDATOR+GATE only; TVM=0)
---   S14  mars_dev.silver.tvm_sale_daily         (3% coverage — TVM only)
---   S21  mars_dev.silver.use_revenue_daily      (100% coverage — all device types; FARE_DUE in cents)
+--   S10  mars_dev.silver.metric_daily          (26% device coverage -- DEVICE_ID sparse)
+--   S12  mars_dev.silver.kpi_daily             (10% coverage -- pre-aggregated to 1 row/device/day)
+--   S13  mars_dev.silver.tap_event_daily        (27% coverage -- VALIDATOR+GATE only; TVM=0)
+--   S14  mars_dev.silver.tvm_sale_daily         (3% coverage -- TVM only)
+--   S21  mars_dev.silver.use_revenue_daily      (100% coverage -- all device types; FARE_DUE in cents)
 --
 -- Fixes applied 2026-06-19 (pre-validation run):
 --   FIX 1: READER excluded from mars_device_category filter (0 events confirmed)
---   FIX 2: kpi_daily pre-aggregated to 1 row per (DEVICE_ID, transit_day) —
+--   FIX 2: kpi_daily pre-aggregated to 1 row per (DEVICE_ID, transit_day) --
 --           5.37 KPI rows per device-day caused fan-out without this CTE
---   FIX 3: kpi.AVAILABILITY_PCT and kpi.FAULT_COUNT removed — do not exist in S12
+--   FIX 3: kpi.AVAILABILITY_PCT and kpi.FAULT_COUNT removed -- do not exist in S12
 --           (removed as BUG 18/19 during S12 build)
 --   FIX 4: metric_daily columns renamed to actual S10 names:
---             metric_800_txn_count → m401_daily_txn_count
---             metric_800_delta     → m401_txn_count_delta
+--             metric_800_txn_count -> m401_daily_txn_count
+--             metric_800_delta     -> m401_txn_count_delta
 --             metric_401_fault_count  removed (does not exist)
---             counter_reset_flag   → volume_drop_flag
+--             counter_reset_flag   -> volume_drop_flag
 --           METRIC_ID 800/810 = 0 rows for Chicago; only METRIC_ID 401 present
---   FIX 5: tap_event_daily subquery adds transit_day <= CURRENT_DATE() —
+--   FIX 5: tap_event_daily subquery adds transit_day <= CURRENT_DATE() --
 --           bronze ABP_TAP has data entry rows to 2032-12-14
---   FIX 6: tap.avg_timing_ms / p95_timing_ms / has_slow_transactions removed —
+--   FIX 6: tap.avg_timing_ms / p95_timing_ms / has_slow_transactions removed --
 --           ABP_USE_TRAN_TIMING_DATA is PATH_NOT_FOUND; replaced with peak_hour_tap_count
 --   FIX 7: spine filtered to transit_day >= 2024-01-01 (ML training window)
---   FIX 8: will_fail_7d uses duration_min > 0 NOT severity IN ('CRITICAL','WARN') —
+--   FIX 8: will_fail_7d uses duration_min > 0 NOT severity IN ('CRITICAL','WARN') --
 --           severity filter produced only 17 positive labels (confirmed pre-validation V08)
 --           explode-backward label approach used (equi-join, faster than EXISTS/range join)
---   FIX 9: All silver./gold. prefixes → mars_dev.silver. / mars_dev.gold.
---   FIX 10: CREATE INDEX removed (not supported on Delta) → OPTIMIZE/ZORDER after build
+--   FIX 9: All silver./gold. prefixes -> mars_dev.silver. / mars_dev.gold.
+--   FIX 10: CREATE INDEX removed (not supported on Delta) -> OPTIMIZE/ZORDER after build
 --
--- Device scope (updated 2026-06-25, Michael R3 — universe CLOSED):
---   TVM:       ~4,512 current devices — AVM/EVM/TVM (BTP removed R3; RTL/POS removed R2)
---   GATE:      ~2,342 current devices — RVG/SAG/HBG ONLY (TT_/TTC/TWA/TEX removed R2)
---   VALIDATOR: ~2,000 current devices — BMV bus only (FBX removed R3; BTP removed R3)
---   NOTE: READER removed 2026-06-23 — reader is a component, not a standalone device
---   NOTE: FBX (4,651) dropped R3 — out of Ventra scope; BTP (3,486) dropped R3 — legacy
---   NOTE: TT_/TTC/TWA/TEX dropped R2 — legacy turnstiles; RTL/POS dropped R2
+-- Device scope (updated 2026-06-25, Michael R3 -- universe CLOSED):
+--   TVM:       ~4,512 current devices -- AVM/EVM/TVM (BTP removed R3; RTL/POS removed R2)
+--   GATE:      ~2,342 current devices -- RVG/SAG/HBG ONLY (TT_/TTC/TWA/TEX removed R2)
+--   VALIDATOR: ~2,000 current devices -- BMV bus only (FBX removed R3; BTP removed R3)
+--   NOTE: READER removed 2026-06-23 -- reader is a component, not a standalone device
+--   NOTE: FBX (4,651) dropped R3 -- out of Ventra scope; BTP (3,486) dropped R3 -- legacy
+--   NOTE: TT_/TTC/TWA/TEX dropped R2 -- legacy turnstiles; RTL/POS dropped R2
 --   Total spine: ~9,270 TVM+GATE+VALIDATOR (device universe closed)
 --
 -- Michael R2 additions (2026-06-24):
 --   R2-1: is_chargeable + failure_level from S18 device_outage (failure_level > 0 = real hardware fault)
---   R2-14: TRANSIT_ARRAY_ID + ARRAY_POSITION from S06 dim_device (GATE devices — PS2 gate-bank cascade)
+--   R2-14: TRANSIT_ARRAY_ID + ARRAY_POSITION from S06 dim_device (GATE devices -- PS2 gate-bank cascade)
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.gold.device_ps1_daily;
@@ -64,7 +64,7 @@ WITH all_devices AS (
         DEVICE_CONTROL_GROUP_TYPE_NAME,
         BUS_ID,
         TRANSIT_MODE_NAME,
-        -- Gate-bank cascade context (R2-14: GATE devices — PS2 array grouping)
+        -- Gate-bank cascade context (R2-14: GATE devices -- PS2 array grouping)
         TRANSIT_ARRAY_ID,
         ARRAY_POSITION,
         FARE_CONTROL_AREA
@@ -91,7 +91,7 @@ event_daily AS (
         SUM(CASE WHEN dee.is_oos_event = TRUE                THEN 1 ELSE 0 END) AS oos_event_count,
         -- hardware_oos_count: hardware-only OOS fault onsets.
         -- is_hardware_oos_event excludes commanded codes (106/110/151/208/519/1603/1604) at source.
-        -- NOT IN ('SYSTEM','COMMS') dropped — commanded codes were the noise source; excluded precisely via S07.
+        -- NOT IN ('SYSTEM','COMMS') dropped -- commanded codes were the noise source; excluded precisely via S07.
         SUM(CASE WHEN dee.is_hardware_oos_event = TRUE
                   AND dee.EVENT_STATE_TYPE_NAME = 'Set'              THEN 1 ELSE 0 END) AS hardware_oos_count
     FROM mars_dev.silver.device_event_enriched dee
@@ -140,8 +140,8 @@ rolling AS (
         w7  AS (PARTITION BY ed.DEVICE_ID ORDER BY ed.transit_day ROWS BETWEEN 6  PRECEDING AND CURRENT ROW),
         w30 AS (PARTITION BY ed.DEVICE_ID ORDER BY ed.transit_day ROWS BETWEEN 29 PRECEDING AND CURRENT ROW)
 ),
--- FIX 2/3: kpi_daily pre-aggregated — 5.37 rows/device-day without this causes fan-out
--- AVAILABILITY_PCT and FAULT_COUNT removed (do not exist in S12 — BUG 18/19)
+-- FIX 2/3: kpi_daily pre-aggregated -- 5.37 rows/device-day without this causes fan-out
+-- AVAILABILITY_PCT and FAULT_COUNT removed (do not exist in S12 -- BUG 18/19)
 kpi_device_daily AS (
     SELECT
         kd.DEVICE_ID,
@@ -155,7 +155,7 @@ kpi_device_daily AS (
     WHERE kd.DEVICE_ID IS NOT NULL
     GROUP BY kd.DEVICE_ID, kd.transit_day
 ),
--- FIX: tvm_sale_daily — column names confirmed against S14 SQL
+-- FIX: tvm_sale_daily -- column names confirmed against S14 SQL
 tvm_sales AS (
     SELECT
         tsd.DEVICE_ID,
@@ -183,7 +183,7 @@ tvm_sales AS (
         END AS sales_decline_flag
     FROM mars_dev.silver.tvm_sale_daily tsd
 ),
--- S21: USE_TRANSACTION revenue — all device types (TVM + GATE + VALIDATOR)
+-- S21: USE_TRANSACTION revenue -- all device types (TVM + GATE + VALIDATOR)
 -- Covers where tvm_sale_daily (3%) and tap_event_daily (27%) have gaps
 -- REVENUE_OR_TEST = 'REVENUE' filter already applied in S21 DDL; no re-filter needed here
 use_revenue AS (
@@ -214,7 +214,7 @@ use_revenue AS (
         END                                          AS use_revenue_decline_flag
     FROM mars_dev.silver.use_revenue_daily ur
 ),
--- FIX 8: will_fail_7d — explode-backward label; equi-join (faster than EXISTS/range join)
+-- FIX 8: will_fail_7d -- explode-backward label; equi-join (faster than EXISTS/range join)
 -- duration_min > 0 replaces severity IN ('CRITICAL','WARN') which produced only 17 positives
 outage_label_days AS (
     SELECT DISTINCT
@@ -292,7 +292,7 @@ SELECT
     COALESCE(tap.unique_cards, 0)           AS unique_cards,
     COALESCE(tap.tap_reject_rate_pct, 0)    AS tap_reject_rate_pct,
     COALESCE(tap.peak_hour_tap_count, 0)    AS peak_hour_tap_count,
-    -- KPI features (pre-aggregated; AVAILABILITY_PCT / FAULT_COUNT removed — not in S12)
+    -- KPI features (pre-aggregated; AVAILABILITY_PCT / FAULT_COUNT removed -- not in S12)
     kp.avg_kpi_value,
     kp.max_kpi_value,
     COALESCE(kp.kpi_count, 0)              AS kpi_count,
@@ -313,8 +313,8 @@ SELECT
     COALESCE(ts.sales_active_hours, 0)     AS sales_active_hours,
     COALESCE(ts.sales_7d_avg, 0)           AS sales_7d_avg,
     COALESCE(ts.sales_decline_flag, FALSE) AS sales_decline_flag,
-    -- USE_TRANSACTION revenue features (S21 — all device types; 100% coverage)
-    -- Complement to tvm_sale_daily (TVM-only sales) — USE_TRANSACTION = actual fare revenue
+    -- USE_TRANSACTION revenue features (S21 -- all device types; 100% coverage)
+    -- Complement to tvm_sale_daily (TVM-only sales) -- USE_TRANSACTION = actual fare revenue
     COALESCE(ur.use_txn_count, 0)                AS use_txn_count,
     COALESCE(ur.use_priced_txn_count, 0)         AS use_priced_txn_count,
     COALESCE(ur.use_revenue_cents, 0)            AS use_revenue_cents,
@@ -323,8 +323,10 @@ SELECT
     COALESCE(ur.use_revenue_7d_avg, 0)           AS use_revenue_7d_avg,
     COALESCE(ur.use_revenue_decline_flag, FALSE) AS use_revenue_decline_flag,
     -- TARGET: 1 if device has a real outage within next 7 days
-    -- V08 pre-validation confirmed: severity=CRITICAL/WARN = 17 positives (broken)
-    --                               duration_min > 0     = 3.66M label pairs (correct)
+    -- V08 pre-validation: severity=CRITICAL/WARN = 17 positives (broken); duration_min > 0 = correct
+    -- VALIDATION NOTE (2026-06-25): label gates on ANY outage (duration_min > 0), NOT chargeable failure.
+    --   To train the ~1.5% chargeable-failure target, add  AND is_chargeable = TRUE  (or
+    --   failure_level IN (1,2,3,4,5,16)) inside outage_label_days below. Pending Michael's decision.
     CASE WHEN old.DEVICE_ID IS NOT NULL THEN 1 ELSE 0 END AS will_fail_7d
 
 FROM spine sp
@@ -333,7 +335,7 @@ LEFT JOIN event_daily ed               ON ed.DEVICE_ID  = sp.DEVICE_ID AND ed.tr
 LEFT JOIN outage_daily od              ON od.DEVICE_ID  = sp.DEVICE_ID AND od.transit_day = sp.transit_day
 LEFT JOIN rolling rw                   ON rw.DEVICE_ID  = sp.DEVICE_ID AND rw.transit_day = sp.transit_day
 LEFT JOIN (
-    -- FIX 5: future-date filter — tap_event_daily has rows to 2032-12-14 (bronze data error)
+    -- future-date filter: tap_event_daily has rows to 2032-12-14 (bronze data error)
     SELECT DEVICE_ID, transit_day, tap_count, unique_cards,
            tap_reject_rate_pct, peak_hour_tap_count
     FROM mars_dev.silver.tap_event_daily
@@ -347,20 +349,8 @@ LEFT JOIN outage_label_days old        ON old.DEVICE_ID  = sp.DEVICE_ID AND old.
 
 -- Post-build:
 -- OPTIMIZE mars_dev.gold.device_ps1_daily ZORDER BY (DEVICE_ID, transit_day);
---
 -- Post-build verification:
--- SELECT
---     COUNT(*)                                                          AS total_rows,
---     COUNT(DISTINCT DEVICE_ID)                                        AS distinct_devices,
---     MIN(transit_day)                                                 AS earliest_day,
---     MAX(transit_day)                                                 AS latest_day,
---     SUM(will_fail_7d)                                                AS positive_labels,
---     ROUND(SUM(will_fail_7d) * 100.0 / COUNT(*), 2)                 AS positive_rate_pct,
---     ROUND(SUM(CASE WHEN metric_txn_count > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS metric_coverage_pct,
---     ROUND(SUM(CASE WHEN avg_kpi_value IS NOT NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS kpi_coverage_pct,
---     ROUND(SUM(CASE WHEN tap_count > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS tap_coverage_pct,
---     ROUND(SUM(CASE WHEN use_txn_count > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS use_revenue_coverage_pct,
---     SUM(CASE WHEN use_revenue_decline_flag THEN 1 ELSE 0 END) AS use_revenue_decline_days
+-- SELECT COUNT(*) AS total_rows, COUNT(DISTINCT DEVICE_ID) AS devices,
+--        SUM(will_fail_7d) AS positive_labels,
+--        ROUND(SUM(will_fail_7d)*100.0/COUNT(*),2) AS positive_rate_pct
 -- FROM mars_dev.gold.device_ps1_daily;
--- Expected: positive_rate_pct 20-60%, metric_coverage ≈ 26%, kpi_coverage ≈ 10%,
---           tap_coverage ≈ 27%, use_revenue_coverage_pct ≈ 100% (all device types)

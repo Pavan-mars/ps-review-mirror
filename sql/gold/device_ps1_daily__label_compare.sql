@@ -1,9 +1,9 @@
 -- =============================================================================
--- PS1 label comparison — "any outage" (current) vs "material failure" (design)
+-- PS1 label comparison -- "any outage" (current) vs "material failure" (design)
 --
--- Purpose: decide the PS1 target with data, not assumption (validation report §3.1).
+-- Purpose: decide the PS1 target with data, not assumption (validation report S3.1).
 -- Run on Databricks AFTER mars_dev.gold.device_ps1_daily and
--- mars_dev.silver.kpi_avail_enriched exist. Read-only — produces a summary, no table change.
+-- mars_dev.silver.kpi_avail_enriched exist. Read-only -- produces a summary, no table change.
 --
 --   Label A (current build): will_fail_7d in device_ps1_daily
 --                            = ANY device_outage with duration_min > 0 in the next 7 days.
@@ -15,13 +15,13 @@
 -- Output columns:
 --   device_days          spine size per category (NULL category row = overall, from ROLLUP)
 --   pos_a / pos_rate_a   Label A positives and % (expect the broad ~20-60%)
---   pos_b / pos_rate_b   Label B positives and % (the material-failure rate — the number to judge)
+--   pos_b / pos_rate_b   Label B positives and % (the material-failure rate -- the number to judge)
 --   both / a_only / b_only   agreement between the two labels
 --
 -- Decision guide: if pos_rate_b is workable (e.g. >= ~1-2% with enough absolute positives),
 -- prefer Label B as the PS1 target (aligns to the keystone + PS3). If it is too sparse, keep
 -- Label A but document it as an "availability/outage" predictor, not a "material failure" model.
--- NOTE: verify S08 column names (device_id, transit_day, AE_FAILURE_LEVEL) — taken from how
+-- NOTE: verify S08 column names (device_id, transit_day, AE_FAILURE_LEVEL) -- taken from how
 -- device_ps3_incident__create.sql consumes kpi_avail_enriched (authoritative as of 2026-06-23).
 -- =============================================================================
 
@@ -36,7 +36,7 @@ material_incident_days AS (
     -- material hardware-failure incident days from the S08 keystone (same filter as PS3)
     SELECT DISTINCT device_id AS DEVICE_ID, transit_day AS incident_day
     FROM mars_dev.silver.kpi_avail_enriched
-    WHERE AE_FAILURE_LEVEL IN (1, 2, 3, 4, 5, 16)
+    WHERE FAILURE_LEVEL IN (1, 2, 3, 4, 5, 16)   -- fix 2026-06-25: kpi_avail_enriched exposes FAILURE_LEVEL (AE_ form is in incident_root_cause)
       AND transit_day >= '2024-01-01'
 ),
 label_b AS (

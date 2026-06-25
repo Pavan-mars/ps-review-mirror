@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- silver.use_revenue_daily  (S21)
 -- Daily revenue aggregation from EDW.USE_TRANSACTION - device-day grain
 -- PS1 revenue-decline feature; PS4 daily revenue signal

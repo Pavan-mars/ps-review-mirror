@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- silver.metric_hourly  (S05)
 -- Hourly aggregated device transaction timing metrics - METRIC_ID=401 only
 -- Grain: (DEVICE_KEY, hour_bucket = DATE_TRUNC('HOUR', TIME_INCREMENT_KEY))

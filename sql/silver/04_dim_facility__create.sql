@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- silver.dim_facility
 -- Facility dimension - NCS retail/vendor partner locations for Ventra card network
 --

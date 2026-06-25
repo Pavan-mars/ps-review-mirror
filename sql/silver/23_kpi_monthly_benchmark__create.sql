@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- silver.kpi_monthly_benchmark  (S23)
 -- Monthly contract-level KPI performance vs SLA benchmarks
 -- NOT device-grain - contract/system grain: one row per (month, KPI_ID)
@@ -75,8 +75,8 @@ SELECT
     km.BASE_SLDC_AMT,
     km.ADJUSTED_SLDC_AMT,
     (km.BASE_SLDC_AMT - km.ADJUSTED_SLDC_AMT)                      AS sldc_reduction_amt,
-    CAST(km.COMPOUND   AS BOOLEAN)                                  AS is_compound,
-    CAST(km.PERSISTENT AS BOOLEAN)                                  AS is_persistent,
+    CASE WHEN km.COMPOUND='Y' THEN TRUE WHEN km.COMPOUND='N' THEN FALSE ELSE NULL END AS is_compound,
+    CASE WHEN km.PERSISTENT='Y' THEN TRUE WHEN km.PERSISTENT='N' THEN FALSE ELSE NULL END AS is_persistent,
 
     -- -- Earnback ---------------------------------------------------------------
     km.CURRENT_EARNBACK,

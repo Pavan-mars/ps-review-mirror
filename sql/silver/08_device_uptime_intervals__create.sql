@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- silver.device_uptime_intervals
 -- Device uptime / heartbeat intervals from last-state and end-of-day tables
 --

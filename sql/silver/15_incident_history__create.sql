@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- S15: silver.incident_history
 -- S-code: S15  |  Build file: 17  |  Status: READY (CTA Export CSVs loaded to bronze 2026-06-24)
 -- NOTE: Renumbered from S05 -> S15 (2026-06-23). S05 = metric_hourly, S19 = maintenance_ledger,

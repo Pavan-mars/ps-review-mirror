@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- silver.read_tap_daily  (S22)
 -- Daily tap/read aggregation from EDW.READ_TRANSACTION - device-day grain
 -- PS1 tap-volume feature; PS4 daily read-activity signal
@@ -48,6 +48,8 @@ WITH tap_agg AS (
         COUNT(DISTINCT rt.TOKEN_ID)                             AS unique_tokens,
 
         -- Approval breakdown (same codes as ABP_TAP - 1/900/904 = approved)
+        -- VALIDATION 2026-06-25: codes 1/900/904 ASSUMED from ABP_TAP; UNVERIFIED for READ_TRANSACTION
+        -- confirm: SELECT TAP_STATUS_ID, COUNT(*) FROM bronze.edw_read_transaction GROUP BY 1 ORDER BY 2 DESC
         SUM(CASE WHEN rt.TAP_STATUS_ID IN (1, 900, 904) THEN 1 ELSE 0 END)
                                                                 AS approved_read_count,
         SUM(CASE WHEN rt.TAP_STATUS_ID NOT IN (1, 900, 904) THEN 1 ELSE 0 END)
@@ -71,6 +73,7 @@ WITH tap_agg AS (
       AND rt.TRANSACTION_DTM  IS NOT NULL
       AND rt.DEVICE_ID         IS NOT NULL
       AND rt.TRANSIT_DAY_KEY  >= 20240101                       -- ML training window
+      AND rt.TRANSIT_DAY_KEY  <  20270101                       -- exclude 2032 sentinel (max=20321214)
     GROUP BY
         rt.DEVICE_ID,
         rt.TRANSIT_DAY_KEY,

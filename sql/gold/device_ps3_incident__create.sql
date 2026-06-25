@@ -1,14 +1,14 @@
 -- =============================================================================
 -- gold.device_ps3_incident
--- PS3 — Root Cause / Incident Classification: feature table for ALL device types
--- Grain: (device_id, availability_event_id) — exactly 1 row per incident
--- Target: AE_FAILURE_LEVEL (cat-2 device faults: 1/2/3/4/5/16) — confirmed taxonomy 2026-06-23
--- Device types: TVM, GATE, VALIDATOR (READER removed — reader is a component, not device category)
+-- PS3 -- Root Cause / Incident Classification: feature table for ALL device types
+-- Grain: (device_id, availability_event_id) -- exactly 1 row per incident
+-- Target: AE_FAILURE_LEVEL (cat-2 device faults: 1/2/3/4/5/16) -- confirmed taxonomy 2026-06-23
+-- Device types: TVM, GATE, VALIDATOR (READER removed -- reader is a component, not device category)
 -- Primary source: silver.incident_root_cause (S17)
 --   backed by CTA.SERVICENOW_AVAILABILITY_EVENTS via SN mirror (from_cta_sn_mirror = TRUE)
 --   SVN_STAGE tables have 0 rows (from_svn_stage is always FALSE)
 --
--- ⚠️  SVN_STAGE DATA GAP:
+-- !  SVN_STAGE DATA GAP:
 --   All 35 SVN_STAGE tables have 0 rows. MISSING features:
 --     - Work order task details (labor hours, technician, action taken)
 --     - CMDB CI configuration item data
@@ -16,34 +16,34 @@
 --     - Full incident lifecycle timestamps
 --
 -- Fixes applied 2026-06-19 (pre-validation run):
---   FIX 1: gold./silver. prefixes → mars_dev.gold. / mars_dev.silver.
---   FIX 2: INTERVAL '24 hours' → INTERVAL 24 HOURS (Spark SQL)
---           INTERVAL '7 days'  → INTERVAL 7 DAYS
---   FIX 3 (events_24h_prior): severity IN ('WARN','CRITICAL') → fault-onset filter
---           OLD: severity IN ('WARN','CRITICAL') → near-zero rows (confirmed: 100% INFO)
+--   FIX 1: gold./silver. prefixes -> mars_dev.gold. / mars_dev.silver.
+--   FIX 2: INTERVAL '24 hours' -> INTERVAL 24 HOURS (Spark SQL)
+--           INTERVAL '7 days'  -> INTERVAL 7 DAYS
+--   FIX 3 (events_24h_prior): severity IN ('WARN','CRITICAL') -> fault-onset filter
+--           OLD: severity IN ('WARN','CRITICAL') -> near-zero rows (confirmed: 100% INFO)
 --           NEW: is_oos_event = TRUE AND EVENT_STATE_TYPE_NAME = 'Set'
---           Renamed output column: critical_24h_prior → oos_onsets_24h
---   FIX 4 (critical_7d_prior): severity = 'CRITICAL' → same fault-onset filter
+--           Renamed output column: critical_24h_prior -> oos_onsets_24h
+--   FIX 4 (critical_7d_prior): severity = 'CRITICAL' -> same fault-onset filter
 --           Renamed output columns: critical_events_7d_prior/oos_events_7d_prior
---                                 → oos_onsets_7d_prior / events_7d_prior
---   FIX 5: ILIKE → LIKE (ILIKE unsupported in Spark SQL) — also redesigned; see FIX 7
---   FIX 6: CREATE INDEX (x6) → removed; not supported on Delta (use OPTIMIZE/ZORDER)
---   FIX 7: hw_age join fan-out — V04 confirmed 78.32% blank affected_component
---           Old: ILIKE '' matches ALL hw components when blank → 1.41× fan-out
+--                                 -> oos_onsets_7d_prior / events_7d_prior
+--   FIX 5: ILIKE -> LIKE (ILIKE unsupported in Spark SQL) -- also redesigned; see FIX 7
+--   FIX 6: CREATE INDEX (x6) -> removed; not supported on Delta (use OPTIMIZE/ZORDER)
+--   FIX 7: hw_age join fan-out -- V04 confirmed 78.32% blank affected_component
+--           Old: ILIKE '' matches ALL hw components when blank -> 1.41x fan-out
 --           New: hw_best_match CTE with ROW_NUMBER() per availability_event_id:
 --                  priority 0: COMPONENT_DESCRIPTION LIKE '%affected_component%' (non-blank)
 --                  priority 1: most recently changed component (fallback for blank/no-match)
---                  WHERE rn = 1 → exactly 1 hw row per incident = no fan-out
+--                  WHERE rn = 1 -> exactly 1 hw row per incident = no fan-out
 --   FIX 8 (updated 2026-06-23 from Michael's Ventra KPI Failure Levels sheet):
---           Level 0  = Fully Functional  (193,643; 61.4%) — exclude (not a failure)
+--           Level 0  = Fully Functional  (193,643; 61.4%) -- exclude (not a failure)
 --           Level 1  = Nonpayment Functions        (6 rows, 0.0%)
 --           Level 2  = Purchase Card Functions (61,036; 19.4%)
 --           Level 3  = Purchase Product Functions (5,920; 1.9%)
 --           Level 4  = All Purchase Functions  ) confirmed hardware faults (cat-2)
---           Level 5  = All Functions           ) Michael 2026-06-22 — include these
+--           Level 5  = All Functions           ) Michael 2026-06-22 -- include these
 --           Level 16 = Bus Reader Assembly Fail) ~55K rows; previously mislabelled UNKNOWN
---           Levels 6/98/99 = Operational (not hardware failures) — exclude
---           NEW: WHERE AE_FAILURE_LEVEL IN (1,2,3,4,5,16) → all cat-2 hardware faults
+--           Levels 6/98/99 = Operational (not hardware failures) -- exclude
+--           NEW: WHERE AE_FAILURE_LEVEL IN (1,2,3,4,5,16) -> all cat-2 hardware faults
 --           Expected rows: ~66,962 + ~55,000 levels-4/5/16 = ~122K total
 --   FIX 9: transit_day >= '2024-01-01' added to all_incidents
 --           V06 confirmed data back to 2017 (e.g., 2017-03-18). device_event_enriched
@@ -61,7 +61,7 @@ CREATE TABLE mars_dev.gold.device_ps3_incident AS
 WITH all_incidents AS (
     SELECT *
     FROM mars_dev.silver.incident_root_cause
-    -- READER removed: reader is a component (not a device category) — Michael 2026-06-22
+    -- READER removed: reader is a component (not a device category) -- Michael 2026-06-22
     WHERE mars_device_category IN ('TVM','GATE','VALIDATOR')
       -- FIX 9: 2024+ only; pre-2024 incidents get 0 event matches in lookups
       AND transit_day >= '2024-01-01'
@@ -74,7 +74,7 @@ events_24h_prior AS (
         ai.device_id,
         ai.AE_START_DTM,
         COUNT(dee.DW_DEVICE_EVENT_ID)                                   AS events_24h_prior,
-        -- FIX 3: severity IN ('WARN','CRITICAL') → fault-onset filter
+        -- FIX 3: severity IN ('WARN','CRITICAL') -> fault-onset filter
         -- confirmed: device_event_enriched severity is 100% INFO; WARN=0, CRITICAL=22
         SUM(CASE WHEN dee.is_hardware_oos_event = TRUE AND dee.EVENT_STATE_TYPE_NAME = 'Set'
                  THEN 1 ELSE 0 END)                                     AS oos_onsets_24h,
@@ -91,7 +91,7 @@ events_24h_prior AS (
     FROM all_incidents ai
     LEFT JOIN mars_dev.silver.device_event_enriched dee
         ON dee.DEVICE_ID = ai.device_id
-       -- FIX 2: INTERVAL '24 hours' → INTERVAL 24 HOURS
+       -- FIX 2: INTERVAL '24 hours' -> INTERVAL 24 HOURS
        AND dee.EVENT_DTM >= ai.AE_START_DTM - INTERVAL 24 HOURS
        AND dee.EVENT_DTM <  ai.AE_START_DTM
     GROUP BY ai.availability_event_id, ai.device_id, ai.AE_START_DTM
@@ -100,7 +100,7 @@ critical_7d_prior AS (
     SELECT
         ai.availability_event_id,
         ai.device_id,
-        -- FIX 4: severity = 'CRITICAL' → fault-onset filter (same reason as FIX 3)
+        -- FIX 4: severity = 'CRITICAL' -> fault-onset filter (same reason as FIX 3)
         COUNT(CASE WHEN dee.is_oos_event = TRUE
                     AND dee.EVENT_STATE_TYPE_NAME = 'Set' THEN 1 END)   AS oos_onsets_7d_prior,
         COUNT(dee.DW_DEVICE_EVENT_ID)                                   AS events_7d_prior
@@ -114,8 +114,8 @@ critical_7d_prior AS (
 ),
 hw_best_match AS (
     -- FIX 7: replace fan-out ILIKE join with ranked per-incident CTE
-    -- V04 confirmed: 78.32% blank affected_component → old ILIKE '' matched ALL components
-    -- V03b: avg 1.41 hw components/device, max 7 → fan-out created up to 7 duplicate rows
+    -- V04 confirmed: 78.32% blank affected_component -> old ILIKE '' matched ALL components
+    -- V03b: avg 1.41 hw components/device, max 7 -> fan-out created up to 7 duplicate rows
     -- ROW_NUMBER per availability_event_id: priority = description match, then most-recent
     SELECT
         availability_event_id,
@@ -133,7 +133,7 @@ hw_best_match AS (
             ROW_NUMBER() OVER (
                 PARTITION BY inc.availability_event_id
                 ORDER BY
-                    -- FIX 5: ILIKE → LIKE (Spark SQL). Priority 0 = description match
+                    -- FIX 5: ILIKE -> LIKE (Spark SQL). Priority 0 = description match
                     CASE WHEN TRIM(COALESCE(inc.affected_component, '')) != ''
                               AND UPPER(hwc.COMPONENT_DESCRIPTION) LIKE
                                   CONCAT('%', UPPER(TRIM(inc.affected_component)), '%')
@@ -219,7 +219,7 @@ LEFT JOIN events_24h_prior e24  ON e24.availability_event_id = ai.availability_e
 LEFT JOIN critical_7d_prior c7d ON c7d.availability_event_id = ai.availability_event_id
 LEFT JOIN hw_best_match hw      ON hw.availability_event_id  = ai.availability_event_id;
 
--- FIX 6: CREATE INDEX (x6) removed — not supported on Delta tables
+-- FIX 6: CREATE INDEX (x6) removed -- not supported on Delta tables
 -- Post-build:
 -- OPTIMIZE mars_dev.gold.device_ps3_incident ZORDER BY (device_id, transit_day);
 --

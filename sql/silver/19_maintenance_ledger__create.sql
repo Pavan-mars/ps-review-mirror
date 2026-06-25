@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- silver.maintenance_ledger  (S19)
 -- Unified maintenance and repair history for PS5 RUL and PS1 feature engineering
 --

@@ -1,4 +1,4 @@
-﻿-- =============================================================================
+-- =============================================================================
 -- silver.dim_event_type
 -- Event type dimension - component_subsystem, severity_label,
 -- applies_to_* device flags, and is_oos_event
@@ -358,7 +358,7 @@ SELECT
         WHEN CASE
             WHEN et.EVENT_TYPE_ID = 0                     THEN 'SYSTEM'
             WHEN et.EVENT_TYPE_ID IN (16,17)              THEN 'SYSTEM'
-            WHEN et.EVENT_TYPE_ID IN (45,46,52)           THEN 'CHU'
+            -- removed 2026-06-25: CHU (45,46,52) is coin-handling; invalid for GATE (no coin hardware)
             WHEN et.EVENT_TYPE_ID BETWEEN 100  AND 199    THEN 'SYSTEM'
             WHEN et.EVENT_TYPE_ID BETWEEN 200  AND 299    THEN 'CSC_READER'
             WHEN et.EVENT_TYPE_ID BETWEEN 600  AND 699    THEN 'SYSTEM'

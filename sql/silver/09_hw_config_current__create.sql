@@ -1,37 +1,37 @@
--- =============================================================================
+﻿-- =============================================================================
 -- silver.hw_config_current
--- Hardware component configuration — current snapshot (SCD1 overwrite)
+-- Hardware component configuration - current snapshot (SCD1 overwrite)
 --
 -- Source (mars_dev.bronze catalog):
 --   EDW.DEVICE_CURRENT_HW_CONFIG  (11,736 rows, 17 cols)
 --
 -- Dimension joined:
---   mars_dev.silver.dim_device (S06 — must be created first)
+--   mars_dev.silver.dim_device (S06 - must be created first)
 --
 -- Notes:
 --   - COMPONENT_SERIAL_NBR: NULLIF(TRIM(...), '') cleans blank strings
 --   - REPORTED_CHANGED_DTM = component install/swap date; may be NULL for legacy components
 --   - component_age_days: days from install (or last_reported if install unknown) to today
 --   - Partitioned by city_id for multi-tenant extension (all Chicago rows = 'CHICAGO')
---   - Coverage: 11.7K rows — not all devices have HW config records
+--   - Coverage: 11.7K rows - not all devices have HW config records
 --
--- Validation run 2026-06-15 — bugs fixed from original:
---   BUG 1: edw_chicago.EDW.DEVICE_CURRENT_HW_CONFIG → parquet S3 path
+-- Validation run 2026-06-15 - bugs fixed from original:
+--   BUG 1: edw_chicago.EDW.DEVICE_CURRENT_HW_CONFIG -> parquet S3 path
 --           'edw_chicago' is not a Databricks catalog (only mars_dev exists)
 --   BUG 2: PARTITIONED BY (city_id) ZORDER BY (DEVICE_ID) in CTAS
---           ZORDER BY is not valid in CREATE TABLE — only in OPTIMIZE
+--           ZORDER BY is not valid in CREATE TABLE - only in OPTIMIZE
 --           Fix: removed from CREATE; OPTIMIZE command added at end
---   BUG 3: e.REPORTED_CHANGED_DTM::date → CAST(... AS DATE)
---   BUG 4: e.LAST_REPORTED_DTM::date    → CAST(... AS DATE)
---   BUG 5: e.OPERATOR_ID               → dd.OPERATOR_ID
+--   BUG 3: e.REPORTED_CHANGED_DTM::date -> CAST(... AS DATE)
+--   BUG 4: e.LAST_REPORTED_DTM::date    -> CAST(... AS DATE)
+--   BUG 5: e.OPERATOR_ID               -> dd.OPERATOR_ID
 --           Bronze parquet has only 6 cols (DEVICE_KEY, COMPONENT_DESCRIPTION,
 --           LAST_REPORTED_DTM, REPORTED_CHANGED_DTM, COMPONENT_SERIAL_NBR, DEVICE_ID)
 --           OPERATOR_ID is not ingested; get from dim_device join instead
 --
--- Validation run 2026-06-18 — additional fix:
---   BUG 6: INNER JOIN (driving hw_config) → LEFT JOIN (driving dim_device)
+-- Validation run 2026-06-18 - additional fix:
+--   BUG 6: INNER JOIN (driving hw_config) -> LEFT JOIN (driving dim_device)
 --           Original INNER JOIN silently dropped all dim_device devices that have
---           no HW config record. Devices without components are valid ML subjects —
+--           no HW config record. Devices without components are valid ML subjects -
 --           excluding them from hw_config_current causes downstream PS5 feature
 --           joins to lose those devices entirely. Fix: drive from dim_device with
 --           LEFT JOIN to hw_config so all active devices appear; component columns

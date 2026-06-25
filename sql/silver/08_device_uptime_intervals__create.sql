@@ -1,11 +1,11 @@
--- =============================================================================
+﻿-- =============================================================================
 -- silver.device_uptime_intervals
 -- Device uptime / heartbeat intervals from last-state and end-of-day tables
 --
 -- Sources (bronze UC managed tables in mars_dev.bronze):
---   ncs_stage_device_end_of_day        (2.96M rows, 23 cols)  — daily EOD records per device
---   ncs_stage_device_end_of_day_msg_count (31.4M rows, 16 cols) — daily message counts
---   EDW.DEVICE_LAST_STATE (catalog)     (90,689 rows, 7 cols)  — last heartbeat per device
+--   ncs_stage_device_end_of_day        (2.96M rows, 23 cols)  - daily EOD records per device
+--   ncs_stage_device_end_of_day_msg_count (31.4M rows, 16 cols) - daily message counts
+--   EDW.DEVICE_LAST_STATE (catalog)     (90,689 rows, 7 cols)  - last heartbeat per device
 --
 -- Dimension joined:
 --   mars_dev.silver.dim_device (S06)
@@ -16,31 +16,31 @@
 --   - COMPLETE_FLAG (decimal 0/1): 1 = device completed EOD reporting = operational proxy
 --   - last_state joined on DEVICE_KEY: one row per device (current state only)
 --
--- Validation run 2026-06-15 — bugs fixed from original:
---   BUG 1: bronze.*                  → parquet S3 paths (3 tables)
---   BUG 2: silver.dim_device         → mars_dev.silver.dim_device
---   BUG 3: silver.device_uptime_intervals → mars_dev.silver.device_uptime_intervals
---   BUG 4: EXTRACT(EPOCH FROM (a-b)) → (unix_timestamp(a) - unix_timestamp(b))
---   BUG 5: TO_DATE(x::text,'YYYYMMDD')::date → TO_DATE(CAST(x AS STRING),'yyyyMMdd')
---   BUG 6: ROUND(x::numeric / y * 100, 2) → ROUND(CAST(x AS DOUBLE) / y * 100, 2)
---   BUG 7: CREATE INDEX              → not supported on Delta; use OPTIMIZE/ZORDER
---   BUG 8: eod.DATE_KEY              → eod.TRANSIT_DAY_KEY (confirmed 2026-06-18)
+-- Validation run 2026-06-15 - bugs fixed from original:
+--   BUG 1: bronze.*                  -> parquet S3 paths (3 tables)
+--   BUG 2: silver.dim_device         -> mars_dev.silver.dim_device
+--   BUG 3: silver.device_uptime_intervals -> mars_dev.silver.device_uptime_intervals
+--   BUG 4: EXTRACT(EPOCH FROM (a-b)) -> (unix_timestamp(a) - unix_timestamp(b))
+--   BUG 5: TO_DATE(x::text,'YYYYMMDD')::date -> TO_DATE(CAST(x AS STRING),'yyyyMMdd')
+--   BUG 6: ROUND(x::numeric / y * 100, 2) -> ROUND(CAST(x AS DOUBLE) / y * 100, 2)
+--   BUG 7: CREATE INDEX              -> not supported on Delta; use OPTIMIZE/ZORDER
+--   BUG 8: eod.DATE_KEY              -> eod.TRANSIT_DAY_KEY (confirmed 2026-06-18)
 --
--- Validation run 2026-06-18 — additional fixes after bronze catalog schema probe:
---   BUG A: NCS parquet S3 paths      → UC managed catalog table refs (both NCS tables)
---   BUG B: UPTIME_SECONDS, DOWNTIME_SECONDS, TOTAL_SECONDS → NULL (columns absent in
+-- Validation run 2026-06-18 - additional fixes after bronze catalog schema probe:
+--   BUG A: NCS parquet S3 paths      -> UC managed catalog table refs (both NCS tables)
+--   BUG B: UPTIME_SECONDS, DOWNTIME_SECONDS, TOTAL_SECONDS -> NULL (columns absent in
 --           bronze ncs_stage_device_end_of_day; confirmed 2026-06-18 schema probe)
---           uptime_pct, uptime_hours, downtime_hours all → NULL consequently
---           FACID, OPERATOR_ID, BUS_ID in EOD CTE → removed (absent; come from dim_device)
---   BUG C: mc.MSG_COUNT              → mc.MESSAGE_COUNT (actual column name)
---   BUG D: mc.EVENT_TYPE_ID          → mc.MESSAGE_NAME  (no event type ID in msg table)
+--           uptime_pct, uptime_hours, downtime_hours all -> NULL consequently
+--           FACID, OPERATOR_ID, BUS_ID in EOD CTE -> removed (absent; come from dim_device)
+--   BUG C: mc.MSG_COUNT              -> mc.MESSAGE_COUNT (actual column name)
+--   BUG D: mc.EVENT_TYPE_ID          -> mc.MESSAGE_NAME  (no event type ID in msg table)
 --   Added: COMPLETE_FLAG, eod_count_messages, eod_count_received_messages
 --          (COMPLETE_FLAG = 1 is the primary uptime proxy for this table)
 --
 --   BUG E: Future TRANSIT_DAY_KEY values (up to 2034-03-03) found in bronze
---           → added CURRENT_DATE() guard in end_of_day_daily CTE (2026-06-18)
+--           -> added CURRENT_DATE() guard in end_of_day_daily CTE (2026-06-18)
 --
--- ✓ UNBLOCKED — 2026-06-18: NCS tables confirmed in mars_dev.bronze catalog
+-- ✓ UNBLOCKED - 2026-06-18: NCS tables confirmed in mars_dev.bronze catalog
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.silver.device_uptime_intervals;

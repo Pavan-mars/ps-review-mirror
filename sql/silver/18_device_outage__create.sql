@@ -1,4 +1,4 @@
--- =============================================================================
+﻿-- =============================================================================
 -- silver.device_outage
 -- Out-of-service outage intervals derived from device_event_enriched
 --
@@ -39,7 +39,7 @@ DROP TABLE IF EXISTS mars_dev.silver.device_outage;
 CREATE TABLE mars_dev.silver.device_outage AS
 WITH
 
--- ── OOS events from device_event_enriched (hardware faults only) ─────────────
+-- -- OOS events from device_event_enriched (hardware faults only) -------------
 oos_events AS (
     SELECT
         DW_DEVICE_EVENT_ID,
@@ -78,7 +78,7 @@ oos_events AS (
     WHERE is_hardware_oos_event = TRUE
 ),
 
--- ── Resolve outage end via CLEAR_DTM or next OOS event ───────────────────────
+-- -- Resolve outage end via CLEAR_DTM or next OOS event -----------------------
 with_end AS (
     SELECT
         oo.*,
@@ -92,7 +92,7 @@ with_end AS (
     FROM oos_events oo
 ),
 
--- ── Chargeable flag from incident_root_cause (Michael R2-1) ──────────────────
+-- -- Chargeable flag from incident_root_cause (Michael R2-1) ------------------
 -- MAX(AE_FAILURE_LEVEL) per device+day resolves M:1 when device has multiple
 -- availability events on the same day.
 -- failure_level > 0 = real hardware failure chargeable to SLA
@@ -106,7 +106,7 @@ fail_lvl AS (
     GROUP BY device_id, transit_day
 )
 
--- ── Final output ──────────────────────────────────────────────────────────────
+-- -- Final output --------------------------------------------------------------
 SELECT
     we.DW_DEVICE_EVENT_ID                       AS source_event_id,
     we.DEVICE_KEY,

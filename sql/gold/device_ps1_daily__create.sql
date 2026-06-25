@@ -14,6 +14,7 @@
 --   S12  mars_dev.silver.kpi_daily             (10% coverage — pre-aggregated to 1 row/device/day)
 --   S13  mars_dev.silver.tap_event_daily        (27% coverage — VALIDATOR+GATE only; TVM=0)
 --   S14  mars_dev.silver.tvm_sale_daily         (3% coverage — TVM only)
+--   S21  mars_dev.silver.use_revenue_daily      (100% coverage — all device types; FARE_DUE in cents)
 --
 -- Fixes applied 2026-06-19 (pre-validation run):
 --   FIX 1: READER excluded from mars_device_category filter (0 events confirmed)
@@ -38,13 +39,14 @@
 --   FIX 9: All silver./gold. prefixes → mars_dev.silver. / mars_dev.gold.
 --   FIX 10: CREATE INDEX removed (not supported on Delta) → OPTIMIZE/ZORDER after build
 --
--- Device scope (updated 2026-06-24):
---   TVM:       4,512 current devices — BTP/AVM/EVM/TVM (RTL/POS moved to OTHER 2026-06-24)
---   GATE:      2,342 current devices — RVG/SAG/HBG/TT_/TTC/TWA/TEX
---   VALIDATOR: 6,734 current devices — BMV/FBX/BTP PortableFarebox
+-- Device scope (updated 2026-06-25, Michael R3 — universe CLOSED):
+--   TVM:       ~4,512 current devices — AVM/EVM/TVM (BTP removed R3; RTL/POS removed R2)
+--   GATE:      ~2,342 current devices — RVG/SAG/HBG ONLY (TT_/TTC/TWA/TEX removed R2)
+--   VALIDATOR: ~2,000 current devices — BMV bus only (FBX removed R3; BTP removed R3)
 --   NOTE: READER removed 2026-06-23 — reader is a component, not a standalone device
---   NOTE: RTL+POS moved to OTHER 2026-06-24 per Michael R2-6 (no availability/WO records)
---   Total spine: ~13,588 TVM+GATE+VALIDATOR
+--   NOTE: FBX (4,651) dropped R3 — out of Ventra scope; BTP (3,486) dropped R3 — legacy
+--   NOTE: TT_/TTC/TWA/TEX dropped R2 — legacy turnstiles; RTL/POS dropped R2
+--   Total spine: ~9,270 TVM+GATE+VALIDATOR (device universe closed)
 --
 -- Michael R2 additions (2026-06-24):
 --   R2-1: is_chargeable + failure_level from S18 device_outage (failure_level > 0 = real hardware fault)
@@ -181,6 +183,37 @@ tvm_sales AS (
         END AS sales_decline_flag
     FROM mars_dev.silver.tvm_sale_daily tsd
 ),
+-- S21: USE_TRANSACTION revenue — all device types (TVM + GATE + VALIDATOR)
+-- Covers where tvm_sale_daily (3%) and tap_event_daily (27%) have gaps
+-- REVENUE_OR_TEST = 'REVENUE' filter already applied in S21 DDL; no re-filter needed here
+use_revenue AS (
+    SELECT
+        ur.DEVICE_ID,
+        ur.transit_day,
+        CAST(ur.daily_txn_count        AS BIGINT)   AS use_txn_count,
+        CAST(ur.priced_txn_count       AS BIGINT)   AS use_priced_txn_count,
+        ur.daily_fare_due_cents                      AS use_revenue_cents,
+        ur.daily_net_revenue_cents                   AS use_net_revenue_cents,
+        ur.revenue_active_hours                      AS use_revenue_active_hours,
+        -- 7-day rolling average (same window pattern as tvm_sales.sales_7d_avg)
+        AVG(ur.daily_fare_due_cents) OVER (
+            PARTITION BY ur.DEVICE_ID ORDER BY ur.transit_day
+            ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+        )                                            AS use_revenue_7d_avg,
+        -- Decline flag: today < 50% of prior 7d avg (same threshold as sales_decline_flag)
+        CASE
+            WHEN AVG(ur.daily_fare_due_cents) OVER (
+                PARTITION BY ur.DEVICE_ID ORDER BY ur.transit_day
+                ROWS BETWEEN 6 PRECEDING AND 1 PRECEDING
+            ) > 0
+            AND ur.daily_fare_due_cents < 0.5 * AVG(ur.daily_fare_due_cents) OVER (
+                PARTITION BY ur.DEVICE_ID ORDER BY ur.transit_day
+                ROWS BETWEEN 6 PRECEDING AND 1 PRECEDING
+            )
+            THEN TRUE ELSE FALSE
+        END                                          AS use_revenue_decline_flag
+    FROM mars_dev.silver.use_revenue_daily ur
+),
 -- FIX 8: will_fail_7d — explode-backward label; equi-join (faster than EXISTS/range join)
 -- duration_min > 0 replaces severity IN ('CRITICAL','WARN') which produced only 17 positives
 outage_label_days AS (
@@ -280,6 +313,15 @@ SELECT
     COALESCE(ts.sales_active_hours, 0)     AS sales_active_hours,
     COALESCE(ts.sales_7d_avg, 0)           AS sales_7d_avg,
     COALESCE(ts.sales_decline_flag, FALSE) AS sales_decline_flag,
+    -- USE_TRANSACTION revenue features (S21 — all device types; 100% coverage)
+    -- Complement to tvm_sale_daily (TVM-only sales) — USE_TRANSACTION = actual fare revenue
+    COALESCE(ur.use_txn_count, 0)                AS use_txn_count,
+    COALESCE(ur.use_priced_txn_count, 0)         AS use_priced_txn_count,
+    COALESCE(ur.use_revenue_cents, 0)            AS use_revenue_cents,
+    COALESCE(ur.use_net_revenue_cents, 0)        AS use_net_revenue_cents,
+    COALESCE(ur.use_revenue_active_hours, 0)     AS use_revenue_active_hours,
+    COALESCE(ur.use_revenue_7d_avg, 0)           AS use_revenue_7d_avg,
+    COALESCE(ur.use_revenue_decline_flag, FALSE) AS use_revenue_decline_flag,
     -- TARGET: 1 if device has a real outage within next 7 days
     -- V08 pre-validation confirmed: severity=CRITICAL/WARN = 17 positives (broken)
     --                               duration_min > 0     = 3.66M label pairs (correct)
@@ -300,6 +342,7 @@ LEFT JOIN (
 LEFT JOIN kpi_device_daily kp          ON kp.DEVICE_ID   = sp.DEVICE_ID AND kp.transit_day   = sp.transit_day
 LEFT JOIN mars_dev.silver.metric_daily md  ON md.DEVICE_ID  = sp.DEVICE_ID AND md.transit_day = sp.transit_day
 LEFT JOIN tvm_sales ts                 ON ts.DEVICE_ID   = sp.DEVICE_ID AND ts.transit_day   = sp.transit_day
+LEFT JOIN use_revenue ur               ON ur.DEVICE_ID   = sp.DEVICE_ID AND ur.transit_day   = sp.transit_day
 LEFT JOIN outage_label_days old        ON old.DEVICE_ID  = sp.DEVICE_ID AND old.label_day    = sp.transit_day;
 
 -- Post-build:
@@ -315,6 +358,9 @@ LEFT JOIN outage_label_days old        ON old.DEVICE_ID  = sp.DEVICE_ID AND old.
 --     ROUND(SUM(will_fail_7d) * 100.0 / COUNT(*), 2)                 AS positive_rate_pct,
 --     ROUND(SUM(CASE WHEN metric_txn_count > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS metric_coverage_pct,
 --     ROUND(SUM(CASE WHEN avg_kpi_value IS NOT NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS kpi_coverage_pct,
---     ROUND(SUM(CASE WHEN tap_count > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS tap_coverage_pct
+--     ROUND(SUM(CASE WHEN tap_count > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS tap_coverage_pct,
+--     ROUND(SUM(CASE WHEN use_txn_count > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS use_revenue_coverage_pct,
+--     SUM(CASE WHEN use_revenue_decline_flag THEN 1 ELSE 0 END) AS use_revenue_decline_days
 -- FROM mars_dev.gold.device_ps1_daily;
--- Expected: positive_rate_pct 20-60%, metric_coverage ≈ 26%, kpi_coverage ≈ 10%, tap_coverage ≈ 27%
+-- Expected: positive_rate_pct 20-60%, metric_coverage ≈ 26%, kpi_coverage ≈ 10%,
+--           tap_coverage ≈ 27%, use_revenue_coverage_pct ≈ 100% (all device types)

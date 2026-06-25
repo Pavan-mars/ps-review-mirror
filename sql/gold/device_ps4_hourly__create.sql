@@ -13,6 +13,7 @@
 --   S16  mars_dev.silver.device_event_enriched  (has hour_bucket column, S16:L159)
 --   S13  mars_dev.silver.tap_event_daily
 --   S05  mars_dev.silver.metric_hourly  (METRIC_ID=401 hourly tap timing — was direct S3 parquet, fixed 2026-06-22)
+--   S21  mars_dev.silver.use_revenue_daily  (daily revenue broadcast to all hours; FARE_DUE in cents)
 -- bus_realtime_daily JOIN REMOVED (CTA_REAL_TIME_BUS_DATA dropped 2026-06-12)
 --
 -- Anomaly signals (3 → ensemble):
@@ -140,6 +141,24 @@ metric_baseline AS (
             ROWS BETWEEN 28 * 24 PRECEDING AND 1 PRECEDING
         ) AS baseline_stddev_metric401
     FROM metric_hourly
+),
+-- S21: daily revenue context — broadcast to all hours of the day (daily grain, not hourly)
+-- Not added to the 3-signal ensemble; used as anomaly context / revenue-zero flag
+daily_revenue AS (
+    SELECT
+        ur.DEVICE_ID,
+        ur.transit_day,
+        CAST(ur.daily_txn_count       AS BIGINT)  AS use_txn_count_daily,
+        ur.daily_fare_due_cents                    AS use_revenue_cents_daily,
+        ur.daily_net_revenue_cents                 AS use_net_revenue_cents_daily,
+        ur.revenue_active_hours                    AS use_revenue_active_hours,
+        -- Zero-revenue flag: device had transactions but zero fare collected (sensor for anomaly)
+        CASE
+            WHEN ur.daily_txn_count > 0
+             AND ur.daily_fare_due_cents = 0
+            THEN 1 ELSE 0
+        END                                        AS use_revenue_zero_flag
+    FROM mars_dev.silver.use_revenue_daily ur
 )
 SELECT
     he.DEVICE_ID,
@@ -210,6 +229,13 @@ SELECT
              THEN 1 ELSE 0 END
       + CASE WHEN COALESCE(tap.tap_reject_rate_pct, 0) > 5.0 THEN 1 ELSE 0 END
     ) >= 2 THEN 1 ELSE 0 END                                           AS ensemble_anomaly_flag,
+    -- USE_TRANSACTION daily revenue context (S21 — broadcast to all hours of transit_day)
+    -- daily grain; same value across all hourly rows for a given device-day
+    COALESCE(dr.use_txn_count_daily, 0)           AS use_txn_count_daily,
+    COALESCE(dr.use_revenue_cents_daily, 0)       AS use_revenue_cents_daily,
+    COALESCE(dr.use_net_revenue_cents_daily, 0)   AS use_net_revenue_cents_daily,
+    COALESCE(dr.use_revenue_active_hours, 0)      AS use_revenue_active_hours,
+    COALESCE(dr.use_revenue_zero_flag, 0)         AS use_revenue_zero_flag,
     -- Device context
     dd.DEVICE_NAME,
     dd.FACILITY_ID,
@@ -234,6 +260,8 @@ LEFT JOIN (
     FROM mars_dev.silver.tap_event_daily
     WHERE transit_day <= CURRENT_DATE()
 ) tap ON tap.DEVICE_ID = he.DEVICE_ID AND tap.transit_day = he.transit_day
+LEFT JOIN daily_revenue dr
+    ON dr.DEVICE_ID   = he.DEVICE_ID AND dr.transit_day = he.transit_day
 LEFT JOIN mars_dev.silver.dim_device dd
     ON dd.DEVICE_ID = he.DEVICE_ID AND dd.is_current = TRUE;
 
@@ -253,8 +281,11 @@ LEFT JOIN mars_dev.silver.dim_device dd
 --     SUM(reject_rate_anomaly)                              AS signal3_count,
 --     SUM(ensemble_anomaly_flag)                            AS ensemble_count,
 --     ROUND(AVG(event_count_hour), 2)                       AS avg_events_per_hour,
---     SUM(CASE WHEN metric_401_avg_ms_hour > 0 THEN 1 END) AS hours_with_metric401
+--     SUM(CASE WHEN metric_401_avg_ms_hour > 0 THEN 1 END) AS hours_with_metric401,
+--     SUM(CASE WHEN use_revenue_cents_daily > 0 THEN 1 END) AS hours_with_revenue,
+--     SUM(use_revenue_zero_flag)                            AS zero_revenue_anomaly_hours
 -- FROM mars_dev.gold.device_ps4_hourly
 -- GROUP BY mars_device_category;
 -- Note: metric_401 matches only ~2,784 DEVICE_KEYs (41.4% dim_device match rate from S10)
 -- Note: tap features match only bus-capable devices (VALIDATOR + some TVM)
+-- Note: use_revenue_cents_daily expected ~100% coverage across all device types (S21)

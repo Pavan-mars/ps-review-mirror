@@ -1,13 +1,13 @@
--- =============================================================================
+﻿-- =============================================================================
 -- silver.maintenance_ledger  (S19)
 -- Unified maintenance and repair history for PS5 RUL and PS1 feature engineering
 --
--- Source A — Repair episodes (corrective maintenance):
+-- Source A - Repair episodes (corrective maintenance):
 --   mars_dev.bronze.edw_availability_events  (645K rows, 24 cols)
---   Each row = a device OOS→restore episode curated from ServiceNow
+--   Each row = a device OOS->restore episode curated from ServiceNow
 --   = the primary "failure+repair" event log for PS5 label and time-between-failures
 --
--- Source B — Maintenance-mode + tech-login events (maintenance visits):
+-- Source B - Maintenance-mode + tech-login events (maintenance visits):
 --   mars_dev.silver.device_event_enriched  (S16)
 --   Filtered to is_commanded_oos_event = TRUE:
 --     106 = Employee Logon    (tech login to device)
@@ -29,26 +29,26 @@
 --
 -- Grain: one row per maintenance or repair event
 -- Produced columns:
---   ledger_type      — REPAIR_EPISODE | TECH_LOGIN | MAINTENANCE_MODE | COMMANDED_OOS
---   event_dtm        — start of the event / repair episode
---   event_end_dtm    — end (CLEAR_DTM for device events, END_DTM for availability episodes)
---   duration_min     — event duration in minutes (NULL if end unknown)
---   failure_level    — 0-3 from availability_events; NULL for device-event rows
---   component_subsystem — from device_event_enriched; NULL for availability-event rows
+--   ledger_type      - REPAIR_EPISODE | TECH_LOGIN | MAINTENANCE_MODE | COMMANDED_OOS
+--   event_dtm        - start of the event / repair episode
+--   event_end_dtm    - end (CLEAR_DTM for device events, END_DTM for availability episodes)
+--   duration_min     - event duration in minutes (NULL if end unknown)
+--   failure_level    - 0-3 from availability_events; NULL for device-event rows
+--   component_subsystem - from device_event_enriched; NULL for availability-event rows
 --
 -- Consumed by:
 --   PS5 RUL: time-between-failures, repair frequency, time-since-last-repair features
 --   PS1:     maintenance_visit_count rolling window, days_since_last_maintenance
 --
--- Build order: S06 → S07 → S16 → S19
+-- Build order: S06 -> S07 -> S16 -> S19
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.silver.maintenance_ledger;
 
 CREATE TABLE mars_dev.silver.maintenance_ledger AS
 
--- ── SOURCE A: Repair episodes from EDW.AVAILABILITY_EVENTS ───────────────────
--- Each row = a completed OOS→restore episode (failure + corrective repair)
+-- -- SOURCE A: Repair episodes from EDW.AVAILABILITY_EVENTS -------------------
+-- Each row = a completed OOS->restore episode (failure + corrective repair)
 -- This is the primary failure history for PS5 RUL label and time-between-failures
 SELECT
     ae.DEVICE_ID,
@@ -58,7 +58,7 @@ SELECT
     dd.FACILITY_NAME,
     dd.OPERATOR_ID,
     dd.OPERATOR_NAME,
-    -- Fix (2026-06-23): removed redundant outer TO_DATE(<DATE>, 'yyyy-MM-dd') wrapper —
+    -- Fix (2026-06-23): removed redundant outer TO_DATE(<DATE>, 'yyyy-MM-dd') wrapper -
     -- TO_DATE with a format string expects a STRING and returns NULL on a DATE input.
     -- The CASE already yields a DATE.
     CASE
@@ -94,10 +94,10 @@ LEFT JOIN mars_dev.silver.dim_device dd
 
 UNION ALL
 
--- ── SOURCE B: Maintenance-mode + tech-login events from DEVICE_EVENT ─────────
+-- -- SOURCE B: Maintenance-mode + tech-login events from DEVICE_EVENT ---------
 -- is_commanded_oos_event = TRUE: codes 106/110/151/208/519 (confirmed 2026-06-23)
--- These are maintenance visits and tech logins — NOT hardware failures
--- duration_min = time spent in maintenance mode (event → clear)
+-- These are maintenance visits and tech logins - NOT hardware failures
+-- duration_min = time spent in maintenance mode (event -> clear)
 SELECT
     dee.DEVICE_ID,
     dee.DEVICE_KEY,

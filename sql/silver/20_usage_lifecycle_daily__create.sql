@@ -1,28 +1,28 @@
--- =============================================================================
+﻿-- =============================================================================
 -- silver.usage_lifecycle_daily  (S20)
--- Cumulative device lifecycle and wear features — daily grain
+-- Cumulative device lifecycle and wear features - daily grain
 -- Primary input for PS5 (Remaining Useful Life) wear and age features
 --
--- Sources (all silver — must be built first):
---   mars_dev.silver.metric_daily          (S10) — daily tap counts (usage proxy)
---   mars_dev.silver.device_outage         (S18) — daily failure/outage summary
---   mars_dev.silver.maintenance_ledger    (S19) — daily maintenance visit summary
---   mars_dev.silver.dim_device            (S06) — device age reference
+-- Sources (all silver - must be built first):
+--   mars_dev.silver.metric_daily          (S10) - daily tap counts (usage proxy)
+--   mars_dev.silver.device_outage         (S18) - daily failure/outage summary
+--   mars_dev.silver.maintenance_ledger    (S19) - daily maintenance visit summary
+--   mars_dev.silver.dim_device            (S06) - device age reference
 --
--- Build order: S06 → S07 → S16 → S18 → S10 → S19 → S20
+-- Build order: S06 -> S07 -> S16 -> S18 -> S10 -> S19 -> S20
 --
 -- Why these columns?
---   PS5 RUL needs "how worn is this device today" — the key inputs are:
+--   PS5 RUL needs "how worn is this device today" - the key inputs are:
 --     - cumulative_tap_count:      total lifecycle usage (wear proxy)
 --     - days_in_service:           device age in operational days
 --     - days_since_last_failure:   recency of last repair episode
 --     - cumulative_failure_count:  lifetime failure frequency
 --     - cumulative_maintenance_visits: preventive maintenance record
 --     - cumulative_outage_min:     total downtime to date
---   These are right-censored survival features — they describe each device's
+--   These are right-censored survival features - they describe each device's
 --   state on each day, feeding the Weibull / CoxPH / DeepSurv models.
 --
--- Grain: (DEVICE_KEY, transit_day) — one row per device per operational day
+-- Grain: (DEVICE_KEY, transit_day) - one row per device per operational day
 --   Only days with metric_daily records are included (VALIDATOR + GATE devices only,
 --   ~2,794 distinct DEVICE_KEYs). Devices with no metric data have no rows here.
 --   If all devices are needed, drive from dim_device and LEFT JOIN metric_daily.
@@ -38,7 +38,7 @@ DROP TABLE IF EXISTS mars_dev.silver.usage_lifecycle_daily;
 CREATE TABLE mars_dev.silver.usage_lifecycle_daily AS
 WITH
 
--- ── Daily outage summary per device (hardware failures only via S18) ──────────
+-- -- Daily outage summary per device (hardware failures only via S18) ----------
 daily_outage AS (
     SELECT
         do.DEVICE_ID,
@@ -49,7 +49,7 @@ daily_outage AS (
     GROUP BY do.DEVICE_ID, do.transit_day
 ),
 
--- ── Daily maintenance visit count per device (S19) ───────────────────────────
+-- -- Daily maintenance visit count per device (S19) ---------------------------
 -- Counts each ledger_type separately and combined
 daily_maint AS (
     SELECT
@@ -66,7 +66,7 @@ daily_maint AS (
     GROUP BY ml.DEVICE_ID, ml.ledger_date
 ),
 
--- ── Base: metric_daily gives the set of (device, day) with usage data ─────────
+-- -- Base: metric_daily gives the set of (device, day) with usage data ---------
 -- Driving from metric_daily means only VALIDATOR + GATE devices are included
 base AS (
     SELECT
@@ -94,7 +94,7 @@ base AS (
        AND dm.transit_day = md.transit_day
 )
 
--- ── Final: compute cumulative lifecycle features via window functions ──────────
+-- -- Final: compute cumulative lifecycle features via window functions ----------
 SELECT
     b.DEVICE_KEY,
     b.DEVICE_ID,
@@ -105,7 +105,7 @@ SELECT
     b.OPERATOR_ID,
     b.OPERATOR_NAME,
 
-    -- ── Daily snapshot ────────────────────────────────────────────────────────
+    -- -- Daily snapshot --------------------------------------------------------
     b.m401_daily_txn_count,
     b.daily_failure_count,
     b.daily_outage_min,
@@ -114,14 +114,14 @@ SELECT
     b.daily_maint_mode_events,
     b.daily_maint_duration_min,
 
-    -- ── Cumulative lifecycle counters (key PS5 features) ─────────────────────
+    -- -- Cumulative lifecycle counters (key PS5 features) ---------------------
     -- days_in_service: sequential operational day number for this device
     ROW_NUMBER() OVER (
         PARTITION BY b.DEVICE_KEY
         ORDER BY b.transit_day
     )                                                           AS days_in_service,
 
-    -- cumulative_tap_count: lifetime usage — primary wear proxy for PS5
+    -- cumulative_tap_count: lifetime usage - primary wear proxy for PS5
     SUM(b.m401_daily_txn_count) OVER (
         PARTITION BY b.DEVICE_KEY
         ORDER BY b.transit_day
@@ -149,15 +149,14 @@ SELECT
         ROWS UNBOUNDED PRECEDING
     )                                                           AS cumulative_maint_events,
 
-    -- ── Recency features (PS5 survival model inputs) ──────────────────────────
+    -- -- Recency features (PS5 survival model inputs) --------------------------
     -- days_since_last_failure: 0 on a failure day; NULL before first failure
-    -- Computed as: transit_day − last day with daily_failure_count > 0
+    -- Computed as: transit_day - last day with daily_failure_count > 0
     DATEDIFF(
         b.transit_day,
         LAST_VALUE(
             CASE WHEN b.daily_failure_count > 0 THEN b.transit_day END
-            IGNORE NULLS
-        ) OVER (
+        ) IGNORE NULLS OVER (
             PARTITION BY b.DEVICE_KEY
             ORDER BY b.transit_day
             ROWS UNBOUNDED PRECEDING
@@ -169,15 +168,14 @@ SELECT
         b.transit_day,
         LAST_VALUE(
             CASE WHEN b.daily_maint_events > 0 THEN b.transit_day END
-            IGNORE NULLS
-        ) OVER (
+        ) IGNORE NULLS OVER (
             PARTITION BY b.DEVICE_KEY
             ORDER BY b.transit_day
             ROWS UNBOUNDED PRECEDING
         )
     )                                                           AS days_since_last_maintenance,
 
-    -- ── Rolling 30-day windows (PS1 + PS5 feature set) ───────────────────────
+    -- -- Rolling 30-day windows (PS1 + PS5 feature set) -----------------------
     SUM(b.daily_failure_count) OVER (
         PARTITION BY b.DEVICE_KEY
         ORDER BY b.transit_day

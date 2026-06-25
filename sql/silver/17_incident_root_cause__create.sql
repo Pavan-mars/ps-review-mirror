@@ -1,4 +1,4 @@
--- =============================================================================
+﻿-- =============================================================================
 -- silver.incident_root_cause
 -- Incident / root-cause records for root-cause analysis (PS3)
 --
@@ -103,7 +103,7 @@ jb_base AS (
     FROM mars_dev.bronze.cta_servicenow_data_from_jumpbox jb
 ),
 
--- ── S15 enrichment: first incident per device+day (prevent fan-out) ───────────
+-- -- S15 enrichment: first incident per device+day (prevent fan-out) -----------
 -- Join key: wm_asset (SAG00901) = AE_DEVICE_ID, DATE(opened_dtm) = transit_day
 -- Provides: category (Corrective/Planned Maintenance), maintenance_type, priority
 s17_first AS (

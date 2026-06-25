@@ -1,4 +1,4 @@
--- =============================================================================
+﻿-- =============================================================================
 -- S03: silver.dim_event_matrix
 -- S-code: S03  |  Build file: 21  |  Status: READY (hardcoded from Michael's file)
 --
@@ -32,11 +32,11 @@
 --
 -- CONFIRMED DECISIONS (2026-06-24):
 --   D52  Event 151 = 'Maintenance Mode' is the correct code for scheduled maintenance.
---        is_commanded_oos=TRUE, event_priority=4 (Info-level — not a hardware fault).
---        S19 maintenance_ledger maps code 151 → ledger_type='MAINTENANCE_MODE' (confirmed).
---        Codes 145–150: NOT in source matrix (gap between 144=Battery Disconnected and
---        151=Maintenance Mode). If codes 145–150 appear in Oracle DEVICE_EVENT they will
---        fall through all joins as unclassified — raise with Michael if count > 0.
+--        is_commanded_oos=TRUE, event_priority=4 (Info-level - not a hardware fault).
+--        S19 maintenance_ledger maps code 151 -> ledger_type='MAINTENANCE_MODE' (confirmed).
+--        Codes 145-150: NOT in source matrix (gap between 144=Battery Disconnected and
+--        151=Maintenance Mode). If codes 145-150 appear in Oracle DEVICE_EVENT they will
+--        fall through all joins as unclassified - raise with Michael if count > 0.
 --   D52a Event 148 specifically: NOT in matrix; status unknown. Query to verify:
 --        SELECT COUNT(*) FROM EDW.DEVICE_EVENT WHERE EVENT_TYPE_ID = 148 AND TRANSIT_DAY_KEY >= 20240101;
 --
@@ -78,7 +78,7 @@ FROM (
     --           is_commanded_oos,
     --           oos_gate_kpi, oos_bus_kpi, oos_fmvd_kpi, oos_central_kpi)
     --
-    -- ── SYSTEM range (100-199) ────────────────────────────────────────────────
+    -- -- SYSTEM range (100-199) ------------------------------------------------
     (101,  'Power Fail',                                        true,  true,  true,  true,  false, true,  2,    false, false, false, false, false),
     (104,  'Power Reset',                                       true,  true,  false, false, true,  false, 2,    false, true,  true,  true,  true),
     (105,  'System Time Sync Adjustment',                       true,  true,  true,  false, true,  true,  3,    false, true,  true,  true,  false),
@@ -127,7 +127,7 @@ FROM (
     (171,  'Invalid Device ID',                                 true,  false, false, true,  false, true,  1,    false, true,  false, false, false),
     (172,  'Orphan Mode Timeout',                               true,  true,  false, true,  false, true,  1,    false, true,  true,  false, false),
     --
-    -- ── CSC_READER range (200-299) ────────────────────────────────────────────
+    -- -- CSC_READER range (200-299) --------------------------------------------
     (201,  'CSC Target Fault',                                  true,  true,  false, true,  true,  true,  2,    false, true,  true,  false, false),
     (202,  'SCT UTT Comms Error',                               false, false, true,  false, false, true,  2,    false, false, false, false, false),
     (203,  'Magazine Almost Empty',                             false, false, true,  false, false, true,  2,    false, null,  null,  null,  null),
@@ -153,7 +153,7 @@ FROM (
     (231,  'SCRST Roll 2 Feed Error',                           false, false, true,  false, false, true,  2,    false, null,  null,  null,  null),
     (237,  'Bad Sam',                                           false, true,  false, true,  false, true,  1,    false, null,  null,  null,  null),
     --
-    -- ── SCRST range (300-399) ─────────────────────────────────────────────────
+    -- -- SCRST range (300-399) -------------------------------------------------
     (303,  'Roll Stock Low',                                    false, false, true,  false, false, true,  2,    false, null,  null,  null,  null),
     (304,  'Roll Stock Empty',                                  false, false, true,  false, false, true,  2,    false, null,  null,  null,  null),
     (305,  'Jam In Transport',                                  false, false, true,  false, false, true,  1,    false, false, false, false, false),
@@ -171,7 +171,7 @@ FROM (
     (324,  'SCRST Max Errors on Issue',                         false, false, true,  false, false, false, 4,    false, null,  null,  null,  null),
     (331,  'SCRST Max Verify Failure',                          false, false, true,  false, false, false, 4,    false, null,  null,  null,  null),
     --
-    -- ── BHU range (400-499) ───────────────────────────────────────────────────
+    -- -- BHU range (400-499) ---------------------------------------------------
     (401,  'Bill Jam',                                          false, false, true,  false, false, true,  2,    false, null,  null,  null,  null),
     (402,  'BHU Error',                                         false, false, true,  false, false, true,  2,    false, null,  null,  null,  null),
     (403,  'Comms Error (BHU)',                                 false, false, true,  false, false, true,  2,    false, null,  null,  null,  null),
@@ -182,7 +182,7 @@ FROM (
     (410,  'No Bills Accepted',                                 false, false, true,  false, false, true,  2,    false, false, false, true,  false),
     (411,  'Bill Retracted',                                    false, false, true,  false, false, false, 3,    false, null,  null,  null,  null),
     --
-    -- ── CHU range (500-599) ───────────────────────────────────────────────────
+    -- -- CHU range (500-599) ---------------------------------------------------
     (504,  'Jam in Tubes (CHU)',                                false, false, true,  false, false, true,  2,    false, null,  null,  null,  null),
     (505,  'Coin Tube Low',                                     false, false, true,  false, false, true,  3,    false, null,  null,  null,  null),
     (506,  'Coin Tube Empty',                                   false, false, true,  false, false, true,  2,    false, null,  null,  null,  null),
@@ -207,7 +207,7 @@ FROM (
     (542,  'Unauthorized Access',                               false, false, true,  false, false, false, 3,    false, null,  null,  null,  null),
     (543,  'Jam in Coin Chute',                                 false, false, true,  false, false, true,  2,    false, null,  null,  null,  null),
     --
-    -- ── SYSTEM range (600-699) ────────────────────────────────────────────────
+    -- -- SYSTEM range (600-699) ------------------------------------------------
     (601,  'UPS Battery Low',                                   false, false, true,  false, false, false, 3,    false, null,  null,  null,  null),
     (602,  'Disk Almost Full',                                  false, false, true,  false, false, false, 3,    false, null,  null,  null,  null),
     (603,  'Disk Full',                                         false, false, true,  true,  false, true,  2,    false, true,  true,  true,  false),
@@ -216,30 +216,30 @@ FROM (
     (608,  'Agency Mismatch',                                   false, true,  false, false, false, true,  2,    false, null,  null,  null,  null),
     (611,  'Configuration File Error',                          false, true,  false, true,  false, true,  1,    false, null,  true,  null,  null),
     --
-    -- ── SYSTEM range (700-799) ────────────────────────────────────────────────
+    -- -- SYSTEM range (700-799) ------------------------------------------------
     (701,  'Softkey Stuck',                                     false, false, true,  false, false, true,  3,    false, false, false, true,  false),
     --
-    -- ── PIN_PAD range (800-899) ───────────────────────────────────────────────
+    -- -- PIN_PAD range (800-899) -----------------------------------------------
     (801,  'PIN Entry Error',                                   false, false, true,  false, false, false, 3,    false, null,  null,  null,  null),
     (802,  'PIN Comms Error',                                   false, false, true,  false, false, true,  2,    false, false, false, true,  false),
     --
-    -- ── PRINTER range (900-1099) ──────────────────────────────────────────────
+    -- -- PRINTER range (900-1099) ----------------------------------------------
     (901,  'Paper Low',                                         false, false, true,  false, false, false, 2,    false, null,  null,  true,  null),
     (902,  'Paper Out',                                         false, false, true,  false, false, false, 2,    false, null,  null,  true,  null),
     (903,  'Paper Jam',                                         false, false, true,  false, false, false, 2,    false, null,  null,  true,  null),
     (904,  'Receipt Printer Comms Error',                       false, false, true,  false, false, false, 2,    false, null,  null,  true,  null),
     (910,  'Receipt Printer OOS',                               false, false, true,  false, false, true,  2,    false, false, false, true,  false),
     --
-    -- ── GATE_MECH range (1200-1299) ───────────────────────────────────────────
+    -- -- GATE_MECH range (1200-1299) -------------------------------------------
     (1203, 'Barrier Comms Error',                               true,  false, false, true,  false, true,  1,    false, false, false, false, false),
     (1227, 'Banked Ride Timeout',                               true,  false, false, false, true,  false, 4,    false, null,  null,  null,  null),
     -- Code 1228: OOS_Gate_KPI="Y?" in source -- stored TRUE with uncertainty noted
     (1228, '68k is OOS',                                        true,  false, false, true,  false, true,  1,    false, true,  null,  null,  null),
     --
-    -- ── SYSTEM range (1300-1399) ──────────────────────────────────────────────
+    -- -- SYSTEM range (1300-1399) ----------------------------------------------
     (1301, 'Maintenance Handler Comms Error',                   true,  false, false, false, false, false, 4,    false, null,  null,  null,  null),
     --
-    -- ── ALARM range (1400-1499) ───────────────────────────────────────────────
+    -- -- ALARM range (1400-1499) -----------------------------------------------
     -- Code 1401 duplicate in source (priority 1 vs 2): priority=1 row retained
     (1401, 'Comms Error (Alarm Panel)',                         false, false, true,  true,  false, true,  1,    false, false, false, false, false),
     (1402, 'Vibration Sensor Alarm Triggered',                  false, false, true,  true,  false, true,  1,    false, false, false, false, false),
@@ -250,17 +250,17 @@ FROM (
     (1408, 'Intrusion Alarm',                                   false, false, true,  true,  false, true,  1,    false, false, false, false, false),
     (1409, 'Manipulation on Alarm',                             false, false, true,  true,  false, true,  1,    false, false, false, false, false),
     --
-    -- ── BANKCARD range (1600-1699) ────────────────────────────────────────────
+    -- -- BANKCARD range (1600-1699) --------------------------------------------
     (1601, 'Comms Error (Payment Terminal)',                     false, false, true,  false, false, true,  3,    false, false, false, true,  false),
     (1602, 'No Db/Cr Accepted',                                 false, false, true,  false, false, true,  2,    false, false, false, false, true),
     (1603, 'No Credit Cards by Command',                        false, false, true,  false, false, true,  2,    true,  null,  null,  null,  null),
     (1604, 'No Debit Cards by Command',                         false, false, true,  false, false, true,  2,    true,  null,  null,  null,  null),
     (1605, 'Bank Comms Error',                                  false, false, true,  false, false, true,  2,    false, false, false, false, true),
     --
-    -- ── FAREBOX range (2000-2099) — Code 2004 anomaly: appears in 2200 section ─
+    -- -- FAREBOX range (2000-2099) - Code 2004 anomaly: appears in 2200 section -
     (2004, 'Database Copy Timed Out',                           true,  true,  false, false, false, false, null, false, null,  null,  null,  null),
     --
-    -- ── DOPP range (2200-2299) ────────────────────────────────────────────────
+    -- -- DOPP range (2200-2299) ------------------------------------------------
     (2201, 'DOPP Out of Service',                               true,  true,  false, true,  false, true,  1,    false, true,  true,  false, false),
     (2203, 'A DOPP Component Failed to Start',                  true,  true,  false, true,  false, true,  2,    false, null,  null,  null,  null),
     (2205, 'DOPP Taps Table Almost Full',                       true,  true,  false, false, false, true,  2,    false, null,  null,  null,  null),
@@ -296,7 +296,7 @@ FROM (
     (2240, 'DOPP DB Files Processed Interrupted',               true,  true,  false, false, false, true,  3,    false, null,  null,  null,  null),
     (2241, 'DOPP DB Optimization Finished',                     true,  true,  false, false, false, false, 3,    false, null,  null,  null,  null),
     --
-    -- ── COMMS range (50000+) ──────────────────────────────────────────────────
+    -- -- COMMS range (50000+) --------------------------------------------------
     (50101,'Heartbeat Communication Lost',                      true,  true,  true,  false, false, true,  2,    false, false, false, false, false)
 
 ) AS t (event_code_id, event_name,

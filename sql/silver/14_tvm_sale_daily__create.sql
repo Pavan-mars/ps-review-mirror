@@ -1,4 +1,4 @@
--- =============================================================================
+﻿-- =============================================================================
 -- silver.tvm_sale_daily
 -- Daily aggregated TVM sale transactions per device
 --
@@ -7,29 +7,29 @@
 --
 -- Notes:
 --   - Grain: (device_id, transit_day)
---   - TRANSACTION_DTM is a TIMESTAMP column — cast to DATE to derive transit_day
+--   - TRANSACTION_DTM is a TIMESTAMP column - cast to DATE to derive transit_day
 --   - TRANSACTION_STATUS_CD: 0 = success, non-zero = error/failed transaction
 --   - NET_VALUE / CASH_COLLECTED / CR_DB_AMOUNT are in cents (divide by 100 for dollars)
 --   - Key derived metrics:
 --       daily_sales_count   = total sale transactions
 --       error_txn_rate      = failed transactions / total (early degradation signal)
 --       cash_sales_pct      = proportion of cash vs card payments
---       total_revenue       = SUM(NET_VALUE) — daily revenue proxy
+--       total_revenue       = SUM(NET_VALUE) - daily revenue proxy
 --       sales_active_hours  = distinct hours with activity (operational window)
 --   - Source contains TVM AND VALIDATOR transactions (confirmed post-validation 2026-06-19).
 --     Table name reflects primary use (TVM); VALIDATOR rows (834 devices, 13.38%) also present.
 --     Downstream gold.tvm_ps1_daily MUST filter: WHERE mars_device_category = 'TVM'.
---   - 4 unmatched (NULL-category) devices with avg 4,626 sales/day — likely NCS aggregated
+--   - 4 unmatched (NULL-category) devices with avg 4,626 sales/day - likely NCS aggregated
 --     sentinel IDs; not real Chicago CTA devices. Excluded by category filter in gold tables.
 --   - Feeds gold.tvm_ps1_daily as sales-drop early-warning feature (KPI 13, 15)
 --
--- Validation run 2026-06-18 — bugs fixed from original:
---   BUG 1: FROM bronze.ncs_sale_transaction  → mars_dev.bronze.ncs_stage_sale_transaction
---   BUG 2: silver.tvm_sale_daily             → mars_dev.silver.tvm_sale_daily
---   BUG 3: silver.dim_device                 → mars_dev.silver.dim_device
---   BUG 4: TRUNC(x)::date                    → CAST(x AS DATE) (Spark SQL)
---   BUG 5: x::numeric                        → CAST(x AS DOUBLE)  (Spark SQL)
---   BUG 6: CREATE INDEX                      → not supported on Delta; use OPTIMIZE/ZORDER
+-- Validation run 2026-06-18 - bugs fixed from original:
+--   BUG 1: FROM bronze.ncs_sale_transaction  -> mars_dev.bronze.ncs_stage_sale_transaction
+--   BUG 2: silver.tvm_sale_daily             -> mars_dev.silver.tvm_sale_daily
+--   BUG 3: silver.dim_device                 -> mars_dev.silver.dim_device
+--   BUG 4: TRUNC(x)::date                    -> CAST(x AS DATE) (Spark SQL)
+--   BUG 5: x::numeric                        -> CAST(x AS DOUBLE)  (Spark SQL)
+--   BUG 6: CREATE INDEX                      -> not supported on Delta; use OPTIMIZE/ZORDER
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.silver.tvm_sale_daily;

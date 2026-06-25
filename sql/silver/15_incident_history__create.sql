@@ -1,7 +1,7 @@
--- =============================================================================
+﻿-- =============================================================================
 -- S15: silver.incident_history
 -- S-code: S15  |  Build file: 17  |  Status: READY (CTA Export CSVs loaded to bronze 2026-06-24)
--- NOTE: Renumbered from S05 → S15 (2026-06-23). S05 = metric_hourly, S19 = maintenance_ledger,
+-- NOTE: Renumbered from S05 -> S15 (2026-06-23). S05 = metric_hourly, S19 = maintenance_ledger,
 --       S20 = usage_lifecycle_daily.
 --
 -- PURPOSE:
@@ -10,10 +10,10 @@
 --   CTA.SERVICENOW_AVAILABILITY_EVENTS (295,960 rows, 57 cols).
 --
 -- SOURCES (4 CTA Export CSV files loaded to bronze 2026-06-24):
---   1. incident              — 7,028,048 rows, 44 columns
---   2. cmdb_ci               — 43,130 rows, 108 columns
---   3. cmdb_model            — 99,966 rows, 95 columns
---   4. cmdb_model_category   — 426 rows, 21 columns
+--   1. incident              - 7,028,048 rows, 44 columns
+--   2. cmdb_ci               - 43,130 rows, 108 columns
+--   3. cmdb_model            - 99,966 rows, 95 columns
+--   4. cmdb_model_category   - 426 rows, 21 columns
 --
 -- Bronze catalog tables (CSV exports registered as Delta tables in mars_dev.bronze):
 --   mars_dev.bronze.cta_servicenow_incident           (7,028,048 rows, 44 cols)
@@ -31,11 +31,11 @@
 --   CREATE TABLE mars_dev.bronze.cta_servicenow_cmdb_model_category
 --     USING DELTA LOCATION 's3://cubic-mars-pm-s3-datalake-dev-bronze-170202974600/chicago_ventra/sn/cmdb_model_category/';
 --
--- JOIN LOGIC (no sys_id in any CSV export — all joins on display/name values):
---   incident.cmdb_ci          → cmdb_ci.name          (e.g. "SAG00901 TRNSTL ASY-TWA GDI UPGRD,CTA, SAG")
---   cmdb_ci.model_id          → cmdb_model.name        (e.g. "VENDOR ASSY-CTA OSFS")
---   cmdb_model.cmdb_model_category → cmdb_model_category.name  (e.g. "Gate/Turnstile")
---   incident.u_wm_asset       → dim_device.DEVICE_ID   (e.g. "SAG00901")
+-- JOIN LOGIC (no sys_id in any CSV export - all joins on display/name values):
+--   incident.cmdb_ci          -> cmdb_ci.name          (e.g. "SAG00901 TRNSTL ASY-TWA GDI UPGRD,CTA, SAG")
+--   cmdb_ci.model_id          -> cmdb_model.name        (e.g. "VENDOR ASSY-CTA OSFS")
+--   cmdb_model.cmdb_model_category -> cmdb_model_category.name  (e.g. "Gate/Turnstile")
+--   incident.u_wm_asset       -> dim_device.DEVICE_ID   (e.g. "SAG00901")
 --
 -- KEY COLUMN CORRECTIONS vs original design:
 --   REMOVED (not in CSV): sys_id, type, urgency, impact, u_duration, u_ettr,
@@ -47,7 +47,7 @@
 --   ADDED (in CSV, not in original design):
 --     u_ncs_device_id, u_chargeable_level, u_reason_code, severity,
 --     calendar_duration, description, reopen_count, u_major_incident
---   FIXED: SPLIT_PART (PostgreSQL) → SPLIT()[index] (Databricks)
+--   FIXED: SPLIT_PART (PostgreSQL) -> SPLIT()[index] (Databricks)
 --
 -- PS IMPACT:
 --   PS1 +12%: incident_frequency, calendar_duration (MTTR proxy), repeat_incident flags
@@ -68,10 +68,10 @@ PARTITIONED BY (city_id)
 AS
 WITH
 
--- ── SOURCE 1: INCIDENT (7,028,048 rows) ──────────────────────────────────────
+-- -- SOURCE 1: INCIDENT (7,028,048 rows) --------------------------------------
 inc AS (
     SELECT
-        -- Primary key (no sys_id in export — use incident number)
+        -- Primary key (no sys_id in export - use incident number)
         number                                                      AS incident_number,
         incident_state,
 
@@ -113,7 +113,7 @@ inc AS (
         subcategory                                                  AS subcategory,
         u_category                                                  AS u_category,
 
-        -- Cause (free text from ServiceNow — what caused the incident)
+        -- Cause (free text from ServiceNow - what caused the incident)
         cause                                                       AS cause,
 
         -- Descriptions
@@ -163,7 +163,7 @@ inc AS (
     WHERE CAST(opened_at AS DATE) >= '2024-01-01'
 ),
 
--- ── SOURCE 2: CMDB_CI (43,130 rows — one row per CTA device/component) ───────
+-- -- SOURCE 2: CMDB_CI (43,130 rows - one row per CTA device/component) -------
 -- Join key: cmdb_ci.name = incident.cmdb_ci (display value)
 -- Key columns for PS5: serial_number, install_date, operational_status
 ci AS (
@@ -187,7 +187,7 @@ ci AS (
     FROM mars_dev.bronze.cta_servicenow_cmdb_ci
 ),
 
--- ── SOURCE 3: CMDB_MODEL (99,966 rows — model catalog) ───────────────────────
+-- -- SOURCE 3: CMDB_MODEL (99,966 rows - model catalog) -----------------------
 -- Join key: cmdb_model.name = cmdb_ci.model_id (display value)
 mdl AS (
     SELECT
@@ -202,9 +202,9 @@ mdl AS (
     FROM mars_dev.bronze.cta_servicenow_cmdb_model
 ),
 
--- ── SOURCE 4: CMDB_MODEL_CATEGORY (426 rows — category hierarchy) ────────────
+-- -- SOURCE 4: CMDB_MODEL_CATEGORY (426 rows - category hierarchy) ------------
 -- Join key: cmdb_model_category.name = cmdb_model.cmdb_model_category
--- Note: source column 'parent_cateogry' has a typo (missing 'e') — use as-is
+-- Note: source column 'parent_cateogry' has a typo (missing 'e') - use as-is
 mcat AS (
     SELECT
         name                                                        AS model_category_name, -- join key
@@ -214,9 +214,9 @@ mcat AS (
     FROM mars_dev.bronze.cta_servicenow_cmdb_model_category
 )
 
--- ── FINAL SELECT ─────────────────────────────────────────────────────────────
+-- -- FINAL SELECT -------------------------------------------------------------
 SELECT
-    -- ── Incident core ─────────────────────────────────────────────────────
+    -- -- Incident core -----------------------------------------------------
     i.incident_number,
     i.incident_state,
     i.maintenance_type,
@@ -276,7 +276,7 @@ SELECT
     i.contact_type,
     i.estimated_time_hours,
 
-    -- ── CMDB_CI enrichment ────────────────────────────────────────────────
+    -- -- CMDB_CI enrichment ------------------------------------------------
     ci.ci_asset_tag,
     ci.ci_operational_status,
     ci.ci_install_status,
@@ -291,18 +291,18 @@ SELECT
     ci.ci_class_name,
     ci.ci_fault_count,
 
-    -- ── CMDB_MODEL enrichment ─────────────────────────────────────────────
+    -- -- CMDB_MODEL enrichment ---------------------------------------------
     mdl.model_name              AS cmdb_model_name,
     mdl.model_type              AS cmdb_model_type,
     mdl.model_life_expectancy   AS cmdb_model_life_expectancy,
     mdl.model_is_repairable     AS cmdb_model_is_repairable,
     mdl.model_is_rotable        AS cmdb_model_is_rotable,
 
-    -- ── CMDB_MODEL_CATEGORY enrichment ───────────────────────────────────
+    -- -- CMDB_MODEL_CATEGORY enrichment -----------------------------------
     mcat.model_category_name    AS cmdb_model_category,
     mcat.model_parent_category  AS cmdb_model_parent_category,
 
-    -- ── dim_device enrichment (join on u_wm_asset = DEVICE_ID) ───────────
+    -- -- dim_device enrichment (join on u_wm_asset = DEVICE_ID) -----------
     dd.DEVICE_KEY,
     dd.mars_device_category,
     dd.FACILITY_NAME,

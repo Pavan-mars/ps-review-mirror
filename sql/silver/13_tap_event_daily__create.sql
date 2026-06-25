@@ -1,14 +1,14 @@
--- =============================================================================
+﻿-- =============================================================================
 -- silver.tap_event_daily
 -- Daily aggregated tap/transaction events per device
 --
 -- Source (mars_dev.bronze catalog):
---   EDW.ABP_TAP  (2.05B rows, 52 cols) → mars_dev.bronze.edw_abp_tap
---   NOTE: CTA.ABP_USE_TRAN_TIMING_DATA — PATH_NOT_FOUND; excluded from pipeline
+--   EDW.ABP_TAP  (2.05B rows, 52 cols) -> mars_dev.bronze.edw_abp_tap
+--   NOTE: CTA.ABP_USE_TRAN_TIMING_DATA - PATH_NOT_FOUND; excluded from pipeline
 --
 -- Notes:
 --   - ABP_TAP is partitioned by year/month/day (EDW load date, NOT tap date)
---     Use DATE(TRANSACTION_DTM) for tap date — do NOT filter on partition columns
+--     Use DATE(TRANSACTION_DTM) for tap date - do NOT filter on partition columns
 --   - Grain: (DEVICE_ID, DATE(TRANSACTION_DTM), OPERATOR_ID, BUS_ID)
 --   - 3,150 distinct CTA devices: bus validators (BMV), gate readers, TVMs
 --   - TAP_STATUS_ID approved codes (validated 2026-06-15):
@@ -28,31 +28,31 @@
 --   dim_device=100%, peak_hour=100%, avg_reject_rate ≈ 5.49%
 --
 -- Bugs fixed from original (21 total):
---   BUG 1:  silver.tap_event_daily → mars_dev.silver.tap_event_daily
---   BUG 2:  TRANSIT_DAY_KEY::text + ::date → removed (column does not exist in ABP_TAP)
---   BUG 3:  bronze.abp_tap → parquet S3 path
---   BUG 4:  bronze.cta_abp_use_tran_timing_data → PATH_NOT_FOUND;
+--   BUG 1:  silver.tap_event_daily -> mars_dev.silver.tap_event_daily
+--   BUG 2:  TRANSIT_DAY_KEY::text + ::date -> removed (column does not exist in ABP_TAP)
+--   BUG 3:  bronze.abp_tap -> parquet S3 path
+--   BUG 4:  bronze.cta_abp_use_tran_timing_data -> PATH_NOT_FOUND;
 --           timing_agg CTE + join + avg/max/p95_timing_ms + has_slow_transactions removed
---   BUG 5:  silver.dim_device ON DEVICE_KEY → mars_dev.silver.dim_device ON DEVICE_ID
---   BUG 6:  CREATE INDEX (x6) → not supported on Delta; OPTIMIZE/ZORDER comment only
---   BUG 7:  LEFT JOIN LATERAL (...) → not supported in Spark SQL;
+--   BUG 5:  silver.dim_device ON DEVICE_KEY -> mars_dev.silver.dim_device ON DEVICE_ID
+--   BUG 6:  CREATE INDEX (x6) -> not supported on Delta; OPTIMIZE/ZORDER comment only
+--   BUG 7:  LEFT JOIN LATERAL (...) -> not supported in Spark SQL;
 --           rewritten as peak_hour_agg subquery CTE
---   BUG 8:  EXTRACT(HOUR FROM TAP_DTM) → HOUR(TRANSACTION_DTM)
---   BUG 9:  PERCENTILE_CONT(0.95) WITHIN GROUP → removed (timing table gone)
---   BUG 10: ROUND(x::numeric / y * 100, 4) → ROUND(CAST(x AS DOUBLE) / y * 100, 4)
---   BUG 11: TRANSIT_DAY_KEY → does not exist in ABP_TAP;
+--   BUG 8:  EXTRACT(HOUR FROM TAP_DTM) -> HOUR(TRANSACTION_DTM)
+--   BUG 9:  PERCENTILE_CONT(0.95) WITHIN GROUP -> removed (timing table gone)
+--   BUG 10: ROUND(x::numeric / y * 100, 4) -> ROUND(CAST(x AS DOUBLE) / y * 100, 4)
+--   BUG 11: TRANSIT_DAY_KEY -> does not exist in ABP_TAP;
 --           transit_day derived as DATE(TRANSACTION_DTM)
---   BUG 12: t.DEVICE_KEY → does not exist in ABP_TAP; removed from GROUP BY and SELECT
---   BUG 13: t.MEDIA_ID → t.TOKEN_ID
---   BUG 14: t.TRANSACTION_STATUS_ID → t.TAP_STATUS_ID
---   BUG 15: t.AMOUNT → t.FARE_DUE
---   BUG 16: t.TAP_DTM → t.TRANSACTION_DTM
---   BUG 17: dd.TRANSIT_MODE_NAME → not in device_dimension; removed
---   BUG 18: dd.BUS_ID → t.BUS_ID (exists in ABP_TAP; not in dim_device)
---   BUG 19: t.FACILITY_ID → does not exist in ABP_TAP; sourced from dim_device join
---   BUG 20: mars_device_category → not in bronze device_dimension parquet;
+--   BUG 12: t.DEVICE_KEY -> does not exist in ABP_TAP; removed from GROUP BY and SELECT
+--   BUG 13: t.MEDIA_ID -> t.TOKEN_ID
+--   BUG 14: t.TRANSACTION_STATUS_ID -> t.TAP_STATUS_ID
+--   BUG 15: t.AMOUNT -> t.FARE_DUE
+--   BUG 16: t.TAP_DTM -> t.TRANSACTION_DTM
+--   BUG 17: dd.TRANSIT_MODE_NAME -> not in device_dimension; removed
+--   BUG 18: dd.BUS_ID -> t.BUS_ID (exists in ABP_TAP; not in dim_device)
+--   BUG 19: t.FACILITY_ID -> does not exist in ABP_TAP; sourced from dim_device join
+--   BUG 20: mars_device_category -> not in bronze device_dimension parquet;
 --           available after S06 creates mars_dev.silver.dim_device
---   BUG 21: TAP_STATUS_ID = 0 → wrong approved code (0 never appears in data);
+--   BUG 21: TAP_STATUS_ID = 0 -> wrong approved code (0 never appears in data);
 --           approved = IN (1, 900, 904); rejected = NOT IN (1, 900, 904)
 -- =============================================================================
 
@@ -61,7 +61,7 @@ DROP TABLE IF EXISTS mars_dev.silver.tap_event_daily;
 CREATE TABLE mars_dev.silver.tap_event_daily AS
 WITH tap_agg AS (
     -- Grain: (DEVICE_ID, transit_day, OPERATOR_ID, BUS_ID)
-    -- ABP_TAP is partitioned by EDW load date — filter on TRANSACTION_DTM for tap date
+    -- ABP_TAP is partitioned by EDW load date - filter on TRANSACTION_DTM for tap date
     SELECT
         t.DEVICE_ID,
         DATE(t.TRANSACTION_DTM)                                AS transit_day,

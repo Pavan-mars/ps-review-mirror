@@ -13,9 +13,7 @@
 #              e.g. /Workspace/Repos/<you>/Chicago-Ventra-Mars-Cubic-Analysis
 #
 # Notes:
-#   - Files run in filename order: 01_… → 18_… for silver, then gold.
-#   - 17_incident_history__design.sql is a DESIGN file (skipped) until the
-#     ServiceNow tables land — see the validation report.
+#   - Files run in filename order: 01_... -> 23_... for silver, then gold.
 #   - USE CATALOG warm-up first to avoid intermittent NO_SUCH_CATALOG on the cluster.
 # =============================================================================
 import os
@@ -39,7 +37,9 @@ assert os.path.isdir(sql_dir), f"not a directory: {sql_dir}"
 # Warm-up: pin the catalog before any 3-part-name resolution.
 spark.sql(f"USE CATALOG {catalog}")
 
-SKIP = {"17_incident_history__design.sql"}  # design-only until ServiceNow tables exist
+SKIP = {
+    "device_ps1_daily__label_compare.sql",  # read-only label analysis — not a table build
+}
 
 
 def statements(sql_text):

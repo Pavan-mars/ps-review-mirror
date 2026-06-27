@@ -1,9 +1,9 @@
 -- =============================================================================
 -- gold.device_ps1_daily
--- PS1 -- Predictive Failure: daily feature table for TVM / GATE / VALIDATOR
+-- PS1 -- Predictive Failure: daily feature table for TVM / GATE
 -- Grain: (device_id, transit_day)
--- Target: will_fail_7d -- 1 if device has a real outage (duration_min > 0)
---         within the next 7 calendar days
+-- Target: will_fail_3d -- 1 if device has a chargeable SLA failure within next 3 days
+--         (VALIDATOR excluded: zero ServiceNow incidents in incident_root_cause)
 -- Training window: transit_day >= 2024-01-01 (pre-2024 legacy data excluded)
 --
 -- Sources (silver):
@@ -57,6 +57,10 @@
 --         is_hardware_oos AND is_chargeable = TRUE AND failure_level IN (1,2,3,4,5,16)
 --         NOT maintenance/commanded/planned (already excluded via is_hardware_oos_event in S18)
 --         Expected positive rate: ~1.5%  (silver needs no structural change)
+--   R3-2 (2026-06-27): 7-day window → 3-day (will_fail_3d); VALIDATOR excluded.
+--         Diagnosis: TVM 29.58% positive rate at 7d (too high); VALIDATOR 0% (no ServiceNow data).
+--         3-day window targets: TVM ~10-15%, GATE ~3-5%.
+--         failure_level IN (2,3,4,5) confirmed — levels 1 and 16 absent from data.
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.gold.device_ps1_daily;
@@ -220,33 +224,24 @@ use_revenue AS (
         END                                          AS use_revenue_decline_flag
     FROM mars_dev.silver.use_revenue_daily ur
 ),
--- R3 (2026-06-26): will_fail_7d tightened to Michael's chargeable definition:
---   is_chargeable = TRUE  (failure_level > 0, already derived in S18)
---   AND failure_level IN (1,2,3,4,5,16)  (Ventra SLA taxonomy: NONPAYMENT=1,
---     PURCHASE_CARD=2, PURCHASE_PRODUCT=3, ALL_PURCHASE=4, ALL_FUNCTIONS=5,
---     BUS_READER_ASSEMBLY=16)
---   NOT maintenance/commanded/planned  → already excluded upstream:
---     is_hardware_oos_event = TRUE in S18 drops codes 106/110/151/208/519/1603/1604
--- Expected positive rate: ~1.5% (was ~broad with duration_min > 0 only)
--- Polarity check (run after rebuild):
---   SELECT failure_level, COUNT(*) AS rows,
---          ROUND(COUNT(*)*100.0/SUM(COUNT(*)) OVER(),2) AS pct
---   FROM mars_dev.silver.device_outage
---   WHERE is_chargeable = TRUE
---   GROUP BY failure_level ORDER BY failure_level;
+-- R3-2 (2026-06-27): will_fail_3d — 3-day lookahead, TVM+GATE only
+--   is_chargeable = TRUE AND failure_level IN (2,3,4,5)
+--   failure_level 1 (NONPAYMENT) and 16 (BUS_READER_ASSEMBLY) confirmed absent from data.
+--   VALIDATOR excluded: zero rows in incident_root_cause → permanent 0 label, not useful.
+--   NOT maintenance/commanded: already excluded via is_hardware_oos_event=TRUE in S18.
+--   Expected positive rate: TVM ~10-15%, GATE ~3-5%
 outage_label_days AS (
     SELECT DISTINCT
         do2.DEVICE_ID,
         DATE_ADD(do2.transit_day, -seq.n) AS label_day
     FROM mars_dev.silver.device_outage do2
     CROSS JOIN (
-        SELECT 1 AS n UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL
-        SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7
+        SELECT 1 AS n UNION ALL SELECT 2 UNION ALL SELECT 3
     ) seq
     WHERE do2.duration_min > 0
       AND do2.is_chargeable = TRUE
-      AND do2.failure_level IN (1,2,3,4,5,16)
-      AND do2.mars_device_category IN ('TVM','GATE','VALIDATOR')
+      AND do2.failure_level IN (2,3,4,5)
+      AND do2.mars_device_category IN ('TVM','GATE')
 ),
 -- FIX 7: spine filtered to >= 2024-01-01 (ML training window; excludes legacy pre-2024 rows)
 spine AS (
@@ -342,14 +337,15 @@ SELECT
     COALESCE(ur.use_revenue_active_hours, 0)     AS use_revenue_active_hours,
     COALESCE(ur.use_revenue_7d_avg, 0)           AS use_revenue_7d_avg,
     COALESCE(ur.use_revenue_decline_flag, FALSE) AS use_revenue_decline_flag,
-    -- TARGET: 1 if device has a chargeable hardware outage within next 7 days
-    -- Definition (R3 2026-06-26 — Michael): is_hardware_oos AND is_chargeable = TRUE
-    --   AND failure_level IN (1,2,3,4,5,16) AND NOT maintenance/commanded/planned
-    --   Expected positive rate: ~1.5%
+    -- TARGET: 1 if device has a chargeable SLA failure within next 3 days
+    -- Definition (R3-2 2026-06-27): is_chargeable=TRUE AND failure_level IN (2,3,4,5)
+    --   AND mars_device_category IN ('TVM','GATE') — VALIDATOR excluded (no ServiceNow data)
+    --   Expected positive rate: TVM ~10-15%, GATE ~3-5%
     -- History: V08 severity=CRITICAL/WARN = 17 positives (broken)
-    --          2026-06-25 duration_min > 0 = any outage (broad)
-    --          2026-06-26 tightened to chargeable SLA failures only
-    CASE WHEN old.DEVICE_ID IS NOT NULL THEN 1 ELSE 0 END AS will_fail_7d
+    --          2026-06-25 duration_min > 0, 7-day, all categories (TVM 29.58% — too high)
+    --          2026-06-26 chargeable + failure_level IN (1,2,3,4,5,16) (still 7-day)
+    --          2026-06-27 3-day window + TVM/GATE only + failure_level IN (2,3,4,5)
+    CASE WHEN old.DEVICE_ID IS NOT NULL THEN 1 ELSE 0 END AS will_fail_3d
 
 FROM spine sp
 JOIN all_devices ad                    ON ad.DEVICE_ID  = sp.DEVICE_ID
@@ -373,19 +369,20 @@ LEFT JOIN outage_label_days old        ON old.DEVICE_ID  = sp.DEVICE_ID AND old.
 -- OPTIMIZE mars_dev.gold.device_ps1_daily ZORDER BY (DEVICE_ID, transit_day);
 
 -- Post-build verification:
--- SELECT COUNT(*) AS total_rows, COUNT(DISTINCT DEVICE_ID) AS devices,
---        SUM(will_fail_7d) AS positive_labels,
---        ROUND(SUM(will_fail_7d)*100.0/COUNT(*),2) AS positive_rate_pct
--- FROM mars_dev.gold.device_ps1_daily;
--- Expected: positive_rate_pct ≈ 1.5%  (was broad with any duration_min > 0)
+-- SELECT mars_device_category,
+--        COUNT(*) AS total_rows, COUNT(DISTINCT DEVICE_ID) AS devices,
+--        SUM(will_fail_3d) AS positive_labels,
+--        ROUND(SUM(will_fail_3d)*100.0/COUNT(*),2) AS positive_rate_pct
+-- FROM mars_dev.gold.device_ps1_daily
+-- GROUP BY mars_device_category;
+-- Expected: TVM ~10-15%, GATE ~3-5%  (VALIDATOR excluded from label)
 
--- Polarity check — confirm failure_level breakdown before rebuild:
--- SELECT failure_level, is_chargeable,
+-- Polarity check — confirm failure_level breakdown (TVM+GATE only):
+-- SELECT mars_device_category, failure_level, is_chargeable,
 --        COUNT(*) AS outage_rows,
 --        ROUND(COUNT(*)*100.0/SUM(COUNT(*)) OVER(),2) AS pct
 -- FROM mars_dev.silver.device_outage
--- WHERE mars_device_category IN ('TVM','GATE','VALIDATOR')
+-- WHERE mars_device_category IN ('TVM','GATE')
 --   AND duration_min > 0
--- GROUP BY failure_level, is_chargeable
--- ORDER BY failure_level;
--- Levels 1-5 and 16 with is_chargeable=TRUE should account for ~1.5% of device-days.
+-- GROUP BY mars_device_category, failure_level, is_chargeable
+-- ORDER BY mars_device_category, failure_level;

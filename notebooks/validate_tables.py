@@ -10,6 +10,13 @@
 #   catalog   mars_dev (default)
 # =============================================================================
 
+from typing import Any
+
+# Databricks runtime globals — injected into the notebook namespace before execution.
+dbutils: Any = globals().get("dbutils")
+spark: Any   = globals().get("spark")
+display: Any = globals().get("display")
+
 dbutils.widgets.text("catalog", "mars_dev")
 catalog = dbutils.widgets.get("catalog").strip()
 
@@ -383,8 +390,8 @@ r = check(f"""
            COUNT(DISTINCT DEVICE_ID) AS distinct_devices,
            MIN(transit_day) AS min_day,
            MAX(transit_day) AS max_day,
-           SUM(will_fail_7d) AS positive_labels,
-           ROUND(SUM(will_fail_7d) * 100.0 / COUNT(*), 2) AS positive_rate_pct
+           SUM(will_fail_3d) AS positive_labels,
+           ROUND(SUM(will_fail_3d) * 100.0 / COUNT(*), 2) AS positive_rate_pct
     FROM {catalog}.gold.device_ps1_daily
 """)
 s = status(r, min_rows=100000)

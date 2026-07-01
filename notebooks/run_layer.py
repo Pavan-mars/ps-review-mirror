@@ -9,30 +9,30 @@
 # Widgets:
 #   layer       silver | gold          which folder to build
 #   catalog     mars_dev (default)     target Unity Catalog
-#   start_from  (empty) | 17           skip all files before this prefix;
-#                                      e.g. "17" resumes from S17, "ps3" from PS3
-#                                      leave blank to run from the beginning
 #   repo_root   (empty)                absolute path to repo root in workspace;
 #                                      auto-detected when running from a Repo
 #
 # Notes:
 #   - Files run in filename order: 01_... -> 23_... for silver, ps1... -> ps5... for gold.
 #   - USE CATALOG warm-up runs first to avoid intermittent NO_SUCH_CATALOG errors.
-#   - start_from matches by filename prefix (case-insensitive), so "17", "17_",
-#     or "17_incident_root_cause__create.sql" all start from S17.
+#   - All scripts are DROP+CREATE — safe to re-run from the beginning every time.
 # =============================================================================
 import os
 import re
+from typing import Any
 
-dbutils.widgets.text("layer",      "silver")
-dbutils.widgets.text("catalog",    "mars_dev")
-dbutils.widgets.text("start_from", "")
-dbutils.widgets.text("repo_root",  "")
+# Databricks runtime globals — injected into the notebook namespace before execution.
+# globals().get() returns the real object in Databricks and None locally (satisfies Pylance).
+dbutils: Any = globals().get("dbutils")
+spark: Any   = globals().get("spark")
 
-layer      = dbutils.widgets.get("layer").strip()
-catalog    = dbutils.widgets.get("catalog").strip()
-start_from = dbutils.widgets.get("start_from").strip().lower()
-repo_root  = dbutils.widgets.get("repo_root").strip()
+dbutils.widgets.text("layer",     "silver")
+dbutils.widgets.text("catalog",   "mars_dev")
+dbutils.widgets.text("repo_root", "")
+
+layer     = dbutils.widgets.get("layer").strip()
+catalog   = dbutils.widgets.get("catalog").strip()
+repo_root = dbutils.widgets.get("repo_root").strip()
 
 assert layer in ("silver", "gold"), f"layer must be silver|gold, got {layer!r}"
 
@@ -48,6 +48,7 @@ spark.sql(f"USE CATALOG {catalog}")
 
 SKIP = {
     "device_ps1_daily__label_compare.sql",  # read-only label analysis, not a table build
+    "06b_dim_device_completion.sql",         # diagnostic SELECT only — run interactively after S06 to verify orphan rescue
 }
 
 
@@ -69,16 +70,8 @@ def statements(sql_text):
             yield chunk.strip()
 
 
-# Build the ordered file list
-all_files = sorted(f for f in os.listdir(sql_dir) if f.endswith(".sql") and f not in SKIP)
-
-# Apply start_from filter
-if start_from:
-    files = [f for f in all_files if f.lower() >= start_from]
-    skipped = len(all_files) - len(files)
-    print(f"[{layer}] start_from={start_from!r}  skipping {skipped} file(s), resuming from: {files[0] if files else 'none'}")
-else:
-    files = all_files
+# Build the ordered file list — runs every file in sequence, no skipping
+files = sorted(f for f in os.listdir(sql_dir) if f.endswith(".sql") and f not in SKIP)
 
 print(f"[{layer}] catalog={catalog}  dir={sql_dir}  -> {len(files)} file(s) to run")
 

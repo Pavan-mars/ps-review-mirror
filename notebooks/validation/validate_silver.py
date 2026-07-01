@@ -11,8 +11,14 @@
 # MAGIC Every check is wrapped so a wrong column name degrades to WARN (skipped) rather than aborting the run.
 
 # COMMAND ----------
-spark.sql("USE CATALOG mars_dev")          # bind catalog (avoids NO_SUCH_CATALOG)
+from typing import Any
 from datetime import datetime
+
+# Databricks runtime globals — injected into the notebook namespace before execution.
+spark: Any   = globals().get("spark")
+display: Any = globals().get("display")
+
+spark.sql("USE CATALOG mars_dev")          # bind catalog (avoids NO_SUCH_CATALOG)
 CAT, SCH = "mars_dev", "silver"
 RUN_TS = datetime.utcnow().isoformat()
 RESULTS = []

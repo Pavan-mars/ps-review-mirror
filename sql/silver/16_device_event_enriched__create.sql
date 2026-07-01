@@ -120,7 +120,8 @@ SELECT
     b.EVENT_DAY_KEY,
     b.EVENT_DTM,
     b.DEVICE_KEY,
-    b.DEVICE_ID,
+    -- FIX 2026-07-01 (DQ v3): recover null DEVICE_ID from DEVICE_KEY -> dim_device (dk)
+    COALESCE(b.DEVICE_ID, dk.DEVICE_ID)                        AS DEVICE_ID,
     b.EVENT_TYPE_KEY,
     b.OPERATOR_ID,
     b.FACILITY_ID,
@@ -232,15 +233,25 @@ SELECT
     et.oos_counted_bus_kpi,     -- TRUE = this OOS counts toward bus availability KPI
     et.oos_counted_fmvd_kpi,    -- TRUE = this OOS counts toward FMVD/TVM availability KPI
     et.requires_service_call,   -- TRUE = event requires field technician dispatch
-    et.is_set_clear             -- TRUE = event fires in Set/Clear pairs (not one-shot)
+    et.is_set_clear,            -- TRUE = event fires in Set/Clear pairs (not one-shot)
+
+    -- GX/DQ alignment 2026-06-25: silver build-audit timestamp (freshness expectations)
+    current_timestamp()                                         AS _silver_load_ts
 
 FROM base b
--- Join on DEVICE_ID (business key), not DEVICE_KEY (SCD2 surrogate).
--- dim_device is now full SCD2 (189,570 rows); is_current=TRUE selects the single
--- active row per DEVICE_ID - prevents fan-out, enriches events with current attributes.
-LEFT JOIN mars_dev.silver.dim_device     dd ON dd.DEVICE_ID      = b.DEVICE_ID
+-- FIX 2026-07-01 (DQ v3): recover null DEVICE_ID from DEVICE_KEY. dk = the dim_device row for
+-- the event's (historical) DEVICE_KEY surrogate -> 1:1 (one dim row per key), no fan-out.
+-- DEVICE_KEY is small enough to broadcast. No category scope: this is the all-device feature
+-- spine (PS4/validators included) -- we only drop truly unattributable events (both null).
+LEFT JOIN mars_dev.silver.dim_device     dk ON dk.DEVICE_KEY     = b.DEVICE_KEY
+-- Enrich on the COALESCED id so backfilled rows also get current attributes.
+-- Join on DEVICE_ID (business key), not DEVICE_KEY; is_current=TRUE selects the single active
+-- row per DEVICE_ID - prevents fan-out, enriches events with current device attributes.
+LEFT JOIN mars_dev.silver.dim_device     dd ON dd.DEVICE_ID      = COALESCE(b.DEVICE_ID, dk.DEVICE_ID)
                                            AND dd.is_current      = TRUE
-LEFT JOIN mars_dev.silver.dim_event_type et ON et.EVENT_TYPE_KEY = b.EVENT_TYPE_KEY;
+LEFT JOIN mars_dev.silver.dim_event_type et ON et.EVENT_TYPE_KEY = b.EVENT_TYPE_KEY
+-- Drop events with neither a DEVICE_ID nor a resolvable DEVICE_KEY (unattributable).
+WHERE COALESCE(b.DEVICE_ID, dk.DEVICE_ID) IS NOT NULL;
 
 -- Post-load optimisation (run after CREATE TABLE completes):
 -- OPTIMIZE mars_dev.silver.device_event_enriched ZORDER BY (DEVICE_ID, transit_day);

@@ -46,6 +46,14 @@
 DROP TABLE IF EXISTS mars_dev.silver.maintenance_ledger;
 
 CREATE TABLE mars_dev.silver.maintenance_ledger AS
+-- FIX 2026-07-01 (DQ v3): (1) backfill null DEVICE_ID (+ category/facility/operator) via
+--   DEVICE_KEY -> dim_device -- fixes the Emp-Logon (event 106) rows whose DEVICE_KEY resolves;
+-- (2) scope the label keystone to the Chicago-pilot in-scope categories (TVM, GATE). This drops,
+--   in one stroke, everything that can't be attributed to an in-scope device: BUS/BMV (VALIDATOR --
+--   excluded from the pilot for now), legacy turnstiles (TEX/TT/TTC/TWA), excluded families
+--   (RTL/POS/SCR/DCR/ECX/SIC), WEB/MOBILE/POI/EDW, and blank/null device_ids.
+-- See CUBIC_MARS_DQ_Framework_Review_30Jun2026.md.
+WITH raw_ledger AS (
 
 -- -- SOURCE A: Repair episodes from EDW.AVAILABILITY_EVENTS -------------------
 -- Each row = a completed OOS->restore episode (failure + corrective repair)
@@ -85,7 +93,11 @@ SELECT
     ae.FAULT_STATE                                          AS fault_state,
     ae.FAULT_DESCRIPTION                                    AS fault_description,
     ae.EVENT_ID                                             AS source_event_id,
-    'AVAILABILITY_EVENTS'                                   AS source_table
+    'AVAILABILITY_EVENTS'                                   AS source_table,
+    -- GX/DQ alignment 2026-06-25: repair episodes are not commanded/maintenance OOS
+    CAST(FALSE AS BOOLEAN)                                  AS is_commanded_oos,
+    CAST(FALSE AS BOOLEAN)                                  AS is_maintenance_oos,
+    current_timestamp()                                    AS _silver_load_ts
 
 FROM mars_dev.bronze.edw_availability_events ae
 LEFT JOIN mars_dev.silver.dim_device dd
@@ -122,10 +134,56 @@ SELECT
     dee.EVENT_STATE_TYPE_NAME                               AS fault_state,
     dee.EXTENDED_DATA_SHORT                                 AS fault_description,
     dee.DW_DEVICE_EVENT_ID                                  AS source_event_id,
-    'DEVICE_EVENT'                                          AS source_table
+    'DEVICE_EVENT'                                          AS source_table,
+    -- GX/DQ alignment 2026-06-25: derive OOS-type flags from the maintenance event code
+    (dee.EVENT_TYPE_ID IN (110, 208, 519))                 AS is_commanded_oos,   -- COMMANDED_OOS
+    (dee.EVENT_TYPE_ID IN (106, 151))                      AS is_maintenance_oos, -- TECH_LOGIN + MAINTENANCE_MODE
+    current_timestamp()                                    AS _silver_load_ts
 
 FROM mars_dev.silver.device_event_enriched dee
-WHERE dee.is_commanded_oos_event = TRUE;
+WHERE dee.is_commanded_oos_event = TRUE
+)
+
+-- -- BACKFILL + SCOPE ---------------------------------------------------------
+-- 1. Recover DEVICE_ID / category / facility / operator from dim_device on DEVICE_KEY
+--    (fixes the null-DEVICE_ID Emp-Logon rows whose DEVICE_KEY is present in dim_device).
+--    Optional: enable the source_event_id parse below only after confirming the embedded
+--    token matches the canonical DEVICE_ID format.
+-- 2. Keep only rows attributable to an IN-SCOPE device (TVM, GATE). Anything not resolvable
+--    to an in-scope device (BUS/VALIDATOR, legacy, excluded, blank, null, orphan) is dropped.
+SELECT
+    COALESCE(r.DEVICE_ID, dk.DEVICE_ID
+        /* , NULLIF(regexp_extract(r.source_event_id, '(TVM|RVG|HBG|SAG)[0-9]{3,}', 0), '') */
+    )                                                        AS DEVICE_ID,
+    r.DEVICE_KEY,
+    COALESCE(r.mars_device_category, dk.mars_device_category) AS mars_device_category,
+    COALESCE(r.FACILITY_ID,   dk.FACILITY_ID)                AS FACILITY_ID,
+    COALESCE(r.FACILITY_NAME, dk.FACILITY_NAME)              AS FACILITY_NAME,
+    COALESCE(r.OPERATOR_ID,   dk.OPERATOR_ID)                AS OPERATOR_ID,
+    COALESCE(r.OPERATOR_NAME, dk.OPERATOR_NAME)              AS OPERATOR_NAME,
+    r.ledger_date,
+    r.event_dtm,
+    r.event_end_dtm,
+    r.duration_min,
+    r.ledger_type,
+    r.failure_level,
+    r.component_subsystem,
+    r.event_type_id,
+    r.event_type_name,
+    r.fault_state,
+    r.fault_description,
+    r.source_event_id,
+    r.source_table,
+    r.is_commanded_oos,
+    r.is_maintenance_oos,
+    r._silver_load_ts
+FROM raw_ledger r
+LEFT JOIN mars_dev.silver.dim_device dk
+    ON dk.DEVICE_KEY = r.DEVICE_KEY
+   AND dk.is_current = TRUE
+WHERE COALESCE(r.DEVICE_ID, dk.DEVICE_ID) IS NOT NULL
+  -- In-scope categories for the Chicago pilot. Add 'VALIDATOR' when BUS/BMV is brought into scope.
+  AND COALESCE(r.mars_device_category, dk.mars_device_category) IN ('TVM', 'GATE');
 
 -- Post-build optimisation:
 -- OPTIMIZE mars_dev.silver.maintenance_ledger ZORDER BY (DEVICE_ID, event_dtm);

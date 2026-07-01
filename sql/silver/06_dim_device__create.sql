@@ -176,7 +176,12 @@ SELECT
 FROM      mars_dev.bronze.edw_device_dimension                            d
 LEFT JOIN mars_dev.bronze.ncs_stage_device                                nd  ON nd.DEVICE_ID      = d.DEVICE_ID
 LEFT JOIN mars_dev.bronze.ncs_stage_device_type                           ndt ON ndt.DEVICE_TYPE_ID = nd.DEVICE_TYPE_ID
-WHERE d.OPERATOR_ID > 0;
+WHERE d.OPERATOR_ID > 0
+   -- FIX 2026-07-01 (DQ v3): rescue in-scope devices (TVM / RVG / SAG / HBG) that appear in the
+   -- fact + ledger data but carry a sentinel OPERATOR_ID (NULL / -1 / 0) and were dropped above,
+   -- so they land in dim_device. Fixes the ~17 in-scope orphans behind the RI check. The prefix
+   -- guard keeps this narrow (out-of-scope sentinel rows are still excluded).
+   OR UPPER(d.DEVICE_ID) RLIKE '^(TVM|RVG|SAG|HBG)';
 -- SCD2: CURRENT_FLAG = 1 filter removed -- load all 189,767 rows (current + historical).
 -- Downstream joins must use AND dd.is_current = TRUE to get the active row per DEVICE_ID.
 

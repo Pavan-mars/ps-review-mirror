@@ -12,6 +12,12 @@
 #   prefix      chicago/gold           S3 key prefix (no trailing slash)
 #   mode        overwrite | append     Delta write mode (default: overwrite)
 # =============================================================================
+from typing import Any
+
+# Databricks runtime globals — injected into the notebook namespace before execution.
+# globals().get() returns the real object in Databricks and None locally (satisfies Pylance).
+dbutils: Any = globals().get("dbutils")
+spark: Any   = globals().get("spark")
 
 dbutils.widgets.text("catalog", "mars_dev")
 dbutils.widgets.text("bucket",  "cubic-mars-pm-s3-datalake-dev-gold-170202974600")

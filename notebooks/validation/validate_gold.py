@@ -10,8 +10,14 @@
 # MAGIC Writes a scorecard to `mars_dev.audit.gold_validation_results`. Checks degrade to WARN if a column is absent.
 
 # COMMAND ----------
-spark.sql("USE CATALOG mars_dev")
+from typing import Any
 from datetime import datetime
+
+# Databricks runtime globals — injected into the notebook namespace before execution.
+spark: Any   = globals().get("spark")
+display: Any = globals().get("display")
+
+spark.sql("USE CATALOG mars_dev")
 CAT, SCH = "mars_dev", "gold"
 RUN_TS = datetime.utcnow().isoformat()
 RESULTS = []
@@ -55,7 +61,7 @@ def check_table(t, grain=None, date_cols=None, min_rows=1, notnull=None):
 # COMMAND ----------
 # Per-PS config
 GOLD = {
-    "device_ps1_daily":    dict(grain=["DEVICE_ID", "transit_day"], date_cols=["transit_day"], notnull=["DEVICE_ID", "will_fail_7d"]),
+    "device_ps1_daily":    dict(grain=["DEVICE_ID", "transit_day"], date_cols=["transit_day"], notnull=["DEVICE_ID", "will_fail_3d"]),
     "device_ps2_chains":   dict(grain=["DEVICE_ID", "transit_day"], date_cols=["transit_day"], notnull=["DEVICE_ID"]),
     "device_ps3_incident": dict(grain=["availability_event_id"], notnull=["DEVICE_ID", "AE_FAILURE_LEVEL"]),
     "device_ps4_hourly":   dict(grain=["DEVICE_ID", "hour_bucket"], date_cols=["transit_day"], notnull=["DEVICE_ID", "ensemble_anomaly_flag"]),
@@ -67,12 +73,12 @@ for t, cfg in GOLD.items():
 # COMMAND ----------
 # PS-specific ML-readiness checks
 
-# PS1: label positive rate. Spec target = chargeable failure ~1.52%. Current label = ANY outage (duration_min>0),
-# expected ~20-60%. A very high rate flags the open label-definition decision (gate to failure_level IN (1,2,3,4,5,16)).
+# PS1: label positive rate. Target = will_fail_3d (chargeable SLA failure within 3 days, TVM+GATE only).
+# R3-2 (2026-06-27): 7-day window → 3-day; VALIDATOR excluded. Expected positive rate ~1-5%.
 def ps1_label():
-    r = spark.sql("SELECT round(100.0*avg(will_fail_7d),2) pct FROM mars_dev.gold.device_ps1_daily").first()["pct"]
-    log("device_ps1_daily", "label_positive_rate", "WARN" if (r or 0) > 10 else "PASS",
-        f"{r}% positive (chargeable spec ~1.5%; any-outage ~20-60% -> confirm label intent)")
+    r = spark.sql("SELECT round(100.0*avg(will_fail_3d),2) pct FROM mars_dev.gold.device_ps1_daily").first()["pct"]
+    log("device_ps1_daily", "label_positive_rate", "WARN" if (r or 0) > 15 else "PASS",
+        f"{r}% positive (chargeable 3d spec ~1-5%; >15% suggests label too broad)")
 safe("device_ps1_daily", "label_positive_rate", ps1_label)
 
 # PS3: target class balance — flag classes with too few rows to learn

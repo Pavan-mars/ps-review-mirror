@@ -14,6 +14,9 @@
 --   S13  mars_dev.silver.tap_event_daily
 --   S05  mars_dev.silver.metric_hourly  (METRIC_ID=401 hourly tap timing -- was direct S3 parquet, fixed 2026-06-22)
 --   S21  mars_dev.silver.use_revenue_daily  (daily revenue broadcast to all hours; FARE_DUE in cents)
+--   S24  mars_dev.silver.device_incident_features_daily  (NEW 2026-07-07)
+--         +5 incident history cols; daily grain broadcast to all hourly rows via DEVICE_KEY + transit_day
+--         TVM 17.75% day-coverage, GATE 3.33%, VALIDATOR 0%
 -- bus_realtime_daily JOIN REMOVED (CTA_REAL_TIME_BUS_DATA dropped 2026-06-12)
 --
 -- Anomaly signals (3 -> ensemble):
@@ -236,6 +239,15 @@ SELECT
     COALESCE(dr.use_net_revenue_cents_daily, 0)   AS use_net_revenue_cents_daily,
     COALESCE(dr.use_revenue_active_hours, 0)      AS use_revenue_active_hours,
     COALESCE(dr.use_revenue_zero_flag, 0)         AS use_revenue_zero_flag,
+    -- Incident history context (S24 -- R4 2026-07-07)
+    -- Daily grain broadcast to all hourly rows for same DEVICE_KEY + transit_day
+    -- 5 cols: short-window volume, chargeable history, MTTR, recency
+    -- count cols: COALESCE 0; MTTR: NULL kept (no history is distinct from zero)
+    COALESCE(inc24.incident_count_7d_past,    0) AS incident_count_7d_past,
+    COALESCE(inc24.chargeable_count_7d_past,  0) AS chargeable_count_7d_past,
+    COALESCE(inc24.chargeable_count_30d_past, 0) AS chargeable_count_30d_past,
+    inc24.avg_mttr_30d_past,
+    inc24.days_since_last_incident,
     -- Device context
     dd.DEVICE_NAME,
     dd.FACILITY_ID,
@@ -262,6 +274,10 @@ LEFT JOIN (
 ) tap ON tap.DEVICE_ID = he.DEVICE_ID AND tap.transit_day = he.transit_day
 LEFT JOIN daily_revenue dr
     ON dr.DEVICE_ID = he.DEVICE_ID AND dr.transit_day = he.transit_day
+-- R4 (2026-07-07): S24 incident features — daily grain broadcast to all hourly rows
+LEFT JOIN mars_dev.silver.device_incident_features_daily inc24
+    ON inc24.DEVICE_KEY  = he.DEVICE_KEY
+   AND inc24.transit_day = he.transit_day
 LEFT JOIN mars_dev.silver.dim_device dd
     ON dd.DEVICE_ID = he.DEVICE_ID AND dd.is_current = TRUE;
 

@@ -10,6 +10,16 @@
 -- Sources (silver):
 --   S18  mars_dev.silver.device_outage
 --   S09  mars_dev.silver.hw_config_current
+--   S15  mars_dev.silver.incident_history  (NEW 2026-07-07 -- R4)
+--         Lifetime device-level ServiceNow aggregation — different signal from S18 device_outage:
+--         S18 = NCS telemetry hardware OOS events; S15 = field technician response records.
+--         Adds: total_inc_device, chargeable_inc_device, avg_mttr_device, distinct_event_codes_device
+--         Join grain: DEVICE_KEY only (lifetime aggregates, not rolling windows — no date join)
+--         NOTE: S24 (daily rolling windows) is NOT used here — grain mismatch with component rows.
+--   S13  mars_dev.silver.tap_event_daily   (NEW 2026-07-07 -- R5)
+--         Lifetime device-level usage intensity — total taps, avg daily taps, active service days.
+--         Higher avg_daily_taps = faster mechanical wear -> shorter expected component lifespan.
+--         Covers TVM, GATE, VALIDATOR (bus farebox taps). Join grain: DEVICE_ID only.
 -- Sources (bronze):
 --   mars_dev.bronze.ncs_stage_cashbox_tracking  (TVM/VALIDATOR only)
 --
@@ -123,6 +133,41 @@ component_failures AS (
     FROM component_outages_lead
     GROUP BY DEVICE_ID, COMPONENT_SERIAL_NBR, COMPONENT_TYPE_NAME
 ),
+-- R4 (2026-07-07): device-level ServiceNow lifetime summary from S15 incident_history
+-- Grain: one row per DEVICE_KEY (lifetime aggregates — NOT rolling windows like S24)
+-- Covers TVM + GATE only (VALIDATOR/BMV* = 0 ServiceNow incidents confirmed 2026-07-07)
+-- Separate from device_outage (S18): these are technician-filed tickets, not NCS telemetry events
+device_inc_lifetime AS (
+    SELECT
+        DEVICE_KEY,
+        COUNT(*)                                                      AS total_inc_device,
+        SUM(is_chargeable)                                            AS chargeable_inc_device,
+        AVG(time_to_resolve_minutes)                                  AS avg_mttr_device,
+        COUNT(DISTINCT event_code_id)                                 AS distinct_event_codes_device,
+        MIN(incident_date)                                            AS first_incident_date,
+        MAX(incident_date)                                            AS last_incident_date,
+        SUM(is_major_incident)                                        AS major_inc_device
+    FROM mars_dev.silver.incident_history
+    WHERE DEVICE_KEY IS NOT NULL
+      AND incident_date IS NOT NULL
+      AND incident_date >= '2024-01-01'
+    GROUP BY DEVICE_KEY
+),
+-- R5 (2026-07-07): device-level usage intensity from S13 tap_event_daily
+-- Higher usage = faster mechanical wear -> shorter component survival time
+-- Covers all device types (TVM/GATE/VALIDATOR bus farebox)
+device_usage_lifetime AS (
+    SELECT
+        DEVICE_ID,
+        SUM(tap_count)                                                    AS lifetime_tap_count,
+        AVG(tap_count)                                                    AS avg_daily_taps,
+        COUNT(DISTINCT transit_day)                                       AS active_service_days,
+        MAX(transit_day)                                                  AS last_tap_day
+    FROM mars_dev.silver.tap_event_daily
+    WHERE DEVICE_ID IS NOT NULL
+      AND transit_day >= '2024-01-01'
+    GROUP BY DEVICE_ID
+),
 -- Cashbox context (TVM/VALIDATOR only; LEFT JOIN returns 0/NULL for GATE/READER)
 -- FIX 11+12+13: bronze.ncs_cashbox_tracking -> ncs_stage_cashbox_tracking;
 --               TRANSACTION_TYPE->CASHBOX_TYPE_ID; TRANSACTION_DTM->CASHBOX_INSERTED/REMOVED_DTM
@@ -197,13 +242,35 @@ SELECT
     -- Data gap flags
     FALSE                                                             AS has_work_order_data,
     FALSE                                                             AS has_maintenance_log,
-    TRUE                                                              AS hw_from_ncs_stage
+    TRUE                                                              AS hw_from_ncs_stage,
+    -- R5 (2026-07-07): usage intensity from S13 tap_event_daily — all device types
+    -- NULL for devices with no tap records in S13 (rare — most active devices have taps)
+    COALESCE(dul.lifetime_tap_count,  0)                             AS lifetime_tap_count,
+    COALESCE(dul.avg_daily_taps,      0)                             AS avg_daily_taps,
+    COALESCE(dul.active_service_days, 0)                             AS active_service_days,
+    dul.last_tap_day,
+    -- R4 (2026-07-07): ServiceNow lifetime aggregates from S15 (NOT from S24 — grain mismatch)
+    -- Device-level totals across the full 2024+ window; NULL for VALIDATOR (BMV* = 0 incidents)
+    -- Use alongside NCS-telemetry failure counts: technician tickets are an independent signal
+    COALESCE(dil.total_inc_device,           0) AS total_inc_device,
+    COALESCE(dil.chargeable_inc_device,      0) AS chargeable_inc_device,
+    dil.avg_mttr_device,
+    COALESCE(dil.distinct_event_codes_device,0) AS distinct_event_codes_device,
+    dil.first_incident_date,
+    dil.last_incident_date,
+    COALESCE(dil.major_inc_device,           0) AS major_inc_device
 FROM all_hw hw
 LEFT JOIN component_failures cf
     ON cf.DEVICE_ID            = hw.DEVICE_ID
    AND cf.COMPONENT_SERIAL_NBR = hw.COMPONENT_SERIAL_NBR
 LEFT JOIN cashbox_stats cs
     ON cs.DEVICE_ID = hw.DEVICE_ID
+-- R4 (2026-07-07): device-level ServiceNow lifetime summary — join on DEVICE_KEY only
+LEFT JOIN device_inc_lifetime dil
+    ON dil.DEVICE_KEY = hw.DEVICE_KEY
+-- R5 (2026-07-07): usage intensity from S13 — join on DEVICE_ID only
+LEFT JOIN device_usage_lifetime dul
+    ON dul.DEVICE_ID = hw.DEVICE_ID
 WHERE hw.component_age_days IS NOT NULL;
 
 -- FIX 15: CREATE INDEX (x6) removed -- not supported on Delta tables

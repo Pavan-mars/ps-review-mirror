@@ -7,6 +7,9 @@
 -- Sources (silver):
 --   S06  mars_dev.silver.dim_device
 --   S16  mars_dev.silver.device_event_enriched
+--   S24  mars_dev.silver.device_incident_features_daily  (NEW 2026-07-07)
+--         +5 incident history cols; join on DEVICE_KEY + transit_day
+--         TVM 17.75% coverage, GATE 3.33%, VALIDATOR 0%
 -- Sources (bronze):
 --   mars_dev.bronze.ncs_stage_cashbox_tracking  (TVM only -- 140M rows)
 --   mars_dev.bronze.ncs_stage_cashbox_type      (15 rows -- cashbox type dimension)
@@ -223,12 +226,24 @@ SELECT
     -- CI dependency features UNAVAILABLE (SVN_STAGE = 0 rows)
     CAST(NULL AS STRING)                      AS ci_related_devices,
     CAST(NULL AS STRING)                      AS shared_facility_chain,
-    FALSE                                     AS svn_ci_data_available
+    FALSE                                     AS svn_ci_data_available,
+    -- Incident history context (S24 -- R4 2026-07-07)
+    -- 5 cols selected: chain severity depends on device maintenance history and recency
+    -- count cols: COALESCE 0; MTTR and priority: NULL kept (no history is distinct from zero)
+    COALESCE(inc24.incident_count_7d_past,    0) AS incident_count_7d_past,
+    COALESCE(inc24.chargeable_count_30d_past, 0) AS chargeable_count_30d_past,
+    inc24.avg_mttr_30d_past,
+    inc24.min_priority_30d_past,
+    inc24.days_since_last_incident
 FROM chain_agg ca
 LEFT JOIN mars_dev.silver.dim_device dd
     ON dd.DEVICE_ID = ca.DEVICE_ID AND dd.is_current = TRUE
 LEFT JOIN cashbox_daily cb
-    ON cb.DEVICE_ID = ca.DEVICE_ID AND cb.cbx_date = ca.transit_day;
+    ON cb.DEVICE_ID = ca.DEVICE_ID AND cb.cbx_date = ca.transit_day
+-- R4 (2026-07-07): S24 incident features — join on DEVICE_KEY + transit_day
+LEFT JOIN mars_dev.silver.device_incident_features_daily inc24
+    ON inc24.DEVICE_KEY  = ca.DEVICE_KEY
+   AND inc24.transit_day = ca.transit_day;
 
 -- Post-build:
 -- OPTIMIZE mars_dev.gold.device_ps2_chains ZORDER BY (DEVICE_ID, transit_day);

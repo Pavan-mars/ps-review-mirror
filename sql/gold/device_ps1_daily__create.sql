@@ -15,6 +15,9 @@
 --   S13  mars_dev.silver.tap_event_daily        (27% coverage -- VALIDATOR+GATE only; TVM=0)
 --   S14  mars_dev.silver.tvm_sale_daily         (3% coverage -- TVM only)
 --   S21  mars_dev.silver.use_revenue_daily      (100% coverage -- all device types; FARE_DUE in cents)
+--   S24  mars_dev.silver.device_incident_features_daily  (NEW 2026-07-07)
+--         TVM 17.75% device-day coverage, GATE 3.33%, VALIDATOR 0% (BMV* = no ServiceNow incidents)
+--         12 backward-looking incident features; all windows ROWS BETWEEN N PRECEDING AND 1 PRECEDING
 --
 -- Fixes applied 2026-06-19 (pre-validation run):
 --   FIX 1: READER excluded from mars_device_category filter (0 events confirmed)
@@ -61,6 +64,18 @@
 --         Diagnosis: TVM 29.58% positive rate at 7d (too high); VALIDATOR 0% (no ServiceNow data).
 --         3-day window targets: TVM ~10-15%, GATE ~3-5%.
 --         failure_level IN (2,3,4,5) confirmed — levels 1 and 16 absent from data.
+--
+-- R4 additions (2026-07-07):
+--   R4-1: +12 incident history feature columns from S24 (device_incident_features_daily)
+--         LEFT JOIN on DEVICE_KEY + transit_day; zero-fill counts, NULL for MTTR/priority (no history)
+--         New cols: incident_count_7d_past, incident_count_30d_past, incident_count_90d_past,
+--                   chargeable_count_7d_past, chargeable_count_30d_past,
+--                   avg_mttr_7d_past, avg_mttr_30d_past, min_priority_30d_past,
+--                   major_inc_count_30d_past, distinct_event_codes_30d,
+--                   days_since_last_incident, incident_rate_trend
+--   R4-2: +will_fail_7d and +will_fail_14d label columns (same logic as will_fail_3d,
+--         different forward window via outage_label_days_7d / outage_label_days_14d CTEs)
+--         Expected: TVM will_fail_7d ~25-30%, GATE ~5-8%; TVM will_fail_14d ~35-40%, GATE ~8-12%
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.gold.device_ps1_daily;
@@ -243,6 +258,40 @@ outage_label_days AS (
       AND do2.failure_level IN (2,3,4,5)
       AND do2.mars_device_category IN ('TVM','GATE')
 ),
+-- R4-2 (2026-07-07): will_fail_7d — 7-day lookahead, same chargeable definition as 3d
+--   Expected positive rate: TVM ~25-30%, GATE ~5-8%
+outage_label_days_7d AS (
+    SELECT DISTINCT
+        do2.DEVICE_ID,
+        DATE_ADD(do2.transit_day, -seq.n) AS label_day
+    FROM mars_dev.silver.device_outage do2
+    CROSS JOIN (
+        SELECT 1 AS n UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL
+        SELECT 4         UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7
+    ) seq
+    WHERE do2.duration_min > 0
+      AND do2.is_chargeable = TRUE
+      AND do2.failure_level IN (2,3,4,5)
+      AND do2.mars_device_category IN ('TVM','GATE')
+),
+-- R4-2 (2026-07-07): will_fail_14d — 14-day lookahead, same chargeable definition
+--   Expected positive rate: TVM ~35-40%, GATE ~8-12%
+outage_label_days_14d AS (
+    SELECT DISTINCT
+        do2.DEVICE_ID,
+        DATE_ADD(do2.transit_day, -seq.n) AS label_day
+    FROM mars_dev.silver.device_outage do2
+    CROSS JOIN (
+        SELECT  1 AS n UNION ALL SELECT  2 UNION ALL SELECT  3 UNION ALL
+        SELECT  4         UNION ALL SELECT  5 UNION ALL SELECT  6 UNION ALL SELECT  7 UNION ALL
+        SELECT  8         UNION ALL SELECT  9 UNION ALL SELECT 10 UNION ALL SELECT 11 UNION ALL
+        SELECT 12         UNION ALL SELECT 13 UNION ALL SELECT 14
+    ) seq
+    WHERE do2.duration_min > 0
+      AND do2.is_chargeable = TRUE
+      AND do2.failure_level IN (2,3,4,5)
+      AND do2.mars_device_category IN ('TVM','GATE')
+),
 -- FIX 7: spine filtered to >= 2024-01-01 (ML training window; excludes legacy pre-2024 rows)
 spine AS (
     SELECT DISTINCT ad.DEVICE_ID, ed.transit_day
@@ -337,6 +386,22 @@ SELECT
     COALESCE(ur.use_revenue_active_hours, 0)     AS use_revenue_active_hours,
     COALESCE(ur.use_revenue_7d_avg, 0)           AS use_revenue_7d_avg,
     COALESCE(ur.use_revenue_decline_flag, FALSE) AS use_revenue_decline_flag,
+    -- Incident history features (S24 -- R4-1 2026-07-07)
+    -- TVM: 17.75% coverage; GATE: 3.33%; VALIDATOR: 0% (zero-filled throughout)
+    -- Count columns: COALESCE 0 (no prior incidents is a valid state for the model)
+    -- MTTR / priority: NULL kept (model treats missing as unknown, distinct from zero)
+    COALESCE(inc24.incident_count_7d_past,    0) AS incident_count_7d_past,
+    COALESCE(inc24.incident_count_30d_past,   0) AS incident_count_30d_past,
+    COALESCE(inc24.incident_count_90d_past,   0) AS incident_count_90d_past,
+    COALESCE(inc24.chargeable_count_7d_past,  0) AS chargeable_count_7d_past,
+    COALESCE(inc24.chargeable_count_30d_past, 0) AS chargeable_count_30d_past,
+    inc24.avg_mttr_7d_past,
+    inc24.avg_mttr_30d_past,
+    inc24.min_priority_30d_past,
+    COALESCE(inc24.major_inc_count_30d_past,  0) AS major_inc_count_30d_past,
+    COALESCE(inc24.distinct_event_codes_30d,  0) AS distinct_event_codes_30d,
+    inc24.days_since_last_incident,
+    inc24.incident_rate_trend,
     -- TARGET: 1 if device has a chargeable SLA failure within next 3 days
     -- Definition (R3-2 2026-06-27): is_chargeable=TRUE AND failure_level IN (2,3,4,5)
     --   AND mars_device_category IN ('TVM','GATE') — VALIDATOR excluded (no ServiceNow data)
@@ -345,7 +410,10 @@ SELECT
     --          2026-06-25 duration_min > 0, 7-day, all categories (TVM 29.58% — too high)
     --          2026-06-26 chargeable + failure_level IN (1,2,3,4,5,16) (still 7-day)
     --          2026-06-27 3-day window + TVM/GATE only + failure_level IN (2,3,4,5)
-    CASE WHEN old.DEVICE_ID IS NOT NULL THEN 1 ELSE 0 END AS will_fail_3d
+    CASE WHEN old.DEVICE_ID   IS NOT NULL THEN 1 ELSE 0 END AS will_fail_3d,
+    -- R4-2 (2026-07-07): extended label windows — same chargeable definition as will_fail_3d
+    CASE WHEN old7.DEVICE_ID  IS NOT NULL THEN 1 ELSE 0 END AS will_fail_7d,
+    CASE WHEN old14.DEVICE_ID IS NOT NULL THEN 1 ELSE 0 END AS will_fail_14d
 
 FROM spine sp
 JOIN all_devices ad                    ON ad.DEVICE_ID  = sp.DEVICE_ID
@@ -363,7 +431,14 @@ LEFT JOIN kpi_device_daily kp          ON kp.DEVICE_ID   = sp.DEVICE_ID AND kp.t
 LEFT JOIN mars_dev.silver.metric_daily md  ON md.DEVICE_ID  = sp.DEVICE_ID AND md.transit_day = sp.transit_day
 LEFT JOIN tvm_sales ts                 ON ts.DEVICE_ID   = sp.DEVICE_ID AND ts.transit_day   = sp.transit_day
 LEFT JOIN use_revenue ur               ON ur.DEVICE_ID   = sp.DEVICE_ID AND ur.transit_day   = sp.transit_day
-LEFT JOIN outage_label_days old        ON old.DEVICE_ID  = sp.DEVICE_ID AND old.label_day    = sp.transit_day;
+LEFT JOIN outage_label_days old         ON old.DEVICE_ID   = sp.DEVICE_ID AND old.label_day    = sp.transit_day
+-- R4-1 (2026-07-07): S24 incident features — join on DEVICE_KEY + transit_day
+LEFT JOIN mars_dev.silver.device_incident_features_daily inc24
+                                        ON inc24.DEVICE_KEY  = ad.DEVICE_KEY
+                                       AND inc24.transit_day = sp.transit_day
+-- R4-2 (2026-07-07): extended label windows
+LEFT JOIN outage_label_days_7d  old7   ON old7.DEVICE_ID   = sp.DEVICE_ID AND old7.label_day   = sp.transit_day
+LEFT JOIN outage_label_days_14d old14  ON old14.DEVICE_ID  = sp.DEVICE_ID AND old14.label_day  = sp.transit_day;
 
 -- Post-build:
 -- OPTIMIZE mars_dev.gold.device_ps1_daily ZORDER BY (DEVICE_ID, transit_day);

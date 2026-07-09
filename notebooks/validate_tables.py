@@ -1,6 +1,6 @@
 # Databricks notebook source
 # =============================================================================
-# validate_tables -- row counts + key metrics for all silver (S01-S23) and
+# validate_tables -- row counts + key metrics for all silver (S01-S24) and
 #                    gold (PS1-PS5) tables in mars_dev Unity Catalog.
 #
 # Run AFTER run_layer (silver first, then gold).
@@ -375,6 +375,31 @@ if "error" not in r:
     print(f"       range={r.get('min_month')} to {r.get('max_month')}")
 results.append(("silver", "S23", "kpi_monthly_benchmark", s, r))
 
+# -- S24 device_incident_features_daily (NEW 2026-07-07) ---------------------
+r = check(f"""
+    SELECT COUNT(*) AS rows,
+           COUNT(DISTINCT DEVICE_KEY) AS distinct_devices,
+           MIN(transit_day) AS min_day,
+           MAX(transit_day) AS max_day,
+           SUM(CASE WHEN incident_count_30d_past IS NULL THEN 1 ELSE 0 END) AS null_count_cols,
+           SUM(CASE WHEN avg_mttr_30d_past IS NULL THEN 1 ELSE 0 END)       AS null_mttr_rows,
+           SUM(CASE WHEN incident_count_7d_past > incident_count_30d_past
+                    OR incident_count_30d_past > incident_count_90d_past
+                    THEN 1 ELSE 0 END)                                       AS window_violations,
+           SUM(CASE WHEN transit_day BETWEEN '2025-01-01' AND '2025-02-28'
+                    THEN 1 ELSE 0 END)                                       AS jan_feb_2025_rows
+    FROM {catalog}.silver.device_incident_features_daily
+""")
+s = status(r, min_rows=100000)
+print(f"S24  device_incident_features_daily  {s}")
+if "error" not in r:
+    print(f"       distinct_devices={fmt(r.get('distinct_devices'))}  range={r.get('min_day')} to {r.get('max_day')}")
+    print(f"       null_count_cols={fmt(r.get('null_count_cols'))} (expected 0)  null_mttr_rows={fmt(r.get('null_mttr_rows'))} (expected ~1/device)  window_violations={fmt(r.get('window_violations'))} (expected 0)")
+    jan_feb = r.get('jan_feb_2025_rows', 0)
+    jan_feb_ok = "OK" if (jan_feb or 0) > 0 else "FAIL -- gap exclusion still present or table not rebuilt"
+    print(f"       jan_feb_2025_rows={fmt(jan_feb)} [{jan_feb_ok}]")
+results.append(("silver", "S24", "device_incident_features_daily", s, r))
+
 # COMMAND ----------
 # =============================================================================
 # GOLD TABLES  PS1 - PS5
@@ -390,15 +415,22 @@ r = check(f"""
            COUNT(DISTINCT DEVICE_ID) AS distinct_devices,
            MIN(transit_day) AS min_day,
            MAX(transit_day) AS max_day,
-           SUM(will_fail_3d) AS positive_labels,
-           ROUND(SUM(will_fail_3d) * 100.0 / COUNT(*), 2) AS positive_rate_pct
+           SUM(will_fail_3d)  AS labels_3d,
+           ROUND(SUM(will_fail_3d)  * 100.0 / COUNT(*), 2) AS rate_3d_pct,
+           SUM(will_fail_7d)  AS labels_7d,
+           ROUND(SUM(will_fail_7d)  * 100.0 / COUNT(*), 2) AS rate_7d_pct,
+           SUM(will_fail_14d) AS labels_14d,
+           ROUND(SUM(will_fail_14d) * 100.0 / COUNT(*), 2) AS rate_14d_pct,
+           SUM(CASE WHEN incident_count_30d_past > 0 THEN 1 ELSE 0 END) AS rows_with_inc_history,
+           ROUND(SUM(CASE WHEN incident_count_30d_past > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS inc_coverage_pct
     FROM {catalog}.gold.device_ps1_daily
 """)
 s = status(r, min_rows=100000)
 print(f"PS1  device_ps1_daily           {s}")
 if "error" not in r:
     print(f"       distinct_devices={fmt(r.get('distinct_devices'))}  range={r.get('min_day')} to {r.get('max_day')}")
-    print(f"       positive_labels={fmt(r.get('positive_labels'))}  positive_rate={r.get('positive_rate_pct')}%")
+    print(f"       will_fail_3d={fmt(r.get('labels_3d'))} ({r.get('rate_3d_pct')}%)  will_fail_7d={fmt(r.get('labels_7d'))} ({r.get('rate_7d_pct')}%)  will_fail_14d={fmt(r.get('labels_14d'))} ({r.get('rate_14d_pct')}%)")
+    print(f"       s24_inc_coverage={fmt(r.get('rows_with_inc_history'))} rows ({r.get('inc_coverage_pct')}%)  [TVM > GATE > VALIDATOR=0% expected]")
 results.append(("gold", "PS1", "device_ps1_daily", s, r))
 
 # -- PS2 device_ps2_chains ---------------------------------------------------
@@ -408,7 +440,9 @@ r = check(f"""
            MIN(transit_day) AS min_day,
            MAX(transit_day) AS max_day,
            ROUND(AVG(chain_length), 1) AS avg_chain_length,
-           SUM(CASE WHEN has_cash_cascade THEN 1 ELSE 0 END) AS cash_cascades
+           SUM(CASE WHEN has_cash_cascade THEN 1 ELSE 0 END) AS cash_cascades,
+           SUM(CASE WHEN incident_count_7d_past > 0 THEN 1 ELSE 0 END) AS rows_with_inc_history,
+           ROUND(SUM(CASE WHEN incident_count_7d_past > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS inc_coverage_pct
     FROM {catalog}.gold.device_ps2_chains
 """)
 s = status(r, min_rows=100000)
@@ -416,6 +450,7 @@ print(f"PS2  device_ps2_chains          {s}")
 if "error" not in r:
     print(f"       distinct_devices={fmt(r.get('distinct_devices'))}  range={r.get('min_day')} to {r.get('max_day')}")
     print(f"       avg_chain_length={r.get('avg_chain_length')}  cash_cascades={fmt(r.get('cash_cascades'))}")
+    print(f"       s24_inc_coverage={r.get('inc_coverage_pct')}% rows with incident history")
 results.append(("gold", "PS2", "device_ps2_chains", s, r))
 
 # -- PS3 device_ps3_incident -------------------------------------------------
@@ -441,7 +476,9 @@ r = check(f"""
            MIN(transit_day) AS min_day,
            MAX(transit_day) AS max_day,
            SUM(ensemble_anomaly_flag) AS anomaly_hours,
-           ROUND(SUM(ensemble_anomaly_flag) * 100.0 / COUNT(*), 2) AS anomaly_rate_pct
+           ROUND(SUM(ensemble_anomaly_flag) * 100.0 / COUNT(*), 2) AS anomaly_rate_pct,
+           SUM(CASE WHEN incident_count_7d_past > 0 THEN 1 ELSE 0 END) AS rows_with_inc_history,
+           ROUND(SUM(CASE WHEN incident_count_7d_past > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS inc_coverage_pct
     FROM {catalog}.gold.device_ps4_hourly
 """)
 s = status(r, min_rows=100000)
@@ -449,6 +486,7 @@ print(f"PS4  device_ps4_hourly          {s}")
 if "error" not in r:
     print(f"       distinct_devices={fmt(r.get('distinct_devices'))}  range={r.get('min_day')} to {r.get('max_day')}")
     print(f"       anomaly_hours={fmt(r.get('anomaly_hours'))}  anomaly_rate={r.get('anomaly_rate_pct')}%")
+    print(f"       s24_inc_coverage={r.get('inc_coverage_pct')}% hourly rows with incident history")
 results.append(("gold", "PS4", "device_ps4_hourly", s, r))
 
 # -- PS5 device_ps5_component ------------------------------------------------
@@ -457,7 +495,9 @@ r = check(f"""
            COUNT(DISTINCT DEVICE_ID) AS distinct_devices,
            COUNT(DISTINCT COMPONENT_TYPE_NAME) AS component_types,
            SUM(CASE WHEN is_censored THEN 1 ELSE 0 END) AS censored_rows,
-           ROUND(AVG(days_to_failure), 1) AS avg_days_to_failure
+           ROUND(AVG(days_to_failure), 1) AS avg_days_to_failure,
+           SUM(CASE WHEN total_inc_device > 0 THEN 1 ELSE 0 END) AS rows_with_inc_history,
+           ROUND(SUM(CASE WHEN total_inc_device > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS inc_coverage_pct
     FROM {catalog}.gold.device_ps5_component
 """)
 s = status(r, min_rows=1000)
@@ -465,6 +505,7 @@ print(f"PS5  device_ps5_component       {s}")
 if "error" not in r:
     print(f"       distinct_devices={fmt(r.get('distinct_devices'))}  component_types={fmt(r.get('component_types'))}")
     print(f"       censored_rows={fmt(r.get('censored_rows'))}  avg_days_to_failure={r.get('avg_days_to_failure')}")
+    print(f"       s15_inc_coverage={r.get('inc_coverage_pct')}% components with lifetime incident history")
 results.append(("gold", "PS5", "device_ps5_component", s, r))
 
 # COMMAND ----------
@@ -483,7 +524,7 @@ fail = [(l,c,t) for l,c,t,s,_ in results if s.startswith("FAIL")]
 print(f"  OK    : {len(ok):2d} tables")
 print(f"  WARN  : {len(warn):2d} tables")
 print(f"  FAIL  : {len(fail):2d} tables")
-print(f"  TOTAL : {len(results):2d} tables checked")
+print(f"  TOTAL : {len(results):2d} tables checked  (silver S01-S24 + gold PS1-PS5)")
 
 if warn:
     print("\nWARNINGS:")

@@ -47,3 +47,5 @@ Thumbs.db
 
 # local context file — kept local, never shared in the repo
 local-notes.md
+!dashboard/src/data/
+!dashboard/src/data/**

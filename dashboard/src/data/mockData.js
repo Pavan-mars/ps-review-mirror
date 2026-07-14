@@ -1033,3 +1033,84 @@ export function getPS2Devices() {
     avg_chain_len: null, dom_subsystem: null, dom_error_code: null, worst_window: '60min+',
   }));
 }
+
+// ============================================================================
+// PS1 — Failure Prediction mock fallback (matches live API response shapes)
+// Used as initial state in PS1FailurePredictionTab so the tab shows data even
+// when VITE_API_BASE_URL is unset or the local FastAPI server is not running.
+// ============================================================================
+const _PS1_FACS = [
+  { id: 'ORD', name: "O'Hare" }, { id: 'MDW', name: 'Midway' },
+  { id: 'CL',  name: 'Clark/Lake' }, { id: 'JAC', name: 'Jackson' },
+  { id: 'HWD', name: 'Howard' }, { id: 'BLM', name: 'Belmont' },
+  { id: '95D', name: '95th/Dan Ryan' }, { id: 'RPB', name: 'Roosevelt' },
+  { id: 'WST', name: 'Wilson' }, { id: 'UIC', name: 'UIC-Halsted' },
+];
+const _TVM_FEATS = [
+  'error_rate_7d','downtime_hours_30d','tx_volume_delta_7d','maintenance_lag_days',
+  'firmware_age_days','card_read_fail_rate','reboot_count_30d','network_timeout_rate',
+  'power_cycle_count','cash_jam_events_7d','receipt_paper_low_events','sensor_temp_max_7d',
+  'idle_time_pct','peak_hour_load_factor','days_since_last_pm',
+];
+const _GATE_FEATS = [
+  'tap_fail_rate_7d','door_cycle_count_30d','sensor_fault_events','barrier_jam_count_7d',
+  'firmware_age_days','error_rate_7d','reboot_count_30d','power_fluctuation_events',
+  'maintenance_lag_days','motor_current_anomaly_rate','card_reader_timeout_rate',
+  'anti_passback_violations_7d','door_open_duration_avg','network_timeout_rate',
+  'days_since_last_pm',
+];
+
+export function getPS1MockPredictions() {
+  const rows = [];
+  const prediction_date = '2026-07-14';
+  const inference_ts = '2026-07-14 06:00:00';
+  const tvmProbs  = [0.72, 0.31, 0.58, 0.19, 0.83, 0.44, 0.61, 0.27, 0.55, 0.38, 0.67, 0.22];
+  const gateProbs = [0.08, 0.63, 0.12, 0.41, 0.07, 0.55, 0.09, 0.31];
+  _PS1_FACS.forEach((fac, fi) => {
+    tvmProbs.forEach((prob, j) => {
+      const p = Math.round(((prob + fi * 0.03) % 1) * 10000) / 10000;
+      rows.push({ prediction_id: `TVM-${fac.id}-${String(j).padStart(3,'0')}`, device_id: `TVM-${fac.id}-${String(j).padStart(4,'0')}`, device_category: 'TVM', facility_id: fac.id, facility_name: fac.name, failure_probability: p, predicted_label: p >= 0.5, decision_threshold: 0.5, prediction_date, inference_ts });
+    });
+    gateProbs.forEach((prob, j) => {
+      const p = Math.round(((prob + fi * 0.02) % 1) * 10000) / 10000;
+      rows.push({ prediction_id: `GATE-${fac.id}-${String(j).padStart(3,'0')}`, device_id: `GATE-${fac.id}-${String(j).padStart(4,'0')}`, device_category: 'GATE', facility_id: fac.id, facility_name: fac.name, failure_probability: p, predicted_label: p >= 0.5, decision_threshold: 0.5, prediction_date, inference_ts });
+    });
+  });
+  return rows;
+}
+
+export function getPS1MockModelPerf() {
+  return [
+    { model_registry_id: 'ps1-tvm-lgb-optuna-v3', device_category: 'TVM', model_name: 'PS1-TVM-Champion', algorithm: 'LightGBM (Optuna HPT)', model_version: '3', registry_alias: 'ps1-tvm-champion', status: 'APPROVED', champion: true, test_auc: 0.7649, test_pr_auc: 0.4366, decision_threshold: 0.50, deployed_at: '2026-07-12 08:00:00', prediction_head: 'SageMaker Endpoint', mlflow_version: '11', n_features: 15, mlflow_run_id: 'tvm-lgb-optuna-run-2026-07-12', s3_metrics: { train_auc: 0.8421, val_auc: 0.7720, test_auc: 0.7649, train_ap: 0.5318, val_ap: 0.4531, test_ap: 0.4366, train_f1: 0.4912, val_f1: 0.4107, test_f1: 0.4053, test_prec: 0.5241, test_rec: 0.3312, test_acc: 0.8763 } },
+    { model_registry_id: 'ps1-gate-lgb-optuna-v3', device_category: 'GATE', model_name: 'PS1-GATE-Champion', algorithm: 'LightGBM (Optuna HPT)', model_version: '3', registry_alias: 'ps1-gate-champion', status: 'APPROVED', champion: true, test_auc: 0.9318, test_pr_auc: 0.7821, decision_threshold: 0.50, deployed_at: '2026-07-12 08:00:00', prediction_head: 'SageMaker Endpoint', mlflow_version: '11', n_features: 15, mlflow_run_id: 'gate-lgb-optuna-run-2026-07-12', s3_metrics: { train_auc: 0.9712, val_auc: 0.9421, test_auc: 0.9318, train_ap: 0.8821, val_ap: 0.8034, test_ap: 0.7821, train_f1: 0.8421, val_f1: 0.7812, test_f1: 0.7634, test_prec: 0.8012, test_rec: 0.7312, test_acc: 0.9421 } },
+  ];
+}
+
+export function getPS1MockRiskTrend() {
+  const rows = [];
+  for (let i = 0; i < 14; i++) {
+    const d = new Date('2026-07-01'); d.setDate(d.getDate() + i);
+    const date = d.toISOString().split('T')[0];
+    rows.push(
+      { date, device_category: 'TVM',  avg_prob_pct: Math.round((20 + 8 * Math.sin(i * 0.5)) * 100) / 100, failures: 22 + (i % 5), total: 115 },
+      { date, device_category: 'GATE', avg_prob_pct: Math.round((8  + 3 * Math.cos(i * 0.6)) * 100) / 100, failures: 4  + (i % 3), total: 55  },
+    );
+  }
+  return rows;
+}
+
+export function getPS1MockFeatureImportance(device_category = 'TVM') {
+  const feats = device_category === 'TVM' ? _TVM_FEATS : _GATE_FEATS;
+  const total = feats.reduce((s, _, i) => s + Math.exp(-0.35 * i), 0);
+  return feats.map((f, i) => {
+    const imp = Math.exp(-0.35 * i) / total;
+    return { feature_name: f, avg_importance: Math.round(imp * 1e5) / 1e5, avg_shap: Math.round(imp * (i % 3 !== 1 ? 1 : -1) * 0.8 * 1e5) / 1e5 };
+  });
+}
+
+export function getPS1MockStationSummary() {
+  return _PS1_FACS.flatMap((fac) => [
+    { facility_id: fac.id, facility_name: fac.name, device_category: 'TVM',  total_devices: 12, predicted_failures: 3, critical_count: 1, high_count: 1, medium_count: 1, avg_risk_pct: 24.5, last_inference_date: '2026-07-14' },
+    { facility_id: fac.id, facility_name: fac.name, device_category: 'GATE', total_devices: 6,  predicted_failures: 1, critical_count: 0, high_count: 0, medium_count: 1, avg_risk_pct: 9.2,  last_inference_date: '2026-07-14' },
+  ]);
+}

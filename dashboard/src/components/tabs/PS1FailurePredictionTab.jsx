@@ -12,6 +12,11 @@ import {
   getModelPerformance,
   getConfusionMatrix,
   getFeatureImportance,
+  getPS1MockPredictions,
+  getPS1MockModelPerf,
+  getPS1MockRiskTrend,
+  getPS1MockFeatureImportance,
+  getPS1MockStationSummary,
 } from '../../data/mockData';
 
 const SEVERITY_COLORS = {
@@ -53,7 +58,7 @@ const FEATURE_IMPORTANCE_COLORS = {
   'Firmware Age': '#3b82f6',
 };
 
-const API_BASE = 'https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com';
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com';
 
 function probSeverity(prob, threshold) {
   const ratio = parseFloat(prob) / parseFloat(threshold);
@@ -80,18 +85,18 @@ export default function PS1FailurePredictionTab({ city, selectedDevices }) {
   const [causalDevice, setCausalDevice] = useState(() => ps1Devices[0] || 'TVMs');
   const [confDevice, setConfDevice] = useState(() => ps1Devices[0] || 'TVMs');
 
-  // --- Live API state ---
-  const [livePredictions, setLivePredictions] = useState([]);
+  // --- Live API state (seeded with mock so tab is never blank without an API) ---
+  const [livePredictions, setLivePredictions] = useState(getPS1MockPredictions);
   const [liveExplainability, setLiveExplainability] = useState([]);
-  const [liveLoading, setLiveLoading] = useState(true);
-  const [liveModelPerf, setLiveModelPerf] = useState([]);
-  const [liveModelPerfLoading, setLiveModelPerfLoading] = useState(true);
-  const [liveRiskTrend, setLiveRiskTrend] = useState([]);
-  const [liveFeatImpTVM, setLiveFeatImpTVM] = useState([]);
-  const [liveFeatImpGATE, setLiveFeatImpGATE] = useState([]);
-  const [featImpLoading, setFeatImpLoading] = useState(true);
-  const [liveStationSummary, setLiveStationSummary] = useState([]);
-  const [stationLoading, setStationLoading] = useState(true);
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveModelPerf, setLiveModelPerf] = useState(getPS1MockModelPerf);
+  const [liveModelPerfLoading, setLiveModelPerfLoading] = useState(false);
+  const [liveRiskTrend, setLiveRiskTrend] = useState(getPS1MockRiskTrend);
+  const [liveFeatImpTVM, setLiveFeatImpTVM] = useState(() => getPS1MockFeatureImportance('TVM'));
+  const [liveFeatImpGATE, setLiveFeatImpGATE] = useState(() => getPS1MockFeatureImportance('GATE'));
+  const [featImpLoading, setFeatImpLoading] = useState(false);
+  const [liveStationSummary, setLiveStationSummary] = useState(getPS1MockStationSummary);
+  const [stationLoading, setStationLoading] = useState(false);
 
   useEffect(() => {
     setLiveLoading(true);

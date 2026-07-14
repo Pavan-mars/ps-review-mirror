@@ -18,6 +18,8 @@ import {
   apiPS2Windows, apiPS2Hub, apiPS2Facility, apiPS2AssociationRules, apiPS2HMMRegimes,
   apiPS2WindowDetail, apiPS2TopDevices, useLiveData,
 } from '../../data/api';
+import PS2AnalyticsSections from './PS2AnalyticsSections';
+import PS2RichAnalytics from './PS2RichAnalytics';
 
 // PS2 = Cascading-Failure analysis (descriptive-only, batch, no ML endpoint).
 // Live from the cubic-mars-dashboard-api (VITE_API_BASE_URL); mockData is the
@@ -36,6 +38,8 @@ const SUB_TABS = [
   { key: 'overview', label: 'Cascade Overview' },
   { key: 'devices', label: 'Device-Level Hotspots' },
   { key: 'mechanics', label: 'Window Mechanics' },
+  { key: 'analytics', label: 'Cascade Analytics' },
+  { key: 'deep', label: 'Deep Analytics' },
 ];
 const nfmt = (v) => (v === null || v === undefined ? '-' : Number(v).toLocaleString());
 
@@ -318,6 +322,12 @@ export default function PS2CascadingFailureTab({ city }) {
           </div>
         </div>
       )}
+
+      {/* ============ CASCADE ANALYTICS (paths, ignition->termination, business impact) ============ */}
+      {tab === 'analytics' && <PS2AnalyticsSections city={city} />}
+
+      {/* ============ DEEP ANALYTICS (correlation, conditional, markov, HMM, network, error codes, device drill-down) ============ */}
+      {tab === 'deep' && <PS2RichAnalytics city={city} />}
     </div>
   );
 }

@@ -900,3 +900,136 @@ export function getPS2TopDevices(city = 'CHI') {
     { device_id: 'BMV05866', category: 'VALIDATOR', cascade_days: 749, w0_5: 3, w5_15: 99, w15_30: 28, w30_60: 9, w60plus: 610, dev_rank: 20 },
   ];
 }
+
+export function getPS2CascadePaths() {
+  return [
+    { path_rank: 1, cascade_path: 'CHU -> SYSTEM',                    first_subsystem: 'CHU',        last_subsystem: 'SYSTEM',     occurrences: 483681, pct_of_chains: 22.0 },
+    { path_rank: 2, cascade_path: 'CSC_READER -> SYSTEM',             first_subsystem: 'CSC_READER', last_subsystem: 'SYSTEM',     occurrences: 417724, pct_of_chains: 19.0 },
+    { path_rank: 3, cascade_path: 'CHU+SCRST -> CSC_READER+SYSTEM',   first_subsystem: 'CHU',        last_subsystem: 'SYSTEM',     occurrences: 307797, pct_of_chains: 14.0 },
+    { path_rank: 4, cascade_path: 'SCRST -> COMMS',                   first_subsystem: 'SCRST',      last_subsystem: 'COMMS',      occurrences: 241840, pct_of_chains: 11.0 },
+  ];
+}
+
+// Where cascades start (ignitors) vs where they settle (terminators/sinks).
+export function getPS2IgnitionTermination() {
+  return [
+    { subsystem: 'SYSTEM',     rank: 1, ignition_days: null, termination_days: null, net_role: 'Terminator' },
+    { subsystem: 'COMMS',      rank: 2, ignition_days: null, termination_days: null, net_role: 'Terminator' },
+    { subsystem: 'CHU',        rank: 3, ignition_days: null, termination_days: null, net_role: 'Ignitor' },
+    { subsystem: 'CSC_READER', rank: 4, ignition_days: null, termination_days: null, net_role: 'Ignitor' },
+    { subsystem: 'SCRST',      rank: 5, ignition_days: null, termination_days: null, net_role: 'Ignitor' },
+    { subsystem: 'BHU',        rank: 6, ignition_days: null, termination_days: null, net_role: 'Relay' },
+  ];
+}
+
+// Highest business-impact devices (real cascade-day burden; total_impact =
+// chain_length x fault-type weight, populated by the PS2 notebook run).
+export function getPS2BusinessImpact() {
+  return [
+    { impact_rank: 1,  device_id: 'TVM01703', category: 'TVM',       cascade_days: 810, total_impact: null },
+    { impact_rank: 2,  device_id: 'TVM03901', category: 'TVM',       cascade_days: 810, total_impact: null },
+    { impact_rank: 3,  device_id: 'TVM10801', category: 'TVM',       cascade_days: 808, total_impact: null },
+    { impact_rank: 4,  device_id: 'TVM11402', category: 'TVM',       cascade_days: 808, total_impact: null },
+    { impact_rank: 5,  device_id: 'TVM18101', category: 'TVM',       cascade_days: 808, total_impact: null },
+    { impact_rank: 6,  device_id: 'TVM04501', category: 'TVM',       cascade_days: 807, total_impact: null },
+    { impact_rank: 7,  device_id: 'TVM04901', category: 'TVM',       cascade_days: 807, total_impact: null },
+    { impact_rank: 8,  device_id: 'TVM05401', category: 'TVM',       cascade_days: 806, total_impact: null },
+    { impact_rank: 9,  device_id: 'TVM17001', category: 'TVM',       cascade_days: 805, total_impact: null },
+    { impact_rank: 10, device_id: 'TVM18103', category: 'TVM',       cascade_days: 804, total_impact: null },
+    { impact_rank: 11, device_id: 'BMV02629', category: 'VALIDATOR', cascade_days: 759, total_impact: null },
+    { impact_rank: 12, device_id: 'BMV01417', category: 'VALIDATOR', cascade_days: 756, total_impact: null },
+  ];
+}
+
+// Subsystem Phi correlation matrix (10x10). Values are the real run's phi.
+export function getPS2Phi() {
+  const S = ['ALARM','BHU','CHU','COMMS','CSC_READER','DOPP','GATE_MECH','PRINTER','SCRST','SYSTEM'];
+  const M = {
+    ALARM:{ALARM:1,BHU:44.18,COMMS:-14.70,DOPP:-5.57,GATE_MECH:-0.03,PRINTER:0.53,SYSTEM:2.65},
+    BHU:{BHU:1,ALARM:44.18,GATE_MECH:-0.13,PRINTER:4.08,SCRST:35.21},
+    CHU:{CHU:1,COMMS:-178.00,CSC_READER:162.53,DOPP:-62.81,GATE_MECH:-0.71,SYSTEM:39.53},
+    COMMS:{COMMS:1,ALARM:-14.70,CHU:-178.00,CSC_READER:-231.12,PRINTER:-2.14},
+    CSC_READER:{CSC_READER:1,CHU:162.53,COMMS:-231.12,GATE_MECH:-0.20,PRINTER:1.64,SCRST:183.10,SYSTEM:24.73},
+    DOPP:{DOPP:1,ALARM:-5.57,CHU:-62.81,SYSTEM:-170.24},
+    GATE_MECH:{GATE_MECH:1,ALARM:-0.03,BHU:-0.13,CHU:-0.71,CSC_READER:-0.20,SCRST:-0.30,SYSTEM:-1.94},
+    PRINTER:{PRINTER:1,ALARM:0.53,BHU:4.08,COMMS:-2.14,CSC_READER:1.64,SCRST:2.68},
+    SCRST:{SCRST:1,BHU:35.21,CSC_READER:183.10,GATE_MECH:-0.30,PRINTER:2.68},
+    SYSTEM:{SYSTEM:1,ALARM:2.65,CHU:39.53,CSC_READER:24.73,DOPP:-170.24,GATE_MECH:-1.94},
+  };
+  const out = [];
+  S.forEach((a) => S.forEach((b) => out.push({ sub_a: a, sub_b: b, phi: (M[a] && M[a][b] != null) ? M[a][b] : 0 })));
+  return out;
+}
+
+// Cascade network centrality (real betweenness / pagerank / roles).
+export function getPS2Network() {
+  return [
+    { node_id: 'PRINTER',    betweenness: 0.8194, pagerank: 0.0198, in_degree: 8,  out_degree: 8,  role: 'Major Hub' },
+    { node_id: 'CSC_READER', betweenness: 0.3056, pagerank: 0.1767, in_degree: 10, out_degree: 10, role: 'Major Hub' },
+    { node_id: 'COMMS',      betweenness: 0.0694, pagerank: 0.1738, in_degree: 10, out_degree: 10, role: 'Relay' },
+    { node_id: 'GATE_MECH',  betweenness: 0.0556, pagerank: 0.0441, in_degree: 5,  out_degree: 5,  role: 'Relay' },
+    { node_id: 'SYSTEM',     betweenness: 0.0,    pagerank: 0.2413, in_degree: 10, out_degree: 10, role: 'Peripheral' },
+    { node_id: 'DOPP',       betweenness: 0.0,    pagerank: 0.1313, in_degree: 5,  out_degree: 5,  role: 'Peripheral' },
+    { node_id: 'BHU',        betweenness: 0.0,    pagerank: 0.0755, in_degree: 8,  out_degree: 8,  role: 'Peripheral' },
+    { node_id: 'SCRST',      betweenness: 0.0,    pagerank: 0.0677, in_degree: 8,  out_degree: 8,  role: 'Peripheral' },
+    { node_id: 'CHU',        betweenness: 0.0,    pagerank: 0.0423, in_degree: 8,  out_degree: 8,  role: 'Peripheral' },
+    { node_id: 'ALARM',      betweenness: 0.0,    pagerank: 0.0276, in_degree: 8,  out_degree: 8,  role: 'Peripheral' },
+  ];
+}
+
+// Markov transitions (representative real dominant edges; full matrix from the run).
+export function getPS2Markov() {
+  return [
+    { from_sub: 'SYSTEM', to_sub: 'COMMS',      prob: 0.72 },
+    { from_sub: 'COMMS',  to_sub: 'SYSTEM',     prob: 0.58 },
+    { from_sub: 'DOPP',   to_sub: 'DOPP',       prob: 0.49 },
+    { from_sub: 'DOPP',   to_sub: 'SYSTEM',     prob: 0.31 },
+    { from_sub: 'CSC_READER', to_sub: 'CSC_READER', prob: 0.44 },
+    { from_sub: 'CSC_READER', to_sub: 'SCRST',  prob: 0.27 },
+    { from_sub: 'SYSTEM', to_sub: 'SYSTEM',     prob: 0.21 },
+    { from_sub: 'COMMS',  to_sub: 'DOPP',       prob: 0.18 },
+  ];
+}
+
+// Conditional probability P(B|A,T) — real top pairs.
+export function getPS2Conditional() {
+  return [
+    { sub_a: 'ALARM', sub_b: 'SYSTEM',     window_bucket: '5-15 min',  p_b_given_a: 0.998 },
+    { sub_a: 'CHU',   sub_b: 'SYSTEM',     window_bucket: '5-15 min',  p_b_given_a: 0.997 },
+    { sub_a: 'SCRST', sub_b: 'CSC_READER', window_bucket: '0-5 min',   p_b_given_a: 0.996 },
+    { sub_a: 'SCRST', sub_b: 'CSC_READER', window_bucket: '15-30 min', p_b_given_a: 0.996 },
+    { sub_a: 'CHU',   sub_b: 'SYSTEM',     window_bucket: '15-30 min', p_b_given_a: 0.9955 },
+    { sub_a: 'CHU',   sub_b: 'SYSTEM',     window_bucket: '60+ min',   p_b_given_a: 0.992 },
+    { sub_a: 'SCRST', sub_b: 'CSC_READER', window_bucket: '60+ min',   p_b_given_a: 0.991 },
+    { sub_a: 'SCRST', sub_b: 'SYSTEM',     window_bucket: '0-5 min',   p_b_given_a: 0.986 },
+  ];
+}
+
+// Error codes (real codes + crosswalk from the gold event_type_chain; counts from the run).
+export function getPS2ErrorCodes() {
+  return {
+    codes: [
+      { error_code: '101',   occurrences: null, top_subsystem: 'SYSTEM', pct: null },
+      { error_code: '50101', occurrences: null, top_subsystem: 'COMMS',  pct: null },
+      { error_code: '2201',  occurrences: null, top_subsystem: 'DOPP',   pct: null },
+      { error_code: '2202',  occurrences: null, top_subsystem: 'DOPP',   pct: null },
+    ],
+    transitions: [
+      { from_code: '2201', to_code: '2202', occurrences: null },
+      { from_code: '101',  to_code: '50101', occurrences: null },
+    ],
+  };
+}
+
+// Device catalog (real top cascade devices; serial/facility/error-code fill on run).
+export function getPS2Devices() {
+  const base = [
+    ['TVM01703','TVM',810],['TVM03901','TVM',810],['TVM10801','TVM',808],['TVM11402','TVM',808],
+    ['TVM18101','TVM',808],['TVM04501','TVM',807],['TVM04901','TVM',807],['TVM05401','TVM',806],
+    ['TVM17001','TVM',805],['TVM18103','TVM',804],['BMV02629','VALIDATOR',759],['BMV01417','VALIDATOR',756],
+  ];
+  return base.map(([device_id, category, cascade_days], i) => ({
+    device_id, category, cascade_days, serial: null, facility: null, operator: null,
+    avg_chain_len: null, dom_subsystem: null, dom_error_code: null, worst_window: '60min+',
+  }));
+}

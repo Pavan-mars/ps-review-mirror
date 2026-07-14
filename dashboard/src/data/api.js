@@ -221,3 +221,106 @@ export function useLiveData(initial, fetcher, deps) {
   }, deps);
   return data;
 }
+
+// ============================================================================
+// Phase-1e/1f rich PS2 fetchers (cascade paths, ignition->termination, business
+// impact, correlation, conditional prob, markov, network, error codes, devices).
+// Same contract: map API rows -> the shape the components expect; fall back to
+// the real-anchored mock on unset/unreachable API.
+// ============================================================================
+import {
+  getPS2CascadePaths, getPS2IgnitionTermination, getPS2BusinessImpact,
+  getPS2Phi, getPS2Network, getPS2Markov, getPS2Conditional, getPS2ErrorCodes, getPS2Devices,
+} from './mockData';
+
+export async function apiPS2Paths(city) {
+  try {
+    const rows = await apiGet('/ps2/paths', city);
+    if (rows === undefined) return getPS2CascadePaths();
+    if (!Array.isArray(rows)) return getPS2CascadePaths();
+    return rows.map((d) => ({
+      path_rank: N(d.path_rank), cascade_path: String(d.cascade_path || '').replace(/->/g, ' -> '),
+      first_subsystem: d.first_subsystem, last_subsystem: d.last_subsystem,
+      occurrences: N(d.occurrences), pct_of_chains: N(d.pct_of_chains),
+    }));
+  } catch { return getPS2CascadePaths(); }
+}
+export async function apiPS2Ignition(city) {
+  try {
+    const rows = await apiGet('/ps2/ignition', city);
+    if (rows === undefined) return getPS2IgnitionTermination();
+    if (!Array.isArray(rows)) return getPS2IgnitionTermination();
+    return rows.map((d) => ({
+      subsystem: d.subsystem, rank: N(d.rank), ignition_days: N(d.ignition_days),
+      termination_days: N(d.termination_days), ignition_pct: N(d.ignition_pct),
+      termination_pct: N(d.termination_pct), net_role: d.net_role,
+    }));
+  } catch { return getPS2IgnitionTermination(); }
+}
+export async function apiPS2Impact(city) {
+  try {
+    const rows = await apiGet('/ps2/impact', city);
+    if (rows === undefined) return getPS2BusinessImpact();
+    if (!Array.isArray(rows)) return getPS2BusinessImpact();
+    return rows.map((d) => ({
+      impact_rank: N(d.impact_rank), device_id: d.device_id, category: d.category,
+      cascade_days: N(d.cascade_days), total_impact: N(d.total_impact),
+      avg_impact: N(d.avg_impact), max_impact: N(d.max_impact),
+    }));
+  } catch { return getPS2BusinessImpact(); }
+}
+export async function apiPS2Phi(city) {
+  try {
+    const rows = await apiGet('/ps2/phi', city);
+    if (rows === undefined || !Array.isArray(rows)) return getPS2Phi();
+    return rows.map((d) => ({ sub_a: d.sub_a, sub_b: d.sub_b, phi: N(d.phi) }));
+  } catch { return getPS2Phi(); }
+}
+export async function apiPS2Markov(city) {
+  try {
+    const rows = await apiGet('/ps2/markov', city);
+    if (rows === undefined || !Array.isArray(rows)) return getPS2Markov();
+    return rows.map((d) => ({ from_sub: d.from_sub, to_sub: d.to_sub, prob: N(d.prob) }));
+  } catch { return getPS2Markov(); }
+}
+export async function apiPS2Conditional(city) {
+  try {
+    const rows = await apiGet('/ps2/conditional', city);
+    if (rows === undefined || !Array.isArray(rows)) return getPS2Conditional();
+    return rows.map((d) => ({ sub_a: d.sub_a, sub_b: d.sub_b, window_bucket: d.window_bucket, p_b_given_a: N(d.p_b_given_a) }));
+  } catch { return getPS2Conditional(); }
+}
+export async function apiPS2Network(city) {
+  try {
+    const rows = await apiGet('/ps2/network', city);
+    if (rows === undefined || !Array.isArray(rows)) return getPS2Network();
+    return rows.map((d) => ({ node_id: d.node_id, betweenness: N(d.betweenness), pagerank: N(d.pagerank),
+      in_degree: N(d.in_degree), out_degree: N(d.out_degree), role: d.role }));
+  } catch { return getPS2Network(); }
+}
+export async function apiPS2ErrorCodes(city) {
+  try {
+    const r = await apiGet('/ps2/errorcodes', city);
+    if (r === undefined || !r) return getPS2ErrorCodes();
+    return {
+      codes: (r.codes || []).map((d) => ({ error_code: String(d.error_code), occurrences: N(d.occurrences), top_subsystem: d.top_subsystem, pct: N(d.pct) })),
+      transitions: (r.transitions || []).map((d) => ({ from_code: String(d.from_code), to_code: String(d.to_code), occurrences: N(d.occurrences) })),
+    };
+  } catch { return getPS2ErrorCodes(); }
+}
+export async function apiPS2Devices(city) {
+  try {
+    const rows = await apiGet('/ps2/devices', city);
+    if (rows === undefined || !Array.isArray(rows)) return getPS2Devices();
+    return rows;
+  } catch { return getPS2Devices(); }
+}
+export async function apiPS2DeviceCascades(city, deviceId) {
+  try {
+    if (!BASE) return [];
+    const res = await fetch(`${BASE}/ps2/devicecascades?city=${encodeURIComponent(city)}&device=${encodeURIComponent(deviceId || '')}`);
+    if (!res.ok) return [];
+    const rows = await res.json();
+    return Array.isArray(rows) ? rows : [];
+  } catch { return []; }
+}

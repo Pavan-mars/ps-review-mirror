@@ -95,8 +95,12 @@ WITH hourly_events AS (
              dee.hour_bucket, dee.transit_day
 ),
 event_baseline AS (
+    -- DEVICE_KEY added to prevent N*N cross-join: BMV devices have N DEVICE_KEY values per hour
+    -- (bus assignment changes — S16 joins all historical dim_device rows, not just is_current).
+    -- Partition on DEVICE_ID only so baseline spans full device history across all assignments.
     SELECT
         DEVICE_ID,
+        DEVICE_KEY,
         hour_bucket,
         hour_of_day,
         event_count_hour,
@@ -166,6 +170,9 @@ daily_revenue AS (
 -- PS4-GAP 3 fix: per-device adaptive reject_rate baseline (rolling 28-day 2σ threshold)
 -- Replaces static 5% cutoff for Signal 3 — handles device-specific normal variation
 reject_rate_baseline AS (
+    -- tap_event_daily grain is (DEVICE_ID, DEVICE_KEY, transit_day): N rows/day for bus validators.
+    -- Inner subquery aggregates to (DEVICE_ID, transit_day) before window to prevent N* fan-out.
+    -- reject_rate re-weighted by tap_count across bus assignments.
     SELECT
         DEVICE_ID,
         transit_day,
@@ -179,8 +186,19 @@ reject_rate_baseline AS (
             PARTITION BY DEVICE_ID ORDER BY transit_day
             ROWS BETWEEN 28 PRECEDING AND 1 PRECEDING
         ) AS baseline_stddev_reject_rate
-    FROM mars_dev.silver.tap_event_daily
-    WHERE transit_day <= CURRENT_DATE()
+    FROM (
+        SELECT
+            DEVICE_ID,
+            transit_day,
+            CASE WHEN SUM(tap_count) > 0
+                 THEN ROUND(SUM(tap_count * tap_reject_rate_pct / 100.0)
+                            / SUM(tap_count) * 100.0, 4)
+                 ELSE 0 END                 AS tap_reject_rate_pct,
+            MAX(peak_hour_tap_count)        AS peak_hour_tap_count
+        FROM mars_dev.silver.tap_event_daily
+        WHERE transit_day <= CURRENT_DATE()
+        GROUP BY DEVICE_ID, transit_day
+    )
 )
 SELECT
     he.DEVICE_ID,
@@ -290,7 +308,9 @@ SELECT
     dd.bus_device_flag
 FROM hourly_events he
 LEFT JOIN event_baseline eb
-    ON eb.DEVICE_ID = he.DEVICE_ID AND eb.hour_bucket = he.hour_bucket
+    ON eb.DEVICE_ID   = he.DEVICE_ID
+    AND eb.DEVICE_KEY  = he.DEVICE_KEY
+    AND eb.hour_bucket = he.hour_bucket
 LEFT JOIN metric_baseline mb
     ON mb.DEVICE_KEY = he.DEVICE_KEY AND mb.hour_bucket = he.hour_bucket
 -- PS4-GAP 3 fix: tap subquery replaced with reject_rate_baseline CTE (adaptive 2σ threshold)

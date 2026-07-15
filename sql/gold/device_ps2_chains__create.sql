@@ -97,7 +97,12 @@ days_with_cascade AS (
 chain_agg AS (
     SELECT
         fe.DEVICE_ID,
-        fe.DEVICE_KEY,
+        -- DEVICE_KEY removed from GROUP BY: BMV devices have N DEVICE_KEY values per day
+        -- (bus-assignment changes in S16). fault_events.event_seq already partitions by
+        -- (DEVICE_ID, transit_day), so the chain is already cross-bus-assignment.
+        -- MAX picks any one DEVICE_KEY for the downstream inc24 join (VALIDATOR has 0% S24
+        -- coverage, so the specific key doesn't affect results).
+        MAX(fe.DEVICE_KEY)  AS DEVICE_KEY,
         fe.mars_device_category,
         fe.transit_day,
         -- FIX 3: STRING_AGG(... ORDER BY ...) -> struct sort (Spark SQL)
@@ -155,7 +160,7 @@ chain_agg AS (
     JOIN days_with_cascade dc
         ON dc.DEVICE_ID   = fe.DEVICE_ID
        AND dc.transit_day = fe.transit_day
-    GROUP BY fe.DEVICE_ID, fe.DEVICE_KEY, fe.mars_device_category, fe.transit_day
+    GROUP BY fe.DEVICE_ID, fe.mars_device_category, fe.transit_day
 ),
 -- FIX 9+10: cashbox_daily -- DATE_KEY->TRANSIT_DAY_KEY, TRANSACTION_TYPE->CASHBOX_TYPE_ID
 -- ncs_stage_cashbox_tracking confirmed schema (V07a): TRANSIT_DAY_KEY decimal(8,0) YYYYMMDD

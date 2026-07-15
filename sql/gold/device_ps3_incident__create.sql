@@ -67,6 +67,14 @@ WITH all_incidents AS (
       AND transit_day >= '2024-01-01'
       -- FIX 8 (updated 2026-06-23): levels 4/5/16 are real hardware faults (confirmed by Michael)
       AND AE_FAILURE_LEVEL IN (1, 2, 3, 4, 5, 16)
+    -- Dedup: two fan-out sources confirmed in validate_gold grain check:
+    -- (1) bronze SN table has 2 duplicate rows per sys_id feeding S17
+    -- (2) two distinct SN incidents (e.g. WOT2740405 + WOT2741082) both link to the same AE
+    -- Combined = 4x per availability_event_id. Keep earliest-start / lowest sys_id for determinism.
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY availability_event_id
+        ORDER BY AE_START_DTM ASC NULLS LAST, SN_SYS_ID ASC NULLS LAST
+    ) = 1
 ),
 events_24h_prior AS (
     SELECT
@@ -187,13 +195,19 @@ component_derived AS (
 -- PS3-GAP 3 partial fix: map event_code_id + failure_level → KPI_ID via edw_kpi_rules
 -- Provides cause/KPI classification without waiting for Robin ServiceNow re-export
 kpi_cause_class AS (
-    SELECT
-        CAST(kr.EVENT_ID AS STRING) AS event_id_str,
-        kr.FAILURE_LEVEL            AS kr_failure_level,
-        kr.KPI_ID,
-        k.KPI_NAME                  AS kpi_category_name
-    FROM mars_dev.bronze.edw_kpi_rules kr
-    LEFT JOIN mars_dev.bronze.edw_kpi k ON k.KPI_ID = kr.KPI_ID
+    -- edw_kpi_rules may have multiple KPI_IDs per (EVENT_ID, FAILURE_LEVEL); keep lowest KPI_ID.
+    SELECT event_id_str, kr_failure_level, KPI_ID, kpi_category_name
+    FROM (
+        SELECT
+            CAST(kr.EVENT_ID AS STRING) AS event_id_str,
+            kr.FAILURE_LEVEL            AS kr_failure_level,
+            kr.KPI_ID,
+            k.KPI_NAME                  AS kpi_category_name,
+            ROW_NUMBER() OVER (PARTITION BY kr.EVENT_ID, kr.FAILURE_LEVEL ORDER BY kr.KPI_ID ASC) AS rn
+        FROM mars_dev.bronze.edw_kpi_rules kr
+        LEFT JOIN mars_dev.bronze.edw_kpi k ON k.KPI_ID = kr.KPI_ID
+    )
+    WHERE rn = 1
 )
 SELECT
     ai.availability_event_id,

@@ -11,7 +11,7 @@
 --   TRANSIT_DAY_KEY      decimal(8,0)  - date key YYYYMMDD
 --   DEVICE_ID            varchar(15)   - device identifier, matches dim_device
 --   TRANSACTION_DTM      timestamp     - transaction timestamp (hour extraction)
---   TAP_STATUS_ID        decimal(3,0)  - approval code (1/900/904 = approved)
+--   TAP_STATUS_ID        decimal(3,0)  - approval code (1/900/901/701 = approved; confirmed 2026-07-15)
 --   REVENUE_OR_TEST      varchar(7)    - filter to 'REVENUE' (same as S21)
 --   TOKEN_ID             decimal(18,0) - fare media token (unique card count)
 --   OPERATOR_ID          decimal(5,0)  - operator
@@ -47,16 +47,20 @@ WITH tap_agg AS (
         COUNT(*)                                                AS daily_read_count,
         COUNT(DISTINCT rt.TOKEN_ID)                             AS unique_tokens,
 
-        -- Approval breakdown (same codes as ABP_TAP - 1/900/904 = approved)
-        -- VALIDATION 2026-06-25: codes 1/900/904 ASSUMED from ABP_TAP; UNVERIFIED for READ_TRANSACTION
-        -- confirm: SELECT TAP_STATUS_ID, COUNT(*) FROM bronze.edw_read_transaction GROUP BY 1 ORDER BY 2 DESC
-        -- Gap 4 fix: 51.97% of READ_TRANSACTION rows have NULL TAP_STATUS_ID.
-        -- Treating NULL as rejected inflated reject_rate by ~52pp. NULL = treated as approved.
-        SUM(CASE WHEN rt.TAP_STATUS_ID IN (1, 900, 904)
+        -- Approval codes confirmed 2026-07-15 via SELECT TAP_STATUS_ID, COUNT(*) FROM
+        -- bronze.edw_read_transaction GROUP BY 1 ORDER BY 2 DESC:
+        --   900 (46.1%), 1 (19.5%), 901 (16.0%), 701 (15.4%), 4 (2.7%), NULL (0.2%)
+        -- 901 and 701 are READ_TRANSACTION-specific approval variants (not present in ABP_TAP).
+        -- 904 does not appear in current data (was assumed from ABP_TAP; removed).
+        -- ⚠ PENDING DOMAIN CONFIRMATION: 701/901 treated as approved below based on
+        --   frequency pattern. Verify with Robin / Ventra status-code reference before
+        --   treating reject_rate_pct as a production signal.
+        -- Codes 3, 4, 702, 703 (~2.8%) retained as rejected pending confirmation.
+        SUM(CASE WHEN rt.TAP_STATUS_ID IN (1, 900, 901, 701)
                    OR rt.TAP_STATUS_ID IS NULL THEN 1 ELSE 0 END)
                                                                 AS approved_read_count,
         SUM(CASE WHEN rt.TAP_STATUS_ID IS NOT NULL
-                  AND rt.TAP_STATUS_ID NOT IN (1, 900, 904) THEN 1 ELSE 0 END)
+                  AND rt.TAP_STATUS_ID NOT IN (1, 900, 901, 701) THEN 1 ELSE 0 END)
                                                                 AS rejected_read_count,
         SUM(CASE WHEN rt.TAP_STATUS_ID IS NULL THEN 1 ELSE 0 END)
                                                                 AS null_status_read_count,
@@ -101,6 +105,7 @@ SELECT
     ta.unique_tokens,
     ta.approved_read_count,
     ta.rejected_read_count,
+    ta.null_status_read_count,
     CASE
         WHEN ta.daily_read_count > 0
         THEN ROUND(CAST(ta.rejected_read_count AS DOUBLE) / ta.daily_read_count * 100, 4)

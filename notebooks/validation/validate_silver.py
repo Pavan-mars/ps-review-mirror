@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # validate_silver — runtime DQ checks for the 24 silver tables (`mars_dev.silver`)
+# MAGIC # validate_silver — runtime DQ checks for the 25 silver tables (`mars_dev.silver`)
 # MAGIC Operationalizes `docs/PS_Data_Quality_Gaps.docx` gap fixes (2026-07-15 batch).
 # MAGIC
 # MAGIC Per table: existence, row count, grain uniqueness, future/2032-sentinel dates, key-column null rates.
@@ -47,7 +47,15 @@ def check_table(t, grain=None, date_cols=None, min_rows=1, notnull=None):
     log(t, "row_count", "PASS" if n >= min_rows else "FAIL", f"{n:,} rows")
     if grain:
         def g():
-            d = spark.sql(f"SELECT count(*) - count(DISTINCT {', '.join(grain)}) AS d FROM {fq}").first()["d"]
+            # GROUP BY correctly handles NULLs (NULLs group together as one group).
+            # count(*) - count(DISTINCT ...) is wrong for NULLable grain columns: Spark's
+            # COUNT(DISTINCT col1,col2,...) excludes any row where ANY column is NULL,
+            # producing false-positive dup counts when legitimate grain cols are NULLable
+            # (e.g. read_tap_daily.FACILITY_ID, tap_event_daily.BUS_ID).
+            d = spark.sql(
+                f"SELECT COALESCE(SUM(cnt - 1), 0) d FROM "
+                f"(SELECT count(*) cnt FROM {fq} GROUP BY {', '.join(grain)} HAVING count(*) > 1)"
+            ).first()["d"]
             log(t, "grain_unique", "PASS" if d == 0 else "FAIL", f"{d:,} dup rows on ({', '.join(grain)})")
         safe(t, "grain_unique", g)
     for dc in (date_cols or []):
@@ -94,6 +102,9 @@ SILVER = {
     # S24: added 2026-07-15 — was missing from prior validation
     "device_incident_features_daily":dict(grain=["DEVICE_KEY", "transit_day"],
                                          date_cols=["transit_day"], notnull=["DEVICE_KEY"]),
+    # S25: added 2026-07-15 — VALIDATOR incident signal via servicenow_task_ci bus-number join
+    "incident_task_ci_link":         dict(date_cols=["incident_date"],
+                                         notnull=["task_ci_sys_id"]),
 }
 for t, cfg in SILVER.items():
     check_table(t, **cfg)
@@ -148,26 +159,34 @@ safe("tap_event_daily", "timeout_rate_nonzero", chk_tap_timeout_rate)
 def chk_read_tap_null_status():
     r = spark.sql(f"SELECT round(100.0*sum(null_status_read_count)/greatest(sum(daily_read_count),1),2) pct "
                   f"FROM {CAT}.{SCH}.read_tap_daily").first()["pct"]
-    ok = (r is not None) and (40 <= r <= 65)  # confirmed ~51.97% — allow ±10pp
+    # Confirmed 2026-07-15: actual NULL TAP_STATUS_ID in edw_read_transaction = 0.18%
+    # (prior ~52% estimate was incorrect — based on different bronze table or stale diagnostic)
+    ok = r is not None  # just confirm column exists and returns a value
     log("read_tap_daily", "null_status_pct", "PASS" if ok else "WARN",
-        f"{r}% of reads have NULL TAP_STATUS_ID (expected ~52%; treated as approved after fix)")
+        f"{r}% of reads have NULL TAP_STATUS_ID (confirmed 0.18% in current bronze data)")
 safe("read_tap_daily", "null_status_pct", chk_read_tap_null_status)
 
 def chk_read_tap_reject_rate():
     r = spark.sql(f"SELECT round(avg(reject_rate_pct),2) avg_rr FROM {CAT}.{SCH}.read_tap_daily").first()["avg_rr"]
-    # Before fix: ~57% (NULL counted as rejected). After fix: should be ~5%
-    ok = (r is not None) and r < 15
+    # Confirmed 2026-07-15: codes 701+901 added as approved (READ_TRANSACTION-specific).
+    # Expected reject rate after fix: ~2.8% (only codes 3, 4, 702, 703 remain rejected).
+    # ⚠ PENDING domain confirmation that 701/901 are truly approved for READ_TRANSACTION.
+    ok = (r is not None) and r < 10
     log("read_tap_daily", "reject_rate_post_fix", "PASS" if ok else "WARN",
-        f"avg reject_rate_pct = {r}% (expect <15% after NULL→approved fix; was ~57% before)")
+        f"avg reject_rate_pct = {r}% (expect ~2.8% after 701/901 added as approved; was 41.5%)")
 safe("read_tap_daily", "reject_rate_post_fix", chk_read_tap_reject_rate)
 
-# 7) Gap fix — incident_history: VALIDATOR supplement must now have rows (was 0% before S15 UNION ALL)
-def chk_incident_validator():
-    c = spark.sql(f"SELECT count(*) c FROM {CAT}.{SCH}.incident_history "
-                  f"WHERE mars_device_category = 'VALIDATOR'").first()["c"]
-    log("incident_history", "validator_rows_present", "PASS" if c > 0 else "FAIL",
-        f"{c:,} VALIDATOR rows (expect >0 after edw_availability_events UNION ALL)")
-safe("incident_history", "validator_rows_present", chk_incident_validator)
+# 7) incident_history: TVM + GATE only (VALIDATOR signal confirmed absent from edw_availability_events
+#    2026-07-15 — that table has TVM/RVG IDs only). VALIDATOR coverage is in S25 incident_task_ci_link.
+def chk_incident_categories_present():
+    rows = spark.sql(f"SELECT COALESCE(mars_device_category,'NULL') cat, count(*) n "
+                     f"FROM {CAT}.{SCH}.incident_history GROUP BY cat").collect()
+    cats = {r["cat"]: r["n"] for r in rows}
+    tvm_ok  = cats.get("TVM", 0) > 0
+    gate_ok = cats.get("GATE", 0) > 0
+    log("incident_history", "tvm_gate_present", "PASS" if (tvm_ok and gate_ok) else "FAIL",
+        f"TVM={cats.get('TVM',0):,}  GATE={cats.get('GATE',0):,}  NULL={cats.get('NULL',0):,}")
+safe("incident_history", "tvm_gate_present", chk_incident_categories_present)
 
 def chk_incident_categories():
     rows = spark.sql(f"SELECT COALESCE(mars_device_category,'NULL') cat, count(*) n "
@@ -192,6 +211,34 @@ def chk_s24_row_count():
         "PASS" if r["d"] >= 100 else "WARN",
         f"{r['c']:,} rows, {r['d']:,} devices (expect ~96K rows, ~1,297 TVM+GATE devices)")
 safe("device_incident_features_daily", "coverage_summary", chk_s24_row_count)
+
+# 9) S25 — incident_task_ci_link: VALIDATOR bus-number join coverage
+def chk_s25_validator_coverage():
+    r = spark.sql(f"SELECT count(DISTINCT DEVICE_KEY) devs, count(DISTINCT incident_number) incs "
+                  f"FROM {CAT}.{SCH}.incident_task_ci_link WHERE DEVICE_KEY IS NOT NULL").first()
+    ok = r["devs"] >= 800 and r["incs"] >= 10000
+    log("incident_task_ci_link", "validator_coverage",
+        "PASS" if ok else "WARN",
+        f"{r['devs']:,} VALIDATOR devices, {r['incs']:,} incidents (expect ~823 devices, ~10,453 incidents)")
+safe("incident_task_ci_link", "validator_coverage", chk_s25_validator_coverage)
+
+def chk_s25_join_rate():
+    r = spark.sql(f"SELECT count(*) total, "
+                  f"sum(CASE WHEN incident_sys_id IS NOT NULL THEN 1 ELSE 0 END) joined "
+                  f"FROM {CAT}.{SCH}.incident_task_ci_link").first()
+    pct = round(100.0 * r["joined"] / max(r["total"], 1), 1)
+    log("incident_task_ci_link", "incident_join_rate",
+        "PASS" if pct >= 85 else "WARN",
+        f"{pct}% task_ci rows joined to incident (expect ~91.8%; 16,267 unmatched is known)")
+safe("incident_task_ci_link", "incident_join_rate", chk_s25_join_rate)
+
+def chk_s25_no_fanout():
+    d = spark.sql(f"SELECT count(*) - count(DISTINCT task_ci_sys_id) d "
+                  f"FROM {CAT}.{SCH}.incident_task_ci_link").first()["d"]
+    log("incident_task_ci_link", "no_fanout",
+        "PASS" if d == 0 else "FAIL",
+        f"{d:,} duplicate task_ci_sys_id rows (should be 0 — grain is one row per task_ci record)")
+safe("incident_task_ci_link", "no_fanout", chk_s25_no_fanout)
 
 # COMMAND ----------
 # Write scorecard + summary

@@ -45,7 +45,12 @@ def check_table(t, grain=None, date_cols=None, min_rows=1, notnull=None):
     log(t, "row_count", "PASS" if n >= min_rows else "FAIL", f"{n:,} rows")
     if grain:
         def g():
-            d = spark.sql(f"SELECT count(*) - count(DISTINCT {', '.join(grain)}) AS d FROM {fq}").first()["d"]
+            # GROUP BY correctly handles NULLs; count(*) - count(DISTINCT ...) excludes any row
+            # with a NULL grain column from the distinct count, producing false positives.
+            d = spark.sql(
+                f"SELECT COALESCE(SUM(cnt - 1), 0) d FROM "
+                f"(SELECT count(*) cnt FROM {fq} GROUP BY {', '.join(grain)} HAVING count(*) > 1)"
+            ).first()["d"]
             log(t, "grain_unique", "PASS" if d == 0 else "FAIL", f"{d:,} dup rows on ({', '.join(grain)})")
         safe(t, "grain_unique", g)
     for dc in (date_cols or []):
@@ -69,7 +74,11 @@ GOLD = {
                                 notnull=["DEVICE_ID"]),
     "device_ps3_incident": dict(grain=["availability_event_id"],
                                 notnull=["DEVICE_ID", "failure_level"]),         # Gap 4 fix: AE_FAILURE_LEVEL -> failure_level
-    "device_ps4_hourly":   dict(grain=["DEVICE_ID", "hour_bucket"], date_cols=["transit_day"],
+    # PS4 grain includes DEVICE_KEY: hourly_events groups by (DEVICE_ID, DEVICE_KEY, hour_bucket).
+    # BMV devices have N DEVICE_KEY values per hour (one per bus assignment from S16).
+    # Each DEVICE_KEY has its own metric series (S05 metric_hourly is at DEVICE_KEY grain),
+    # so keeping them separate is correct — one anomaly row per bus assignment per hour.
+    "device_ps4_hourly":   dict(grain=["DEVICE_ID", "DEVICE_KEY", "hour_bucket"], date_cols=["transit_day"],
                                 notnull=["DEVICE_ID", "ensemble_anomaly_flag"]),
     "device_ps5_component":dict(grain=["DEVICE_ID", "COMPONENT_SERIAL_NBR"],
                                 notnull=["DEVICE_ID"]),

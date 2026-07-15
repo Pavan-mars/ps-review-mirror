@@ -206,7 +206,29 @@ tvm_sales AS (
             )
             THEN TRUE ELSE FALSE
         END AS sales_decline_flag
-    FROM mars_dev.silver.tvm_sale_daily tsd
+    FROM (
+        -- tvm_sale_daily actual grain is (DEVICE_ID, transit_day, OPERATOR_ID, FACILITY_ID):
+        -- VALIDATOR bus-validators serve multiple operators/facilities per day, producing N rows
+        -- per (DEVICE_ID, transit_day) and fanning out this LEFT JOIN without pre-aggregation.
+        -- cash_sales_pct re-weighted by volume using cash_sales_count (exposed by S14).
+        SELECT
+            DEVICE_ID,
+            transit_day,
+            SUM(daily_sales_count)                                      AS daily_sales_count,
+            SUM(error_txn_count)                                        AS error_txn_count,
+            CASE WHEN SUM(daily_sales_count) > 0
+                 THEN ROUND(SUM(error_txn_count) * 100.0
+                            / SUM(daily_sales_count), 4)
+                 ELSE 0 END                                              AS error_txn_rate_pct,
+            CASE WHEN SUM(daily_sales_count) > 0
+                 THEN ROUND(SUM(cash_sales_count) * 100.0
+                            / SUM(daily_sales_count), 2)
+                 ELSE 0 END                                              AS cash_sales_pct,
+            SUM(total_revenue_cents)                                     AS total_revenue_cents,
+            MAX(sales_active_hours)                                      AS sales_active_hours
+        FROM mars_dev.silver.tvm_sale_daily
+        GROUP BY DEVICE_ID, transit_day
+    ) tsd
 ),
 -- S21: USE_TRANSACTION revenue -- all device types (TVM + GATE + VALIDATOR)
 -- Covers where tvm_sale_daily (3%) and tap_event_daily (27%) have gaps

@@ -158,9 +158,14 @@ hw_best_match AS (
 ),
 -- PS3-GAP 2 fix: derive component type from fault description regex + event_code → dim_event_type
 -- Covers ~40-70% of the 78.32% blank affected_component rows
+-- GROUP BY availability_event_id: dim_event_type grain is EVENT_TYPE_KEY (not EVENT_TYPE_ID),
+-- so multiple dim_event_type rows can share the same EVENT_TYPE_ID. Without GROUP BY the join
+-- fans out component_derived when several rows match, producing dup availability_event_id.
+-- MAX() collapses: description-regex branches return the same value for a given incident (ai cols
+-- are fixed after QUALIFY dedup); only det.component_subsystem varies across matching DET rows.
 component_derived AS (
     SELECT ai.availability_event_id,
-        CASE
+        MAX(CASE
             WHEN TRIM(COALESCE(ai.affected_component, '')) != ''
                 THEN UPPER(TRIM(ai.affected_component))
             WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%PRINTER%'
@@ -187,10 +192,11 @@ component_derived AS (
                 THEN 'COMMS'
             WHEN det.component_subsystem IS NOT NULL THEN det.component_subsystem
             ELSE NULL
-        END AS derived_component_type
+        END) AS derived_component_type
     FROM all_incidents ai
     LEFT JOIN mars_dev.silver.dim_event_type det
         ON det.EVENT_TYPE_ID = ai.sn_event_code_id
+    GROUP BY ai.availability_event_id
 ),
 -- PS3-GAP 3 partial fix: map event_code_id + failure_level → KPI_ID via edw_kpi_rules
 -- Provides cause/KPI classification without waiting for Robin ServiceNow re-export

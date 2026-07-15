@@ -74,11 +74,14 @@ GOLD = {
                                 notnull=["DEVICE_ID"]),
     "device_ps3_incident": dict(grain=["availability_event_id"],
                                 notnull=["DEVICE_ID", "failure_level"]),         # Gap 4 fix: AE_FAILURE_LEVEL -> failure_level
-    # PS4 grain includes DEVICE_KEY: hourly_events groups by (DEVICE_ID, DEVICE_KEY, hour_bucket).
-    # BMV devices have N DEVICE_KEY values per hour (one per bus assignment from S16).
-    # Each DEVICE_KEY has its own metric series (S05 metric_hourly is at DEVICE_KEY grain),
-    # so keeping them separate is correct — one anomaly row per bus assignment per hour.
-    "device_ps4_hourly":   dict(grain=["DEVICE_ID", "DEVICE_KEY", "hour_bucket"], date_cols=["transit_day"],
+    # PS4 grain is (DEVICE_ID, DEVICE_KEY, hour_bucket, transit_day).
+    # hourly_events groups by (DEVICE_ID, DEVICE_KEY, hour_bucket, transit_day): midnight clock-hours
+    # can span two transit service days (S16 transit_day is service-day-adjusted, not calendar-date),
+    # producing 2 rows per (DEVICE_ID, DEVICE_KEY, hour_bucket) with different transit_days.
+    # Each row has its own feature context (rrb/dr/inc24 join on transit_day), so keeping them
+    # separate is correct — transit_day is a genuine grain dimension here.
+    "device_ps4_hourly":   dict(grain=["DEVICE_ID", "DEVICE_KEY", "hour_bucket", "transit_day"],
+                                date_cols=["transit_day"],
                                 notnull=["DEVICE_ID", "ensemble_anomaly_flag"]),
     "device_ps5_component":dict(grain=["DEVICE_ID", "COMPONENT_SERIAL_NBR"],
                                 notnull=["DEVICE_ID"]),

@@ -87,7 +87,12 @@ SILVER = {
     "kpi_daily":                     dict(date_cols=["transit_day"]),                     # EVENTS grain by design (see special check)
     "tap_event_daily":               dict(grain=["DEVICE_ID", "transit_day", "OPERATOR_ID", "BUS_ID"], date_cols=["transit_day"],
                                          notnull=["DEVICE_ID", "tap_timeout_count"]),     # Gap 4 fix: timeout cols added
-    "tvm_sale_daily":                dict(date_cols=["transit_day"], notnull=["DEVICE_ID"]),
+    # S14 actual grain is (DEVICE_ID, transit_day, OPERATOR_ID, FACILITY_ID) — header comment says
+    # (device_id, transit_day) but the SQL groups by OPERATOR_ID + FACILITY_ID too. VALIDATOR bus
+    # devices serve multiple operators/facilities per day, producing N rows per (DEVICE_ID, transit_day).
+    # Gold tables must pre-aggregate before joining (see device_ps1_daily tvm_sales CTE).
+    "tvm_sale_daily":                dict(grain=["DEVICE_ID", "transit_day", "OPERATOR_ID", "FACILITY_ID"],
+                                         date_cols=["transit_day"], notnull=["DEVICE_ID"]),
     # Gap fix: grain changed to incident_number (not "number" — column was always incident_number in S15 schema)
     "incident_history":              dict(grain=["incident_number"], notnull=["incident_number"]),
     "device_event_enriched":         dict(grain=["DW_DEVICE_EVENT_ID"], date_cols=["transit_day"], notnull=["DEVICE_ID"]),

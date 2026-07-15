@@ -102,8 +102,12 @@ chain_agg AS (
         -- (DEVICE_ID, transit_day), so the chain is already cross-bus-assignment.
         -- MAX picks any one DEVICE_KEY for the downstream inc24 join (VALIDATOR has 0% S24
         -- coverage, so the specific key doesn't affect results).
-        MAX(fe.DEVICE_KEY)  AS DEVICE_KEY,
-        fe.mars_device_category,
+        MAX(fe.DEVICE_KEY)          AS DEVICE_KEY,
+        -- mars_device_category removed from GROUP BY: S16 joins all historical dim_device rows
+        -- (not just is_current). Devices with historical category changes produce rows with
+        -- different mars_device_categories for the same (DEVICE_ID, transit_day), causing a
+        -- second group and a grain dup. Use current category from dim_device join in final SELECT.
+        MAX(fe.mars_device_category) AS mars_device_category,
         fe.transit_day,
         -- FIX 3: STRING_AGG(... ORDER BY ...) -> struct sort (Spark SQL)
         -- struct(EVENT_DTM, val) sorts by EVENT_DTM; transform extracts val field
@@ -160,7 +164,7 @@ chain_agg AS (
     JOIN days_with_cascade dc
         ON dc.DEVICE_ID   = fe.DEVICE_ID
        AND dc.transit_day = fe.transit_day
-    GROUP BY fe.DEVICE_ID, fe.mars_device_category, fe.transit_day
+    GROUP BY fe.DEVICE_ID, fe.transit_day
 ),
 -- FIX 9+10: cashbox_daily -- DATE_KEY->TRANSIT_DAY_KEY, TRANSACTION_TYPE->CASHBOX_TYPE_ID
 -- ncs_stage_cashbox_tracking confirmed schema (V07a): TRANSIT_DAY_KEY decimal(8,0) YYYYMMDD
@@ -183,7 +187,8 @@ SELECT
     ca.DEVICE_ID,
     ca.DEVICE_KEY,
     ca.transit_day,
-    ca.mars_device_category,
+    -- Use current dim_device category; fall back to MAX from fault events for unmatched devices.
+    COALESCE(dd.mars_device_category, ca.mars_device_category) AS mars_device_category,
     ca.subsystem_chain,
     ca.event_type_chain,
     ca.severity_chain,

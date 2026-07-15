@@ -206,7 +206,29 @@ tvm_sales AS (
             )
             THEN TRUE ELSE FALSE
         END AS sales_decline_flag
-    FROM mars_dev.silver.tvm_sale_daily tsd
+    FROM (
+        -- tvm_sale_daily actual grain is (DEVICE_ID, transit_day, OPERATOR_ID, FACILITY_ID):
+        -- VALIDATOR bus-validators serve multiple operators/facilities per day, producing N rows
+        -- per (DEVICE_ID, transit_day) and fanning out this LEFT JOIN without pre-aggregation.
+        -- cash_sales_pct re-weighted by volume using cash_sales_count (exposed by S14).
+        SELECT
+            DEVICE_ID,
+            transit_day,
+            SUM(daily_sales_count)                                      AS daily_sales_count,
+            SUM(error_txn_count)                                        AS error_txn_count,
+            CASE WHEN SUM(daily_sales_count) > 0
+                 THEN ROUND(SUM(error_txn_count) * 100.0
+                            / SUM(daily_sales_count), 4)
+                 ELSE 0 END                                              AS error_txn_rate_pct,
+            CASE WHEN SUM(daily_sales_count) > 0
+                 THEN ROUND(SUM(cash_sales_count) * 100.0
+                            / SUM(daily_sales_count), 2)
+                 ELSE 0 END                                              AS cash_sales_pct,
+            SUM(total_revenue_cents)                                     AS total_revenue_cents,
+            MAX(sales_active_hours)                                      AS sales_active_hours
+        FROM mars_dev.silver.tvm_sale_daily
+        GROUP BY DEVICE_ID, transit_day
+    ) tsd
 ),
 -- S21: USE_TRANSACTION revenue -- all device types (TVM + GATE + VALIDATOR)
 -- Covers where tvm_sale_daily (3%) and tap_event_daily (27%) have gaps
@@ -421,14 +443,40 @@ LEFT JOIN event_daily ed               ON ed.DEVICE_ID  = sp.DEVICE_ID AND ed.tr
 LEFT JOIN outage_daily od              ON od.DEVICE_ID  = sp.DEVICE_ID AND od.transit_day = sp.transit_day
 LEFT JOIN rolling rw                   ON rw.DEVICE_ID  = sp.DEVICE_ID AND rw.transit_day = sp.transit_day
 LEFT JOIN (
-    -- future-date filter: tap_event_daily has rows to 2032-12-14 (bronze data error)
-    SELECT DEVICE_ID, transit_day, tap_count, unique_cards,
-           tap_reject_rate_pct, peak_hour_tap_count
+    -- future-date filter applied; GROUP BY (DEVICE_ID, transit_day) collapses BMV bus-assignment rows.
+    -- tap_event_daily grain is (DEVICE_ID, DEVICE_KEY, transit_day): bus validators accumulate N rows/day
+    -- (one per bus assignment). Weighted reject rate recalculated across all assignments.
+    SELECT
+        DEVICE_ID,
+        transit_day,
+        SUM(tap_count)                                                         AS tap_count,
+        SUM(unique_cards)                                                      AS unique_cards,
+        CASE WHEN SUM(tap_count) > 0
+             THEN ROUND(SUM(tap_count * tap_reject_rate_pct / 100.0)
+                        / SUM(tap_count) * 100.0, 4)
+             ELSE 0 END                                                        AS tap_reject_rate_pct,
+        MAX(peak_hour_tap_count)                                               AS peak_hour_tap_count
     FROM mars_dev.silver.tap_event_daily
     WHERE transit_day <= CURRENT_DATE()
+    GROUP BY DEVICE_ID, transit_day
 ) tap                                  ON tap.DEVICE_ID  = sp.DEVICE_ID AND tap.transit_day  = sp.transit_day
 LEFT JOIN kpi_device_daily kp          ON kp.DEVICE_ID   = sp.DEVICE_ID AND kp.transit_day   = sp.transit_day
-LEFT JOIN mars_dev.silver.metric_daily md  ON md.DEVICE_ID  = sp.DEVICE_ID AND md.transit_day = sp.transit_day
+LEFT JOIN (
+    -- GROUP BY (DEVICE_ID, transit_day) collapses BMV bus-assignment rows.
+    -- metric_daily grain is (DEVICE_ID, DEVICE_KEY, transit_day): N rows/day for bus validators.
+    -- txn_count/delta: SUM; avg_ms: txn-count-weighted avg; max_ms: MAX; volume_drop: any-true.
+    SELECT
+        DEVICE_ID,
+        transit_day,
+        SUM(m401_daily_txn_count)                                              AS m401_daily_txn_count,
+        ROUND(SUM(m401_avg_txn_time_ms * m401_daily_txn_count)
+              / NULLIF(SUM(m401_daily_txn_count), 0), 2)                      AS m401_avg_txn_time_ms,
+        MAX(m401_max_txn_time_ms)                                              AS m401_max_txn_time_ms,
+        SUM(m401_txn_count_delta)                                              AS m401_txn_count_delta,
+        CAST(MAX(CAST(volume_drop_flag AS INT)) AS BOOLEAN)                    AS volume_drop_flag
+    FROM mars_dev.silver.metric_daily
+    GROUP BY DEVICE_ID, transit_day
+) md                                   ON md.DEVICE_ID  = sp.DEVICE_ID AND md.transit_day = sp.transit_day
 LEFT JOIN tvm_sales ts                 ON ts.DEVICE_ID   = sp.DEVICE_ID AND ts.transit_day   = sp.transit_day
 LEFT JOIN use_revenue ur               ON ur.DEVICE_ID   = sp.DEVICE_ID AND ur.transit_day   = sp.transit_day
 LEFT JOIN outage_label_days old         ON old.DEVICE_ID   = sp.DEVICE_ID AND old.label_day    = sp.transit_day

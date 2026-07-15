@@ -173,6 +173,9 @@ u_estimated_time AS estimated_time_hours
 
 FROM mars_dev.bronze.cta_servicenow_incident
 WHERE CAST(opened_at AS DATE) >= '2024-01-01'
+-- 33 incident_number duplicates confirmed in bronze source (same incident imported multiple times).
+-- Keep the most recently resolved/closed record; fall back to opened_at for unresolved incidents.
+QUALIFY ROW_NUMBER() OVER (PARTITION BY number ORDER BY resolved_at DESC NULLS LAST, closed_at DESC NULLS LAST, opened_at DESC NULLS LAST) = 1
 ),
 
 -- -- SOURCE 2: CMDB_CI (43,130 rows - one row per CTA device/component) -------
@@ -346,6 +349,16 @@ ON mdl.model_category = mcat.model_category_name
 LEFT JOIN mars_dev.silver.dim_device dd
 ON dd.DEVICE_ID = UPPER(TRIM(i.wm_asset))
 AND dd.is_current = TRUE;
+
+-- NOTE (confirmed 2026-07-15): edw_availability_events contains only TVM/RVG
+-- device IDs (e.g. TVM05303, RVG03007) -- no BMV/VALIDATOR device IDs exist
+-- in that table. The UNION ALL supplement added here on 2026-07-07 produced 0
+-- rows and has been removed.
+--
+-- VALIDATOR incident signal is addressed via silver.incident_task_ci_link (S25):
+-- 823 VALIDATOR devices / 10,453 distinct incidents confirmed 2026-07-15 via
+-- servicenow_task_ci bus-number join (CONCAT('BMV', LPAD(bus_num, 5, '0'))).
+-- S15 remains TVM + GATE only by design.
 
 -- Post-load optimisation:
 -- OPTIMIZE mars_dev.silver.incident_history ZORDER BY (incident_date, wm_asset);

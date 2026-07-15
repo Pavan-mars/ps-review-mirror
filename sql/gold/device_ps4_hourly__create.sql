@@ -95,8 +95,12 @@ WITH hourly_events AS (
              dee.hour_bucket, dee.transit_day
 ),
 event_baseline AS (
+    -- DEVICE_KEY added to prevent N*N cross-join: BMV devices have N DEVICE_KEY values per hour
+    -- (bus assignment changes — S16 joins all historical dim_device rows, not just is_current).
+    -- Partition on DEVICE_ID only so baseline spans full device history across all assignments.
     SELECT
         DEVICE_ID,
+        DEVICE_KEY,
         hour_bucket,
         hour_of_day,
         event_count_hour,
@@ -162,6 +166,39 @@ daily_revenue AS (
             THEN 1 ELSE 0
         END                                        AS use_revenue_zero_flag
     FROM mars_dev.silver.use_revenue_daily ur
+),
+-- PS4-GAP 3 fix: per-device adaptive reject_rate baseline (rolling 28-day 2σ threshold)
+-- Replaces static 5% cutoff for Signal 3 — handles device-specific normal variation
+reject_rate_baseline AS (
+    -- tap_event_daily grain is (DEVICE_ID, DEVICE_KEY, transit_day): N rows/day for bus validators.
+    -- Inner subquery aggregates to (DEVICE_ID, transit_day) before window to prevent N* fan-out.
+    -- reject_rate re-weighted by tap_count across bus assignments.
+    SELECT
+        DEVICE_ID,
+        transit_day,
+        tap_reject_rate_pct,
+        peak_hour_tap_count,
+        AVG(tap_reject_rate_pct) OVER (
+            PARTITION BY DEVICE_ID ORDER BY transit_day
+            ROWS BETWEEN 28 PRECEDING AND 1 PRECEDING
+        ) AS baseline_mean_reject_rate,
+        STDDEV(tap_reject_rate_pct) OVER (
+            PARTITION BY DEVICE_ID ORDER BY transit_day
+            ROWS BETWEEN 28 PRECEDING AND 1 PRECEDING
+        ) AS baseline_stddev_reject_rate
+    FROM (
+        SELECT
+            DEVICE_ID,
+            transit_day,
+            CASE WHEN SUM(tap_count) > 0
+                 THEN ROUND(SUM(tap_count * tap_reject_rate_pct / 100.0)
+                            / SUM(tap_count) * 100.0, 4)
+                 ELSE 0 END                 AS tap_reject_rate_pct,
+            MAX(peak_hour_tap_count)        AS peak_hour_tap_count
+        FROM mars_dev.silver.tap_event_daily
+        WHERE transit_day <= CURRENT_DATE()
+        GROUP BY DEVICE_ID, transit_day
+    )
 )
 SELECT
     he.DEVICE_ID,
@@ -206,12 +243,17 @@ SELECT
         THEN 1 ELSE 0
     END                                                                 AS metric_anomaly,
     -- Tap features (daily grain, FIX 12: avg_timing_ms removed -> peak_hour_tap_count)
-    COALESCE(tap.tap_reject_rate_pct, 0)                                AS tap_reject_rate_daily,
-    COALESCE(tap.peak_hour_tap_count, 0)                                AS peak_hour_tap_count,
-    -- Signal 3: reject rate anomaly
-    CASE WHEN COALESCE(tap.tap_reject_rate_pct, 0) > 5.0 THEN 1 ELSE 0 END
-                                                                        AS reject_rate_anomaly,
+    COALESCE(rrb.tap_reject_rate_pct, 0)                                AS tap_reject_rate_daily,
+    COALESCE(rrb.peak_hour_tap_count, 0)                                AS peak_hour_tap_count,
+    -- Signal 3: PS4-GAP 3 fix -- adaptive 2σ per-device baseline (was static 5% cutoff)
+    CASE
+        WHEN rrb.baseline_stddev_reject_rate > 0
+          AND COALESCE(rrb.tap_reject_rate_pct, 0)
+              > rrb.baseline_mean_reject_rate + 2 * rrb.baseline_stddev_reject_rate
+        THEN 1 ELSE 0
+    END                                                                 AS reject_rate_anomaly,
     -- FIX 11: Ensemble anomaly score -- metric_800_hourly replaced with metric_401_avg_ms_hour
+    -- PS4-GAP 4 fix: revenue_zero_flag added as ensemble override signal
     (
         CASE WHEN eb.baseline_stddev_events > 0
               AND he.event_count_hour > eb.baseline_mean_events + 2 * eb.baseline_stddev_events
@@ -220,7 +262,10 @@ SELECT
               AND ABS(COALESCE(mb.metric_401_avg_ms_hour, 0) - mb.baseline_mean_metric401)
                   > 2 * mb.baseline_stddev_metric401
              THEN 1 ELSE 0 END
-      + CASE WHEN COALESCE(tap.tap_reject_rate_pct, 0) > 5.0 THEN 1 ELSE 0 END
+      + CASE WHEN rrb.baseline_stddev_reject_rate > 0
+              AND COALESCE(rrb.tap_reject_rate_pct, 0)
+                  > rrb.baseline_mean_reject_rate + 2 * rrb.baseline_stddev_reject_rate
+             THEN 1 ELSE 0 END
     )                                                                   AS anomaly_signal_count,
     CASE WHEN (
         CASE WHEN eb.baseline_stddev_events > 0
@@ -230,8 +275,13 @@ SELECT
               AND ABS(COALESCE(mb.metric_401_avg_ms_hour, 0) - mb.baseline_mean_metric401)
                   > 2 * mb.baseline_stddev_metric401
              THEN 1 ELSE 0 END
-      + CASE WHEN COALESCE(tap.tap_reject_rate_pct, 0) > 5.0 THEN 1 ELSE 0 END
-    ) >= 2 THEN 1 ELSE 0 END                                           AS ensemble_anomaly_flag,
+      + CASE WHEN rrb.baseline_stddev_reject_rate > 0
+              AND COALESCE(rrb.tap_reject_rate_pct, 0)
+                  > rrb.baseline_mean_reject_rate + 2 * rrb.baseline_stddev_reject_rate
+             THEN 1 ELSE 0 END
+    ) >= 2
+    OR (COALESCE(dr.use_revenue_zero_flag, 0) = 1 AND COALESCE(dr.use_txn_count_daily, 0) > 10)
+    THEN 1 ELSE 0 END                                                   AS ensemble_anomaly_flag,
     -- USE_TRANSACTION daily revenue context (S21 -- broadcast to all hours of transit_day)
     -- daily grain; same value across all hourly rows for a given device-day
     COALESCE(dr.use_txn_count_daily, 0)           AS use_txn_count_daily,
@@ -258,20 +308,14 @@ SELECT
     dd.bus_device_flag
 FROM hourly_events he
 LEFT JOIN event_baseline eb
-    ON eb.DEVICE_ID = he.DEVICE_ID AND eb.hour_bucket = he.hour_bucket
+    ON eb.DEVICE_ID   = he.DEVICE_ID
+    AND eb.DEVICE_KEY  = he.DEVICE_KEY
+    AND eb.hour_bucket = he.hour_bucket
 LEFT JOIN metric_baseline mb
     ON mb.DEVICE_KEY = he.DEVICE_KEY AND mb.hour_bucket = he.hour_bucket
-LEFT JOIN (
-    -- FIX 12: avg_timing_ms removed (PATH_NOT_FOUND); peak_hour_tap_count replaces
-    -- FIX 13: transit_day <= CURRENT_DATE() to exclude 2032 future dates
-    SELECT
-        DEVICE_ID,
-        transit_day,
-        tap_reject_rate_pct,
-        peak_hour_tap_count
-    FROM mars_dev.silver.tap_event_daily
-    WHERE transit_day <= CURRENT_DATE()
-) tap ON tap.DEVICE_ID = he.DEVICE_ID AND tap.transit_day = he.transit_day
+-- PS4-GAP 3 fix: tap subquery replaced with reject_rate_baseline CTE (adaptive 2σ threshold)
+LEFT JOIN reject_rate_baseline rrb
+    ON rrb.DEVICE_ID = he.DEVICE_ID AND rrb.transit_day = he.transit_day
 LEFT JOIN daily_revenue dr
     ON dr.DEVICE_ID = he.DEVICE_ID AND dr.transit_day = he.transit_day
 -- R4 (2026-07-07): S24 incident features — daily grain broadcast to all hourly rows

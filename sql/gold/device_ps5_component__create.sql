@@ -83,7 +83,28 @@ WITH all_hw AS (
         hwc.LAST_REPORTED_DTM,
         hwc.REPORTED_CHANGED_DTM,
         hwc.hw_source,
-        hwc.mars_device_category
+        hwc.mars_device_category,
+        -- PS5-GAP fix: derive component type from COMPONENT_DESCRIPTION for censored components
+        -- Fills COMPONENT_TYPE_NAME when there's no failure in device_outage (is_censored=TRUE)
+        CASE
+            WHEN UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%BILLACCEPTOR%'
+              OR UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%BILL_ACCEPTOR%'
+              OR UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%BHU%'        THEN 'BHU'
+            WHEN UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%COIN%'
+              OR UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%COIN_MECH%'  THEN 'CHU'
+            WHEN UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%PRINTER%'
+              OR UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%RECEIPT%'    THEN 'PRINTER'
+            WHEN UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%CSC%'
+              OR UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%CARD%READER%'
+              OR UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%READER%'     THEN 'CSC_READER'
+            WHEN UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%GATE%'
+              OR UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%TURNSTILE%'
+              OR UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%MECH_BOARD%' THEN 'GATE_MECH'
+            WHEN UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%SAM%'
+              OR UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%SECURITY%MODULE%' THEN 'SAM'
+            WHEN UPPER(hwc.COMPONENT_DESCRIPTION) LIKE '%SCRST%'      THEN 'SCRST'
+            ELSE NULL
+        END                                                           AS derived_component_type_hw
     FROM mars_dev.silver.hw_config_current hwc
     WHERE hwc.mars_device_category IN ('TVM','GATE','VALIDATOR')
       AND hwc.COMPONENT_SERIAL_NBR IS NOT NULL
@@ -197,8 +218,8 @@ SELECT
     hw.OPERATOR_NAME,
     hw.device_serial_number,
     -- FIX 9: hw.COMPONENT_TYPE_NAME -> cf.COMPONENT_TYPE_NAME (from device_outage via join)
-    --         NULL when is_censored=TRUE (no failures found in device_outage)
-    cf.COMPONENT_TYPE_NAME,
+    -- PS5-GAP fix: COALESCE with derived_component_type_hw for censored components
+    COALESCE(cf.COMPONENT_TYPE_NAME, hw.derived_component_type_hw)     AS COMPONENT_TYPE_NAME,
     -- FIX 10: hw.COMPONENT_TYPE_DESC -> removed (not in any silver table)
     hw.component_age_days,
     hw.LAST_REPORTED_DTM,

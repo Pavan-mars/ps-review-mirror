@@ -147,6 +147,53 @@ hw_best_match AS (
            AND hwc.mars_device_category IN ('TVM','GATE','VALIDATOR')  -- READER removed (component, not device)
     ) ranked
     WHERE rn = 1
+),
+-- PS3-GAP 2 fix: derive component type from fault description regex + event_code → dim_event_type
+-- Covers ~40-70% of the 78.32% blank affected_component rows
+component_derived AS (
+    SELECT ai.availability_event_id,
+        CASE
+            WHEN TRIM(COALESCE(ai.affected_component, '')) != ''
+                THEN UPPER(TRIM(ai.affected_component))
+            WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%PRINTER%'
+              OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%PAPER JAM%'
+              OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%RECEIPT%'
+                THEN 'PRINTER'
+            WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%CARD READER%'
+              OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%CSC%'
+              OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%SMARTCARD%'
+                THEN 'CSC_READER'
+            WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%BILL%'
+              OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%BHU%'
+              OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%BANK NOTE%'
+                THEN 'BHU'
+            WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%COIN%'
+              OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%CHU%'
+                THEN 'CHU'
+            WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%GATE%'
+              OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%TURNSTILE%'
+                THEN 'GATE_MECH'
+            WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%COMM%'
+              OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%NETWORK%'
+              OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%OFFLINE%'
+                THEN 'COMMS'
+            WHEN det.component_subsystem IS NOT NULL THEN det.component_subsystem
+            ELSE NULL
+        END AS derived_component_type
+    FROM all_incidents ai
+    LEFT JOIN mars_dev.silver.dim_event_type det
+        ON det.EVENT_TYPE_ID = ai.sn_event_code_id
+),
+-- PS3-GAP 3 partial fix: map event_code_id + failure_level → KPI_ID via edw_kpi_rules
+-- Provides cause/KPI classification without waiting for Robin ServiceNow re-export
+kpi_cause_class AS (
+    SELECT
+        CAST(kr.EVENT_ID AS STRING) AS event_id_str,
+        kr.FAILURE_LEVEL            AS kr_failure_level,
+        kr.KPI_ID,
+        k.KPI_NAME                  AS kpi_category_name
+    FROM mars_dev.bronze.edw_kpi_rules kr
+    LEFT JOIN mars_dev.bronze.edw_kpi k ON k.KPI_ID = kr.KPI_ID
 )
 SELECT
     ai.availability_event_id,
@@ -159,7 +206,8 @@ SELECT
     ai.incident_duration_min,
     ai.mars_device_category,
     -- Prediction targets
-    ai.AE_FAILURE_LEVEL                               AS failure_level,
+    -- PS3-GAP 4 fix: merge level 1 (6 rows, ghost class) into level 2
+    CASE WHEN ai.AE_FAILURE_LEVEL = 1 THEN 2 ELSE ai.AE_FAILURE_LEVEL END AS failure_level,
     ai.failure_level_label,
     ai.root_cause_category,
     -- Text features (for NLP / embedding model)
@@ -187,6 +235,11 @@ SELECT
     hw.component_install_date,
     hw.COMPONENT_DESCRIPTION                          AS matched_component,
     hw.COMPONENT_SERIAL_NBR                           AS matched_serial_nbr,
+    -- PS3-GAP 2: derived component type (regex on fault description + event_code fallback)
+    cd.derived_component_type,
+    -- PS3-GAP 3: KPI rule classification (event_code_id + failure_level → KPI_ID)
+    kcc.KPI_ID                                        AS kpi_rule_id,
+    kcc.kpi_category_name,
     -- Incident ServiceNow context
     ai.SN_U_EVENT_ID,
     ai.SN_SYS_ID,
@@ -213,11 +266,40 @@ SELECT
     ai.sn_maintenance_type,
     ai.sn_priority,
     ai.sn_event_code_id,
-    ai.sn_event_code_name
+    ai.sn_event_code_name,
+    -- PS3-GAP 5: NLP keyword binary flags (SQL-only, ~1 day lift before embedding approach)
+    CASE WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%PRINTER%'
+           OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%PAPER%'
+           OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%RECEIPT%'
+         THEN 1 ELSE 0 END                            AS desc_printer_flag,
+    CASE WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%CARD READER%'
+           OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%CSC%'
+         THEN 1 ELSE 0 END                            AS desc_card_reader_flag,
+    CASE WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%BILL%'
+           OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%BHU%'
+           OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%BANK NOTE%'
+           OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%CASH%'
+         THEN 1 ELSE 0 END                            AS desc_bill_handler_flag,
+    CASE WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%COIN%'
+           OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%CHU%'
+         THEN 1 ELSE 0 END                            AS desc_coin_flag,
+    CASE WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%COMM%'
+           OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%NETWORK%'
+           OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%OFFLINE%'
+         THEN 1 ELSE 0 END                            AS desc_comms_flag,
+    CASE WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%TIMEOUT%'
+           OR UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%SLOW%'
+         THEN 1 ELSE 0 END                            AS desc_timeout_flag,
+    CASE WHEN UPPER(COALESCE(ai.AE_FAULT_DESCRIPTION, '')) LIKE '%REPLACE%'
+           OR UPPER(COALESCE(ai.AE_RESOLUTION, '')) LIKE '%REPLACED%'
+         THEN 1 ELSE 0 END                            AS desc_replacement_flag
 FROM all_incidents ai
 LEFT JOIN events_24h_prior e24  ON e24.availability_event_id = ai.availability_event_id
 LEFT JOIN critical_7d_prior c7d ON c7d.availability_event_id = ai.availability_event_id
-LEFT JOIN hw_best_match hw      ON hw.availability_event_id  = ai.availability_event_id;
+LEFT JOIN hw_best_match hw      ON hw.availability_event_id  = ai.availability_event_id
+LEFT JOIN component_derived cd  ON cd.availability_event_id  = ai.availability_event_id
+LEFT JOIN kpi_cause_class kcc   ON CAST(kcc.event_id_str AS INT) = ai.sn_event_code_id
+                                AND kcc.kr_failure_level = ai.AE_FAILURE_LEVEL;
 
 -- FIX 6: CREATE INDEX (x6) removed -- not supported on Delta tables
 -- Post-build:

@@ -111,6 +111,7 @@ WITH kpi_detail_base AS (
         kd.DEVICE_TYPE_ID,
         kd.DEVICE_TYPE_NAME
     FROM mars_dev.bronze.edw_kpi_detail_events_by_day kd
+    WHERE kd.EXCLUDED = 0   -- Gap 1 fix: exclude planned/administrative outage exclusions
 ),
 kpi_summary_base AS (
     -- 5-col table: TRANSIT_DAY_KEY, KPI_VALUE, KPI_QUANTITY, SUMM_DTM, KPI_ID

@@ -126,7 +126,10 @@ GROUP BY DEVICE_KEY, transit_day
 ),
 
 -- -- WINDOW FEATURES: backward-only rolling aggregations per device -----------
--- All windows: ROWS BETWEEN N PRECEDING AND 1 PRECEDING (excludes current day)
+-- Gap 2 RC3 fix: RANGE INTERVAL (true calendar-day windows, not incident-row count).
+-- Old ROWS BETWEEN was spanning 38-176 actual calendar days for "7d"/"30d" labels.
+-- CAST(transit_day AS TIMESTAMP): RANGE INTERVAL requires TIMESTAMP ORDER BY col in Spark SQL;
+-- DATE type raises DATATYPE_MISMATCH.RANGE_FRAME_INVALID_TYPE (SQLSTATE 42K09).
 windowed AS (
 SELECT
 DEVICE_KEY,
@@ -134,49 +137,49 @@ transit_day,
 
 -- -- Incident volume ---------------------------------------------------
 SUM(inc_count_day) OVER (
-PARTITION BY DEVICE_KEY ORDER BY transit_day
-ROWS BETWEEN 7 PRECEDING AND 1 PRECEDING) AS incident_count_7d_past,
+PARTITION BY DEVICE_KEY ORDER BY CAST(transit_day AS TIMESTAMP)
+RANGE BETWEEN INTERVAL 7 DAYS PRECEDING AND INTERVAL 1 DAY PRECEDING) AS incident_count_7d_past,
 
 SUM(inc_count_day) OVER (
-PARTITION BY DEVICE_KEY ORDER BY transit_day
-ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING) AS incident_count_30d_past,
+PARTITION BY DEVICE_KEY ORDER BY CAST(transit_day AS TIMESTAMP)
+RANGE BETWEEN INTERVAL 30 DAYS PRECEDING AND INTERVAL 1 DAY PRECEDING) AS incident_count_30d_past,
 
 SUM(inc_count_day) OVER (
-PARTITION BY DEVICE_KEY ORDER BY transit_day
-ROWS BETWEEN 90 PRECEDING AND 1 PRECEDING) AS incident_count_90d_past,
+PARTITION BY DEVICE_KEY ORDER BY CAST(transit_day AS TIMESTAMP)
+RANGE BETWEEN INTERVAL 90 DAYS PRECEDING AND INTERVAL 1 DAY PRECEDING) AS incident_count_90d_past,
 
 -- -- Chargeable outages ------------------------------------------------
 SUM(chargeable_count_day) OVER (
-PARTITION BY DEVICE_KEY ORDER BY transit_day
-ROWS BETWEEN 7 PRECEDING AND 1 PRECEDING) AS chargeable_count_7d_past,
+PARTITION BY DEVICE_KEY ORDER BY CAST(transit_day AS TIMESTAMP)
+RANGE BETWEEN INTERVAL 7 DAYS PRECEDING AND INTERVAL 1 DAY PRECEDING) AS chargeable_count_7d_past,
 
 SUM(chargeable_count_day) OVER (
-PARTITION BY DEVICE_KEY ORDER BY transit_day
-ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING) AS chargeable_count_30d_past,
+PARTITION BY DEVICE_KEY ORDER BY CAST(transit_day AS TIMESTAMP)
+RANGE BETWEEN INTERVAL 30 DAYS PRECEDING AND INTERVAL 1 DAY PRECEDING) AS chargeable_count_30d_past,
 
 -- -- Mean Time to Resolve (minutes) ------------------------------------
 AVG(avg_ttresolve_day) OVER (
-PARTITION BY DEVICE_KEY ORDER BY transit_day
-ROWS BETWEEN 7 PRECEDING AND 1 PRECEDING) AS avg_mttr_7d_past,
+PARTITION BY DEVICE_KEY ORDER BY CAST(transit_day AS TIMESTAMP)
+RANGE BETWEEN INTERVAL 7 DAYS PRECEDING AND INTERVAL 1 DAY PRECEDING) AS avg_mttr_7d_past,
 
 AVG(avg_ttresolve_day) OVER (
-PARTITION BY DEVICE_KEY ORDER BY transit_day
-ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING) AS avg_mttr_30d_past,
+PARTITION BY DEVICE_KEY ORDER BY CAST(transit_day AS TIMESTAMP)
+RANGE BETWEEN INTERVAL 30 DAYS PRECEDING AND INTERVAL 1 DAY PRECEDING) AS avg_mttr_30d_past,
 
 -- -- Severity ----------------------------------------------------------
 MIN(min_priority_day) OVER (
-PARTITION BY DEVICE_KEY ORDER BY transit_day
-ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING) AS min_priority_30d_past,
+PARTITION BY DEVICE_KEY ORDER BY CAST(transit_day AS TIMESTAMP)
+RANGE BETWEEN INTERVAL 30 DAYS PRECEDING AND INTERVAL 1 DAY PRECEDING) AS min_priority_30d_past,
 
 -- -- Major incidents ---------------------------------------------------
 SUM(major_inc_count_day) OVER (
-PARTITION BY DEVICE_KEY ORDER BY transit_day
-ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING) AS major_inc_count_30d_past,
+PARTITION BY DEVICE_KEY ORDER BY CAST(transit_day AS TIMESTAMP)
+RANGE BETWEEN INTERVAL 30 DAYS PRECEDING AND INTERVAL 1 DAY PRECEDING) AS major_inc_count_30d_past,
 
 -- -- Fault code diversity ----------------------------------------------
 SUM(distinct_event_codes_day) OVER (
-PARTITION BY DEVICE_KEY ORDER BY transit_day
-ROWS BETWEEN 30 PRECEDING AND 1 PRECEDING) AS distinct_event_codes_30d,
+PARTITION BY DEVICE_KEY ORDER BY CAST(transit_day AS TIMESTAMP)
+RANGE BETWEEN INTERVAL 30 DAYS PRECEDING AND INTERVAL 1 DAY PRECEDING) AS distinct_event_codes_30d,
 
 -- -- Recency -----------------------------------------------------------
 LAG(transit_day, 1) OVER (

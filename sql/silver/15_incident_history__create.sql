@@ -345,7 +345,92 @@ ON mdl.model_category = mcat.model_category_name
 -- to confirm the match rate before relying on this for a PS-facing feature.
 LEFT JOIN mars_dev.silver.dim_device dd
 ON dd.DEVICE_ID = UPPER(TRIM(i.wm_asset))
-AND dd.is_current = TRUE;
+AND dd.is_current = TRUE
+
+UNION ALL
+
+-- VALIDATOR supplement: edw_availability_events (BMV devices, ~752K rows)
+-- Fixes 0% VALIDATOR incident coverage gap (confirmed 2026-07-07)
+-- Columns mapped to match S15 SELECT schema exactly (68 columns, same order)
+SELECT
+CAST(ae.EVENT_ID AS STRING)                                                AS incident_number,
+'Resolved'                                                                 AS incident_state,
+'Corrective'                                                               AS maintenance_type,
+ae.START_DTM                                                               AS opened_dtm,
+ae.END_DTM                                                                 AS resolved_dtm,
+ae.END_DTM                                                                 AS closed_dtm,
+CAST(DATE(ae.START_DTM) AS DATE)                                           AS incident_date,
+NULL                                                                       AS duration_seconds,
+CASE WHEN ae.END_DTM IS NOT NULL AND ae.START_DTM IS NOT NULL
+      AND ae.END_DTM >= ae.START_DTM
+     THEN (unix_timestamp(ae.END_DTM) - unix_timestamp(ae.START_DTM)) / 60.0
+END                                                                        AS time_to_resolve_minutes,
+NULL                                                                       AS time_to_close_minutes,
+CAST(ae.FAILURE_LEVEL AS INT)                                              AS priority,
+NULL                                                                       AS priority_label,
+CAST(ae.FAILURE_LEVEL AS INT)                                              AS severity,
+NULL                                                                       AS severity_label,
+NULL                                                                       AS category,
+NULL                                                                       AS subcategory,
+NULL                                                                       AS u_category,
+NULL                                                                       AS cause,
+ae.FAULT_DESCRIPTION                                                       AS short_description,
+ae.SYMPTOM                                                                 AS description,
+ae.RESOLUTION                                                              AS resolution_notes,
+NULL                                                                       AS close_code,
+ae.DEVICE_ID                                                               AS wm_asset,
+NULL                                                                       AS cmdb_ci_name,
+NULL                                                                       AS ncs_device_id,
+ae.FACILITY_NAME                                                           AS location_name,
+NULL                                                                       AS assignment_group,
+NULL                                                                       AS assigned_to,
+NULL                                                                       AS caller,
+NULL                                                                       AS event_code_raw,
+NULL                                                                       AS event_code_id,
+NULL                                                                       AS event_code_name,
+NULL                                                                       AS event_cleared_dtm,
+CASE WHEN ae.EXCLUDED = 0 OR ae.EXCLUDED IS NULL THEN 1 ELSE 0 END        AS is_chargeable,
+NULL                                                                       AS chargeable_level,
+0                                                                          AS is_chargeable_override,
+0                                                                          AS reopen_count,
+0                                                                          AS is_major_incident,
+NULL                                                                       AS reason_code,
+NULL                                                                       AS business_impact,
+NULL                                                                       AS contact_type,
+NULL                                                                       AS estimated_time_hours,
+NULL                                                                       AS ci_asset_tag,
+NULL                                                                       AS ci_operational_status,
+NULL                                                                       AS ci_install_status,
+NULL                                                                       AS ci_install_date,
+NULL                                                                       AS ci_serial_number,
+NULL                                                                       AS ci_ncs_device_id,
+NULL                                                                       AS ci_ncs_device_name,
+NULL                                                                       AS ci_component_id,
+NULL                                                                       AS ci_component_position,
+NULL                                                                       AS ci_manufacturer,
+NULL                                                                       AS ci_warranty_expiration,
+NULL                                                                       AS ci_class_name,
+NULL                                                                       AS ci_fault_count,
+NULL                                                                       AS cmdb_model_name,
+NULL                                                                       AS cmdb_model_type,
+NULL                                                                       AS cmdb_model_life_expectancy,
+NULL                                                                       AS cmdb_model_is_repairable,
+NULL                                                                       AS cmdb_model_is_rotable,
+NULL                                                                       AS cmdb_model_category,
+NULL                                                                       AS cmdb_model_parent_category,
+dd_v.DEVICE_KEY,
+dd_v.mars_device_category,
+dd_v.FACILITY_NAME,
+dd_v.FACILITY_ID,
+dd_v.OPERATOR_ID,
+'CHICAGO'                                                                  AS city_id
+FROM mars_dev.bronze.edw_availability_events ae
+INNER JOIN mars_dev.silver.dim_device dd_v
+ON dd_v.DEVICE_ID = ae.DEVICE_ID AND dd_v.is_current = TRUE
+WHERE dd_v.mars_device_category = 'VALIDATOR'
+AND ae.START_DTM IS NOT NULL
+AND DATE(ae.START_DTM) >= '2024-01-01'
+AND (ae.EXCLUDED IS NULL OR ae.EXCLUDED = 0);
 
 -- Post-load optimisation:
 -- OPTIMIZE mars_dev.silver.incident_history ZORDER BY (incident_date, wm_asset);

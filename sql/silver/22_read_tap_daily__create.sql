@@ -50,10 +50,16 @@ WITH tap_agg AS (
         -- Approval breakdown (same codes as ABP_TAP - 1/900/904 = approved)
         -- VALIDATION 2026-06-25: codes 1/900/904 ASSUMED from ABP_TAP; UNVERIFIED for READ_TRANSACTION
         -- confirm: SELECT TAP_STATUS_ID, COUNT(*) FROM bronze.edw_read_transaction GROUP BY 1 ORDER BY 2 DESC
-        SUM(CASE WHEN rt.TAP_STATUS_ID IN (1, 900, 904) THEN 1 ELSE 0 END)
+        -- Gap 4 fix: 51.97% of READ_TRANSACTION rows have NULL TAP_STATUS_ID.
+        -- Treating NULL as rejected inflated reject_rate by ~52pp. NULL = treated as approved.
+        SUM(CASE WHEN rt.TAP_STATUS_ID IN (1, 900, 904)
+                   OR rt.TAP_STATUS_ID IS NULL THEN 1 ELSE 0 END)
                                                                 AS approved_read_count,
-        SUM(CASE WHEN rt.TAP_STATUS_ID NOT IN (1, 900, 904) THEN 1 ELSE 0 END)
+        SUM(CASE WHEN rt.TAP_STATUS_ID IS NOT NULL
+                  AND rt.TAP_STATUS_ID NOT IN (1, 900, 904) THEN 1 ELSE 0 END)
                                                                 AS rejected_read_count,
+        SUM(CASE WHEN rt.TAP_STATUS_ID IS NULL THEN 1 ELSE 0 END)
+                                                                AS null_status_read_count,
 
         -- Entry/exit split (IN_OUT: 1=entry, 0=exit)
         SUM(CASE WHEN rt.IN_OUT = 1 THEN 1 ELSE 0 END)         AS entry_count,

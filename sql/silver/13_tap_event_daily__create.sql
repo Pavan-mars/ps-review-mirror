@@ -76,6 +76,7 @@ WITH tap_agg AS (
                                                                AS tap_reject_count,
         SUM(COALESCE(t.FARE_DUE, 0))                          AS total_fare,
         AVG(COALESCE(t.FARE_DUE, 0))                          AS avg_fare,
+        SUM(CASE WHEN t.TAP_STATUS_ID = 11 THEN 1 ELSE 0 END)  AS tap_timeout_count,
         MIN(t.TRANSACTION_DTM)                                AS first_tap_dtm,
         MAX(t.TRANSACTION_DTM)                                AS last_tap_dtm
     FROM mars_dev.bronze.edw_abp_tap t
@@ -112,6 +113,12 @@ SELECT
         THEN ROUND(CAST(ta.tap_reject_count AS DOUBLE) / ta.tap_count * 100, 4)
         ELSE 0
     END                                          AS tap_reject_rate_pct,
+    ta.tap_timeout_count,
+    CASE
+        WHEN ta.tap_count > 0
+        THEN ROUND(CAST(ta.tap_timeout_count AS DOUBLE) / ta.tap_count * 100, 4)
+        ELSE 0
+    END                                          AS tap_timeout_rate_pct,
     ta.total_fare,
     ta.avg_fare,
     ph.peak_hour_tap_count,

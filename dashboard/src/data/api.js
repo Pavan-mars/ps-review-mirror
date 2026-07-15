@@ -324,3 +324,42 @@ export async function apiPS2DeviceCascades(city, deviceId) {
     return Array.isArray(rows) ? rows : [];
   } catch { return []; }
 }
+
+// ---- PS1 training-results fetchers (honest not-promoted view) ----------------
+import { getPS1FailureSummary, getPS1Leaderboard, getPS1Features } from './mockData';
+
+export async function apiPS1Summary(city) {
+  try {
+    const rows = await apiGet('/ps1/summary', city);
+    if (rows === undefined || !Array.isArray(rows) || rows.length === 0) return getPS1FailureSummary();
+    return rows.map((r) => ({
+      device: r.device, champion_model: r.champion_model,
+      test_auc: N(r.test_auc), test_ap: N(r.test_ap), test_accuracy: N(r.test_accuracy),
+      test_f1: N(r.test_f1), test_precision: N(r.test_precision), test_recall: N(r.test_recall),
+      op_threshold: N(r.op_threshold), op_precision: N(r.op_precision), op_recall: N(r.op_recall), op_f2: N(r.op_f2),
+      recall_floor: N(r.recall_floor), quality_gate: r.quality_gate, promoted: r.promoted === true || r.promoted === 't' || r.promoted === 'true',
+      auc_cal: N(r.auc_cal), map_score: N(r.map_score), overfit_flag: r.overfit_flag === true || r.overfit_flag === 't' || r.overfit_flag === 'true',
+      base_rate_pct: N(r.base_rate_pct), n_train: N(r.n_train), n_test: N(r.n_test), n_test_pos: N(r.n_test_pos),
+      endpoint_name: r.endpoint_name, mlflow_version: r.mlflow_version, target: r.target, run_id: r.run_id,
+    }));
+  } catch { return getPS1FailureSummary(); }
+}
+export async function apiPS1Leaderboard(city) {
+  try {
+    const rows = await apiGet('/ps1/leaderboard', city);
+    if (rows === undefined || !Array.isArray(rows) || rows.length === 0) return getPS1Leaderboard();
+    return rows.map((r) => ({
+      device: r.device, model: r.model, auc: N(r.auc), ap: N(r.ap), f1: N(r.f1), prec: N(r.prec), rec: N(r.rec),
+      lb_rank: N(r.lb_rank), is_champion: r.is_champion === true || r.is_champion === 't' || r.is_champion === 'true', note: r.note || '',
+    }));
+  } catch { return getPS1Leaderboard(); }
+}
+export async function apiPS1Features(city) {
+  try {
+    const rows = await apiGet('/ps1/features', city);
+    if (rows === undefined || !Array.isArray(rows) || rows.length === 0) return getPS1Features();
+    return rows.map((r) => ({
+      device: r.device, feature: r.feature, mean_abs_shap: N(r.mean_abs_shap), pct_total: N(r.pct_total), feat_rank: N(r.feat_rank),
+    }));
+  } catch { return getPS1Features(); }
+}

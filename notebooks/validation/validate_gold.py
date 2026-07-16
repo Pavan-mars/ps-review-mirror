@@ -92,13 +92,33 @@ for t, cfg in GOLD.items():
 # COMMAND ----------
 # PS-specific ML-readiness checks
 
-# PS1: label positive rate. Target = will_fail_3d (chargeable SLA failure within 3 days, TVM+GATE only).
-# R3-2 (2026-06-27): 7-day window → 3-day; VALIDATOR excluded. Expected positive rate ~1-5%.
+# PS1: label positive rate per category.
+# TVM/GATE: is_chargeable SLA failure within 3d (expect 0.6-15%).
+# VALIDATOR: tap rejection 2σ spike within 3d (R5-1 2026-07-16, expect 2-8%).
+# Overall rate check retained for quick summary; per-category check catches VALIDATOR=0 regression.
 def ps1_label():
     r = spark.sql("SELECT round(100.0*avg(will_fail_3d),2) pct FROM mars_dev.gold.device_ps1_daily").first()["pct"]
     log("device_ps1_daily", "label_positive_rate", "WARN" if (r or 0) > 15 else "PASS",
-        f"{r}% positive (chargeable 3d spec ~1-5%; >15% suggests label too broad)")
+        f"{r}% positive overall (TVM/GATE chargeable 3d; VALIDATOR tap-spike 3d)")
 safe("device_ps1_daily", "label_positive_rate", ps1_label)
+
+def ps1_label_by_cat():
+    rows = spark.sql(
+        "SELECT mars_device_category cat, round(100.0*avg(will_fail_3d),3) pct, count(*) n "
+        "FROM mars_dev.gold.device_ps1_daily GROUP BY 1 ORDER BY 1"
+    ).collect()
+    for row in rows:
+        cat, pct, n = row["cat"], row["pct"] or 0, row["n"]
+        if cat == "VALIDATOR":
+            # Tap-spike label: 0% means label CTE didn't fire — re-run gold SQL first
+            status = "PASS" if 0 < pct < 15 else "WARN"
+            hint = "tap-spike label; 0%=gold SQL not re-run; >15%=threshold too loose"
+        else:
+            status = "WARN" if pct > 15 else "PASS"
+            hint = "chargeable SLA; expect TVM 10-15%, GATE 0.5-3%"
+        log("device_ps1_daily", f"label_positive_rate:{cat}", status,
+            f"{pct}% positive ({n:,} rows) — {hint}")
+safe("device_ps1_daily", "label_positive_rate_by_cat", ps1_label_by_cat)
 
 # PS3: target class balance — flag classes with too few rows to learn
 def ps3_balance():

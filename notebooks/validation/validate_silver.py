@@ -80,7 +80,7 @@ SILVER = {
     "metric_hourly":                 dict(grain=["DEVICE_KEY", "hour_bucket"], date_cols=["transit_day"], notnull=["DEVICE_KEY"]),
     "dim_device":                    dict(grain=["DEVICE_KEY"], notnull=["DEVICE_ID", "DEVICE_KEY"]),
     "dim_event_type":                dict(grain=["EVENT_TYPE_KEY"], notnull=["EVENT_TYPE_ID"]),
-    "device_uptime_intervals":       dict(date_cols=["transit_day"], notnull=["DEVICE_ID"]),
+    "device_uptime_intervals":       dict(date_cols=["eod_date"], notnull=["DEVICE_ID"]),   # date col is eod_date (not transit_day)
     "hw_config_current":             dict(notnull=["DEVICE_ID"]),                          # multi-row per device (per component)
     "metric_daily":                  dict(grain=["DEVICE_KEY", "transit_day"], date_cols=["transit_day"], notnull=["DEVICE_KEY"]),
     "kpi_avail_enriched":            dict(date_cols=["transit_day"], notnull=["DEVICE_ID"]),  # event grain
@@ -96,7 +96,7 @@ SILVER = {
     # Gap fix: grain changed to incident_number (not "number" — column was always incident_number in S15 schema)
     "incident_history":              dict(grain=["incident_number"], notnull=["incident_number"]),
     "device_event_enriched":         dict(grain=["DW_DEVICE_EVENT_ID"], date_cols=["transit_day"], notnull=["DEVICE_ID"]),
-    "incident_root_cause":           dict(date_cols=["transit_day"], notnull=["AE_DEVICE_ID"]),
+    "incident_root_cause":           dict(date_cols=["transit_day"], notnull=["device_id"]),   # AE_DEVICE_ID aliased to device_id in final SELECT
     "device_outage":                 dict(date_cols=["transit_day"], notnull=["DEVICE_ID"]),
     "maintenance_ledger":            dict(date_cols=["ledger_date"], notnull=["DEVICE_ID"]),
     "usage_lifecycle_daily":         dict(grain=["DEVICE_KEY", "transit_day"], date_cols=["transit_day"], notnull=["DEVICE_KEY"]),

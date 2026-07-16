@@ -261,12 +261,50 @@ use_revenue AS (
         END                                          AS use_revenue_decline_flag
     FROM mars_dev.silver.use_revenue_daily ur
 ),
--- R3-2 (2026-06-27): will_fail_3d — 3-day lookahead, TVM+GATE only
---   is_chargeable = TRUE AND failure_level IN (2,3,4,5)
---   failure_level 1 (NONPAYMENT) and 16 (BUS_READER_ASSEMBLY) confirmed absent from data.
---   VALIDATOR excluded: zero rows in incident_root_cause → permanent 0 label, not useful.
---   NOT maintenance/commanded: already excluded via is_hardware_oos_event=TRUE in S18.
---   Expected positive rate: TVM ~10-15%, GATE ~3-5%
+-- R5-1 (2026-07-16): VALIDATOR label (Option A) — tap rejection rate 2σ spike
+--   No ServiceNow SLA data for VALIDATOR; use operational tap anomaly as failure proxy.
+--   Baseline: 28-day rolling per-device mean + stddev of weighted tap_reject_rate_pct.
+--   Spike: today's rate > mean + 2*std AND baseline has ≥28 days of history (std IS NOT NULL).
+--   tap_event_daily grain is (DEVICE_ID, DEVICE_KEY, transit_day); aggregated to (DEVICE_ID, transit_day).
+validator_tap_baseline AS (
+    SELECT
+        DEVICE_ID,
+        transit_day,
+        tap_reject_rate_pct,
+        AVG(tap_reject_rate_pct) OVER (
+            PARTITION BY DEVICE_ID
+            ORDER BY transit_day
+            ROWS BETWEEN 28 PRECEDING AND 1 PRECEDING
+        ) AS reject_rate_mean_28d,
+        STDDEV_POP(tap_reject_rate_pct) OVER (
+            PARTITION BY DEVICE_ID
+            ORDER BY transit_day
+            ROWS BETWEEN 28 PRECEDING AND 1 PRECEDING
+        ) AS reject_rate_std_28d
+    FROM (
+        SELECT
+            DEVICE_ID,
+            transit_day,
+            CASE WHEN SUM(tap_count) > 0
+                 THEN ROUND(SUM(tap_count * tap_reject_rate_pct / 100.0)
+                            / SUM(tap_count) * 100.0, 4)
+                 ELSE 0 END AS tap_reject_rate_pct
+        FROM mars_dev.silver.tap_event_daily
+        WHERE mars_device_category = 'VALIDATOR'
+          AND transit_day <= CURRENT_DATE()
+        GROUP BY DEVICE_ID, transit_day
+    ) agg
+),
+validator_tap_anomaly AS (
+    SELECT DEVICE_ID, transit_day
+    FROM validator_tap_baseline
+    WHERE reject_rate_std_28d IS NOT NULL
+      AND reject_rate_std_28d > 0
+      AND tap_reject_rate_pct > reject_rate_mean_28d + 2 * reject_rate_std_28d
+),
+-- R3-2 (2026-06-27): will_fail_3d — 3-day lookahead
+--   TVM+GATE: is_chargeable=TRUE AND failure_level IN (2,3,4,5); expected ~0.6-15%
+--   VALIDATOR (R5-1 2026-07-16): tap rejection 2σ spike; expected ~2-8%
 outage_label_days AS (
     SELECT DISTINCT
         do2.DEVICE_ID,
@@ -279,9 +317,15 @@ outage_label_days AS (
       AND do2.is_chargeable = TRUE
       AND do2.failure_level IN (2,3,4,5)
       AND do2.mars_device_category IN ('TVM','GATE')
+    UNION ALL
+    SELECT DISTINCT
+        vta.DEVICE_ID,
+        DATE_ADD(vta.transit_day, -seq.n) AS label_day
+    FROM validator_tap_anomaly vta
+    CROSS JOIN (SELECT 1 AS n UNION ALL SELECT 2 UNION ALL SELECT 3) seq
 ),
--- R4-2 (2026-07-07): will_fail_7d — 7-day lookahead, same chargeable definition as 3d
---   Expected positive rate: TVM ~25-30%, GATE ~5-8%
+-- R4-2 (2026-07-07): will_fail_7d — 7-day lookahead
+--   TVM+GATE: same chargeable definition; VALIDATOR: same tap-spike definition
 outage_label_days_7d AS (
     SELECT DISTINCT
         do2.DEVICE_ID,
@@ -295,9 +339,18 @@ outage_label_days_7d AS (
       AND do2.is_chargeable = TRUE
       AND do2.failure_level IN (2,3,4,5)
       AND do2.mars_device_category IN ('TVM','GATE')
+    UNION ALL
+    SELECT DISTINCT
+        vta.DEVICE_ID,
+        DATE_ADD(vta.transit_day, -seq.n) AS label_day
+    FROM validator_tap_anomaly vta
+    CROSS JOIN (
+        SELECT 1 AS n UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL
+        SELECT 4         UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7
+    ) seq
 ),
--- R4-2 (2026-07-07): will_fail_14d — 14-day lookahead, same chargeable definition
---   Expected positive rate: TVM ~35-40%, GATE ~8-12%
+-- R4-2 (2026-07-07): will_fail_14d — 14-day lookahead
+--   TVM+GATE: same chargeable definition; VALIDATOR: same tap-spike definition
 outage_label_days_14d AS (
     SELECT DISTINCT
         do2.DEVICE_ID,
@@ -313,6 +366,17 @@ outage_label_days_14d AS (
       AND do2.is_chargeable = TRUE
       AND do2.failure_level IN (2,3,4,5)
       AND do2.mars_device_category IN ('TVM','GATE')
+    UNION ALL
+    SELECT DISTINCT
+        vta.DEVICE_ID,
+        DATE_ADD(vta.transit_day, -seq.n) AS label_day
+    FROM validator_tap_anomaly vta
+    CROSS JOIN (
+        SELECT  1 AS n UNION ALL SELECT  2 UNION ALL SELECT  3 UNION ALL
+        SELECT  4         UNION ALL SELECT  5 UNION ALL SELECT  6 UNION ALL SELECT  7 UNION ALL
+        SELECT  8         UNION ALL SELECT  9 UNION ALL SELECT 10 UNION ALL SELECT 11 UNION ALL
+        SELECT 12         UNION ALL SELECT 13 UNION ALL SELECT 14
+    ) seq
 ),
 -- FIX 7: spine filtered to >= 2024-01-01 (ML training window; excludes legacy pre-2024 rows)
 spine AS (
@@ -378,6 +442,8 @@ SELECT
     COALESCE(tap.unique_cards, 0)           AS unique_cards,
     COALESCE(tap.tap_reject_rate_pct, 0)    AS tap_reject_rate_pct,
     COALESCE(tap.peak_hour_tap_count, 0)    AS peak_hour_tap_count,
+    COALESCE(tap.tap_timeout_count, 0)      AS tap_timeout_count,
+    COALESCE(tap.tap_timeout_rate_pct, 0)   AS tap_timeout_rate_pct,
     -- KPI features (pre-aggregated; AVAILABILITY_PCT / FAULT_COUNT removed -- not in S12)
     kp.avg_kpi_value,
     kp.max_kpi_value,
@@ -455,7 +521,11 @@ LEFT JOIN (
              THEN ROUND(SUM(tap_count * tap_reject_rate_pct / 100.0)
                         / SUM(tap_count) * 100.0, 4)
              ELSE 0 END                                                        AS tap_reject_rate_pct,
-        MAX(peak_hour_tap_count)                                               AS peak_hour_tap_count
+        MAX(peak_hour_tap_count)                                               AS peak_hour_tap_count,
+        SUM(tap_timeout_count)                                                 AS tap_timeout_count,
+        CASE WHEN SUM(tap_count) > 0
+             THEN ROUND(SUM(tap_timeout_count) * 100.0 / SUM(tap_count), 4)
+             ELSE 0 END                                                        AS tap_timeout_rate_pct
     FROM mars_dev.silver.tap_event_daily
     WHERE transit_day <= CURRENT_DATE()
     GROUP BY DEVICE_ID, transit_day

@@ -84,7 +84,7 @@ WITH tvm_gate_failures AS (
         LEAST(
             SUM(
                 CASE WHEN ae.END_DTM IS NOT NULL
-                     THEN LEAST(TIMESTAMPDIFF(MINUTE, ae.START_DTM, ae.END_DTM), 10080)
+                     THEN LEAST(GREATEST(TIMESTAMPDIFF(MINUTE, ae.START_DTM, ae.END_DTM), 0), 10080)
                      ELSE 0
                 END
             ), 1440                                         -- day-level cap: max 24h actual downtime per calendar day

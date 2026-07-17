@@ -269,8 +269,31 @@ SELECT
     inc24.min_priority_30d_past,
     inc24.days_since_last_incident
 FROM chain_agg ca
-LEFT JOIN mars_dev.silver.dim_device dd
-    ON dd.DEVICE_ID = ca.DEVICE_ID AND dd.is_current = TRUE
+LEFT JOIN (
+    -- Deduplicate dim_device to 1 row per DEVICE_ID — same SCD2 fan-out pattern as S26/S27.
+    -- dim_device can have >1 is_current=TRUE row per DEVICE_ID; joining without dedup
+    -- duplicates every chain_agg row N times, producing grain violations in the final table.
+    SELECT
+        DEVICE_ID,
+        MAX(DEVICE_KEY)                        AS DEVICE_KEY,
+        MAX(mars_device_category)              AS mars_device_category,
+        MAX(DEVICE_NAME)                       AS DEVICE_NAME,
+        MAX(FACILITY_ID)                       AS FACILITY_ID,
+        MAX(FACILITY_NAME)                     AS FACILITY_NAME,
+        MAX(OPERATOR_ID)                       AS OPERATOR_ID,
+        MAX(OPERATOR_NAME)                     AS OPERATOR_NAME,
+        MAX(DEVICE_SERIAL_NUMBER)              AS DEVICE_SERIAL_NUMBER,
+        MAX(DEVICE_CONTROL_GROUP_TYPE_NAME)    AS DEVICE_CONTROL_GROUP_TYPE_NAME,
+        MAX(BUS_ID)                            AS BUS_ID,
+        MAX(TRANSIT_ARRAY_ID)                  AS TRANSIT_ARRAY_ID,
+        MAX(ARRAY_POSITION)                    AS ARRAY_POSITION,
+        MAX(FARE_CONTROL_AREA)                 AS FARE_CONTROL_AREA,
+        MAX(TURNSTILE_DEVICE_TYPE)             AS TURNSTILE_DEVICE_TYPE,
+        MAX(TURNSTILE_DEVICE_NUMBER)           AS TURNSTILE_DEVICE_NUMBER
+    FROM mars_dev.silver.dim_device
+    WHERE is_current = TRUE
+    GROUP BY DEVICE_ID
+) dd ON dd.DEVICE_ID = ca.DEVICE_ID
 LEFT JOIN cashbox_daily cb
     ON cb.DEVICE_ID = ca.DEVICE_ID AND cb.cbx_date = ca.transit_day
 -- R4 (2026-07-07): S24 incident features — join on DEVICE_KEY + transit_day

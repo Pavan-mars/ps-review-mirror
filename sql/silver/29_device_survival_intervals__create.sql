@@ -97,11 +97,11 @@ past_intervals AS (
 latest_failures AS (
     SELECT
         DEVICE_KEY,
-        DEVICE_ID,
+        MAX(DEVICE_ID)    AS DEVICE_ID,  -- MAX: same key can have multiple IDs across failure days
         device_category,
         MAX(failure_date) AS last_failure_date
     FROM mars_dev.silver.device_failures
-    GROUP BY DEVICE_KEY, DEVICE_ID, device_category
+    GROUP BY DEVICE_KEY, device_category
 ),
 ongoing_intervals AS (
     SELECT
@@ -125,11 +125,11 @@ ongoing_intervals AS (
 first_failures AS (
     SELECT
         DEVICE_KEY,
-        DEVICE_ID,
+        MAX(DEVICE_ID)    AS DEVICE_ID,  -- MAX: same key can have multiple IDs across failure days
         device_category,
         MIN(failure_date) AS first_failure_date
     FROM mars_dev.silver.device_failures
-    GROUP BY DEVICE_KEY, DEVICE_ID, device_category
+    GROUP BY DEVICE_KEY, device_category
 ),
 first_intervals AS (
     SELECT

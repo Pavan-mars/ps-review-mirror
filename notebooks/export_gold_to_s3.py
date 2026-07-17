@@ -46,6 +46,9 @@ assert mode in ("overwrite", "append"), f"mode must be overwrite|append, got {mo
 spark.conf.set("spark.databricks.delta.formatCheck.enabled", "false")
 
 GOLD_TABLES = [
+    # PS1 updated 2026-07-17: VALIDATOR label → device_failures OOS Set events (R6-1);
+    #   +5 rolling failure features (roll_fail_7d/30d/90d, days_since_fail, fail_free_streak);
+    #   ROWS→RANGE fix on w7/w30 windows; rebuild S26 device_failures first.
     "device_ps1_daily",
     "device_ps2_chains",
     "device_ps3_incident",

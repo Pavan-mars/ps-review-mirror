@@ -10,6 +10,13 @@
 --   S24  mars_dev.silver.device_incident_features_daily  (NEW 2026-07-07)
 --         +5 incident history cols; join on DEVICE_KEY + transit_day
 --         TVM 17.75% coverage, GATE 3.33%, VALIDATOR 0%
+--   S27  mars_dev.silver.station_network_daily           (NEW 2026-07-17)
+--         station co-failure context; join on FACILITY_ID + device_category + transit_day
+--         replaces NULL SVN_STAGE CI stubs with real station cascade signal
+--         is_coordinated_failure (≥3 devices), is_major_station_event (≥5), station_devices_failed
+--   S29  mars_dev.silver.device_survival_intervals       (NEW 2026-07-17)
+--         survival interval containing transit_day; join on DEVICE_KEY + date range
+--         days_healthy_before_chain: calendar days healthy before this fault chain fired
 -- Sources (bronze):
 --   mars_dev.bronze.ncs_stage_cashbox_tracking  (TVM only -- 140M rows)
 --   mars_dev.bronze.ncs_stage_cashbox_type      (15 rows -- cashbox type dimension)
@@ -237,6 +244,22 @@ SELECT
     CAST(NULL AS STRING)                      AS ci_related_devices,
     CAST(NULL AS STRING)                      AS shared_facility_chain,
     FALSE                                     AS svn_ci_data_available,
+    -- Station network context (S27 -- NEW 2026-07-17)
+    -- Replaces NULL SVN_STAGE CI stubs with real station-level co-failure evidence.
+    -- is_coordinated_station_failure = TRUE when ≥3 devices failed at the same
+    -- station/category/day — strong signal for shared infrastructure root cause.
+    COALESCE(snd.is_coordinated_failure, FALSE)   AS is_coordinated_station_failure,
+    COALESCE(snd.is_major_station_event,  FALSE)  AS is_major_station_event,
+    COALESCE(snd.devices_failed,          0)      AS station_devices_failed,
+    COALESCE(snd.total_downtime_minutes,  0)      AS station_total_downtime_min,
+    -- Survival interval context (S29 -- NEW 2026-07-17)
+    -- days_healthy_before_chain: calendar days device was continuously healthy before
+    -- this fault chain. 0 when transit_day is a failure day itself (interval gap = 0).
+    -- NULL (→ COALESCE 0) when device has no prior failure in window (never-failed device).
+    COALESCE(DATEDIFF(ca.transit_day, dsi.interval_start_date), 0)
+                                                  AS days_healthy_before_chain,
+    dsi.preceding_failure_date                    AS last_failure_before_chain,
+    COALESCE(dsi.is_first_interval, FALSE)        AS no_prior_failure_in_window,
     -- Incident history context (S24 -- R4 2026-07-07)
     -- 5 cols selected: chain severity depends on device maintenance history and recency
     -- count cols: COALESCE 0; MTTR and priority: NULL kept (no history is distinct from zero)
@@ -253,7 +276,21 @@ LEFT JOIN cashbox_daily cb
 -- R4 (2026-07-07): S24 incident features — join on DEVICE_KEY + transit_day
 LEFT JOIN mars_dev.silver.device_incident_features_daily inc24
     ON inc24.DEVICE_KEY  = ca.DEVICE_KEY
-   AND inc24.transit_day = ca.transit_day;
+   AND inc24.transit_day = ca.transit_day
+-- S27 (2026-07-17): station co-failure context — join on FACILITY_ID + device_category + transit_day
+-- FACILITY_ID from dd (dim_device); if dd has no match, FACILITY_ID=NULL → no S27 row (safe, LEFT JOIN)
+-- device_category from COALESCE(dd, ca) so the S27 row for this category is matched (no fan-out)
+LEFT JOIN mars_dev.silver.station_network_daily snd
+    ON  snd.FACILITY_ID     = dd.FACILITY_ID
+    AND snd.device_category = COALESCE(dd.mars_device_category, ca.mars_device_category)
+    AND snd.transit_day     = ca.transit_day
+-- S29 (2026-07-17): survival intervals — find the one interval that contains transit_day
+-- Intervals are non-overlapping per DEVICE_KEY, so at most 1 row matches (no fan-out)
+-- No match when transit_day IS a failure day (interval starts day after failure)
+LEFT JOIN mars_dev.silver.device_survival_intervals dsi
+    ON  dsi.DEVICE_KEY        = ca.DEVICE_KEY
+    AND ca.transit_day        >= dsi.interval_start_date
+    AND (dsi.interval_end_date IS NULL OR ca.transit_day <= dsi.interval_end_date);
 
 -- Post-build:
 -- OPTIMIZE mars_dev.gold.device_ps2_chains ZORDER BY (DEVICE_ID, transit_day);

@@ -20,6 +20,10 @@
 --         Lifetime device-level usage intensity — total taps, avg daily taps, active service days.
 --         Higher avg_daily_taps = faster mechanical wear -> shorter expected component lifespan.
 --         Covers TVM, GATE, VALIDATOR (bus farebox taps). Join grain: DEVICE_ID only.
+--   S28  mars_dev.silver.device_mttr        (NEW 2026-07-17 -- R6)
+--         Rolling MTTR per device-failure-day aggregated to lifetime device level.
+--         Fills VALIDATOR MTTR gap: S15 ServiceNow = 0% VALIDATOR coverage; S28 = 100%.
+--         Covers TVM + GATE + VALIDATOR. Join grain: DEVICE_KEY only.
 -- Sources (bronze):
 --   mars_dev.bronze.ncs_stage_cashbox_tracking  (TVM/VALIDATOR only)
 --
@@ -189,6 +193,23 @@ device_usage_lifetime AS (
       AND transit_day >= '2024-01-01'
     GROUP BY DEVICE_ID
 ),
+-- R6 (2026-07-17): device-level MTTR lifetime from S28 device_mttr
+-- Aggregated to one row per DEVICE_KEY so it joins cleanly to component grain.
+-- avg_downtime_per_fail_day_min: mean of daily downtime across all failure days
+-- avg_rolling_mttr_30d_min: avg of the per-day 30d rolling MTTR (smoothed MTTR signal)
+-- Fills VALIDATOR gap: S15 ServiceNow = 0% VALIDATOR; S28 = 100% via device_event_enriched.
+device_mttr_lifetime AS (
+    SELECT
+        DEVICE_KEY,
+        ROUND(AVG(downtime_minutes),  1)  AS avg_downtime_per_fail_day_min,
+        ROUND(AVG(avg_downtime_30d),  1)  AS avg_rolling_mttr_30d_min,
+        ROUND(AVG(avg_downtime_90d),  1)  AS avg_rolling_mttr_90d_min,
+        MAX(downtime_minutes)             AS max_downtime_ever_min,
+        COUNT(*)                          AS total_failure_days_s28,
+        MAX(failure_date)                 AS last_failure_date_s28
+    FROM mars_dev.silver.device_mttr
+    GROUP BY DEVICE_KEY
+),
 -- Cashbox context (TVM/VALIDATOR only; LEFT JOIN returns 0/NULL for GATE/READER)
 -- FIX 11+12+13: bronze.ncs_cashbox_tracking -> ncs_stage_cashbox_tracking;
 --               TRANSACTION_TYPE->CASHBOX_TYPE_ID; TRANSACTION_DTM->CASHBOX_INSERTED/REMOVED_DTM
@@ -279,7 +300,17 @@ SELECT
     COALESCE(dil.distinct_event_codes_device,0) AS distinct_event_codes_device,
     dil.first_incident_date,
     dil.last_incident_date,
-    COALESCE(dil.major_inc_device,           0) AS major_inc_device
+    COALESCE(dil.major_inc_device,           0) AS major_inc_device,
+    -- R6 (2026-07-17): device MTTR from S28 — covers VALIDATOR (fills S15 0% gap)
+    -- avg_downtime_per_fail_day_min: mean downtime on actual failure days (all 3 categories)
+    -- avg_rolling_mttr_30d_min: avg of the per-day 30d rolling MTTR across all failure days
+    -- COALESCE 0 for devices with no failure history in S28 (never-failed in training window)
+    COALESCE(dmttr.avg_downtime_per_fail_day_min, 0) AS avg_downtime_per_fail_day_min,
+    COALESCE(dmttr.avg_rolling_mttr_30d_min,      0) AS avg_rolling_mttr_30d_min,
+    COALESCE(dmttr.avg_rolling_mttr_90d_min,      0) AS avg_rolling_mttr_90d_min,
+    COALESCE(dmttr.max_downtime_ever_min,         0) AS max_downtime_ever_min,
+    COALESCE(dmttr.total_failure_days_s28,        0) AS total_failure_days_s28,
+    dmttr.last_failure_date_s28
 FROM all_hw hw
 LEFT JOIN component_failures cf
     ON cf.DEVICE_ID            = hw.DEVICE_ID
@@ -292,6 +323,10 @@ LEFT JOIN device_inc_lifetime dil
 -- R5 (2026-07-07): usage intensity from S13 — join on DEVICE_ID only
 LEFT JOIN device_usage_lifetime dul
     ON dul.DEVICE_ID = hw.DEVICE_ID
+-- R6 (2026-07-17): device MTTR lifetime from S28 — join on DEVICE_KEY
+-- Same value broadcast to all component rows for the same device (device-level signal)
+LEFT JOIN device_mttr_lifetime dmttr
+    ON dmttr.DEVICE_KEY = hw.DEVICE_KEY
 WHERE hw.component_age_days IS NOT NULL;
 
 -- FIX 15: CREATE INDEX (x6) removed -- not supported on Delta tables

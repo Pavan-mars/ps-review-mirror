@@ -65,6 +65,28 @@
 --         3-day window targets: TVM ~10-15%, GATE ~3-5%.
 --         failure_level IN (2,3,4,5) confirmed — levels 1 and 16 absent from data.
 --
+-- Scope notes (confirmed Michael W 16 Jul 2026 — Impact doc):
+--   AVM (431 devices): legacy CTA vending, NOT Ventra. Excluded by mars_device_category='OTHER'
+--     in dim_device (S06). Real TVM fleet = ~513 TVM-prefix devices only.
+--   AFC-switch labels (e.g. GL-RIDGELAND-AFC2): network routers, NOT NCS device IDs.
+--     42.4% unmapped Gate rows are network tickets — excluded from device failure labels.
+--     Captured as a station-level cascade signal in S27 station_network_daily → PS2.
+--   700-series tap timing legs (701-705): absent from Chicago Oracle source permanently.
+--     M401 (total transaction time) + reader/comms events (S10 v2) are the substitute signals.
+--   SEVERITY: NULL for 418 of 444 event types — unusable as feature. All signals use
+--     is_hardware_oos_event / is_oos_event / failure_level from S16/S18/S26 instead.
+--
+-- R7 additions (2026-07-17):
+--   R7-1: S10 v2 tap-timing features pulled into PS1 metric subquery:
+--         m401_p95_txn_time_ms, m401_p99_txn_time_ms (tail latency)
+--         m401_slow_tap_count, m401_slow_tap_pct (>1000ms degradation signal)
+--         m401_rolling_7d_avg_ms (trend baseline)
+--         m401_z_score_vs_28d (per-device personal anomaly; NULL first 28 days — keep NULL)
+--   R7-2: Reader/comms event features from S10 v2 (sourced from S16 device_event_enriched):
+--         comms_csc_read_err_count, comms_host_comm_lost_count, comms_device_comms_lost_count
+--         comms_total_count, comms_event_flag
+--         All categories including TVM (TVM has no M401 but has rich comms events confirmed 2026-07-17)
+--
 -- R4 additions (2026-07-07):
 --   R4-1: +12 incident history feature columns from S24 (device_incident_features_daily)
 --         LEFT JOIN on DEVICE_KEY + transit_day; zero-fill counts, NULL for MTTR/priority (no history)
@@ -162,8 +184,11 @@ rolling AS (
     LEFT JOIN outage_daily od
         ON od.DEVICE_ID = ed.DEVICE_ID AND od.transit_day = ed.transit_day
     WINDOW
-        w7  AS (PARTITION BY ed.DEVICE_ID ORDER BY ed.transit_day ROWS BETWEEN 6  PRECEDING AND CURRENT ROW),
-        w30 AS (PARTITION BY ed.DEVICE_ID ORDER BY ed.transit_day ROWS BETWEEN 29 PRECEDING AND CURRENT ROW)
+        -- RANGE INTERVAL counts calendar days, not row positions (ROWS BETWEEN counts
+        -- row positions in event_daily, which is sparse — gaps between events cause
+        -- ROWS BETWEEN 6 PRECEDING to span 2+ weeks for low-activity devices).
+        w7  AS (PARTITION BY ed.DEVICE_ID ORDER BY CAST(ed.transit_day AS TIMESTAMP) RANGE BETWEEN INTERVAL 6  DAYS PRECEDING AND CURRENT ROW),
+        w30 AS (PARTITION BY ed.DEVICE_ID ORDER BY CAST(ed.transit_day AS TIMESTAMP) RANGE BETWEEN INTERVAL 29 DAYS PRECEDING AND CURRENT ROW)
 ),
 -- FIX 2/3: kpi_daily pre-aggregated -- 5.37 rows/device-day without this causes fan-out
 -- AVAILABILITY_PCT and FAULT_COUNT removed (do not exist in S12 -- BUG 18/19)
@@ -261,47 +286,13 @@ use_revenue AS (
         END                                          AS use_revenue_decline_flag
     FROM mars_dev.silver.use_revenue_daily ur
 ),
--- R5-1 (2026-07-16): VALIDATOR label (Option A) — tap rejection rate 2σ spike
---   No ServiceNow SLA data for VALIDATOR; use operational tap anomaly as failure proxy.
---   Baseline: 28-day rolling per-device mean + stddev of weighted tap_reject_rate_pct.
---   Spike: today's rate > mean + 2*std AND baseline has ≥28 days of history (std IS NOT NULL).
---   tap_event_daily grain is (DEVICE_ID, DEVICE_KEY, transit_day); aggregated to (DEVICE_ID, transit_day).
-validator_tap_baseline AS (
-    SELECT
-        DEVICE_ID,
-        transit_day,
-        tap_reject_rate_pct,
-        AVG(tap_reject_rate_pct) OVER (
-            PARTITION BY DEVICE_ID
-            ORDER BY transit_day
-            ROWS BETWEEN 28 PRECEDING AND 1 PRECEDING
-        ) AS reject_rate_mean_28d,
-        STDDEV_POP(tap_reject_rate_pct) OVER (
-            PARTITION BY DEVICE_ID
-            ORDER BY transit_day
-            ROWS BETWEEN 28 PRECEDING AND 1 PRECEDING
-        ) AS reject_rate_std_28d
-    FROM (
-        SELECT
-            DEVICE_ID,
-            transit_day,
-            CASE WHEN SUM(tap_count) > 0
-                 THEN ROUND(SUM(tap_count * tap_reject_rate_pct / 100.0)
-                            / SUM(tap_count) * 100.0, 4)
-                 ELSE 0 END AS tap_reject_rate_pct
-        FROM mars_dev.silver.tap_event_daily
-        WHERE mars_device_category = 'VALIDATOR'
-          AND transit_day <= CURRENT_DATE()
-        GROUP BY DEVICE_ID, transit_day
-    ) agg
-),
-validator_tap_anomaly AS (
-    SELECT DEVICE_ID, transit_day
-    FROM validator_tap_baseline
-    WHERE reject_rate_std_28d IS NOT NULL
-      AND reject_rate_std_28d > 0
-      AND tap_reject_rate_pct > reject_rate_mean_28d + 2 * reject_rate_std_28d
-),
+-- R6-1 (2026-07-17): VALIDATOR label pivot — device_failures OOS Set events
+--   S26 device_failures (silver) provides actual hardware OOS event dates for VALIDATOR (BMV)
+--   sourced from device_event_enriched (is_oos_event=TRUE, EVENT_STATE_TYPE_NAME='Set').
+--   Replaces prior tap-rejection 2σ spike proxy (R5-1, 2026-07-16) — proxy was statistically
+--   derived and not operationally validated; 701 fix (QR-2, 2026-07-17) also changed the signal.
+--   Coverage: 3,290 BMV devices with OOS events in device_event_enriched (vs 0% ServiceNow).
+--   validator_tap_baseline / validator_tap_anomaly CTEs removed.
 -- R3-2 (2026-06-27): will_fail_3d — 3-day lookahead
 --   TVM+GATE: is_chargeable=TRUE AND failure_level IN (2,3,4,5); expected ~0.6-15%
 --   VALIDATOR (R5-1 2026-07-16): tap rejection 2σ spike; expected ~2-8%
@@ -318,11 +309,13 @@ outage_label_days AS (
       AND do2.failure_level IN (2,3,4,5)
       AND do2.mars_device_category IN ('TVM','GATE')
     UNION ALL
+    -- R6-1: VALIDATOR labels from device_failures (OOS Set events via device_event_enriched)
     SELECT DISTINCT
-        vta.DEVICE_ID,
-        DATE_ADD(vta.transit_day, -seq.n) AS label_day
-    FROM validator_tap_anomaly vta
+        df.DEVICE_ID,
+        DATE_ADD(df.failure_date, -seq.n) AS label_day
+    FROM mars_dev.silver.device_failures df
     CROSS JOIN (SELECT 1 AS n UNION ALL SELECT 2 UNION ALL SELECT 3) seq
+    WHERE df.device_category = 'VALIDATOR'
 ),
 -- R4-2 (2026-07-07): will_fail_7d — 7-day lookahead
 --   TVM+GATE: same chargeable definition; VALIDATOR: same tap-spike definition
@@ -340,14 +333,16 @@ outage_label_days_7d AS (
       AND do2.failure_level IN (2,3,4,5)
       AND do2.mars_device_category IN ('TVM','GATE')
     UNION ALL
+    -- R6-1: VALIDATOR labels from device_failures
     SELECT DISTINCT
-        vta.DEVICE_ID,
-        DATE_ADD(vta.transit_day, -seq.n) AS label_day
-    FROM validator_tap_anomaly vta
+        df.DEVICE_ID,
+        DATE_ADD(df.failure_date, -seq.n) AS label_day
+    FROM mars_dev.silver.device_failures df
     CROSS JOIN (
         SELECT 1 AS n UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL
         SELECT 4         UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7
     ) seq
+    WHERE df.device_category = 'VALIDATOR'
 ),
 -- R4-2 (2026-07-07): will_fail_14d — 14-day lookahead
 --   TVM+GATE: same chargeable definition; VALIDATOR: same tap-spike definition
@@ -367,16 +362,18 @@ outage_label_days_14d AS (
       AND do2.failure_level IN (2,3,4,5)
       AND do2.mars_device_category IN ('TVM','GATE')
     UNION ALL
+    -- R6-1: VALIDATOR labels from device_failures
     SELECT DISTINCT
-        vta.DEVICE_ID,
-        DATE_ADD(vta.transit_day, -seq.n) AS label_day
-    FROM validator_tap_anomaly vta
+        df.DEVICE_ID,
+        DATE_ADD(df.failure_date, -seq.n) AS label_day
+    FROM mars_dev.silver.device_failures df
     CROSS JOIN (
         SELECT  1 AS n UNION ALL SELECT  2 UNION ALL SELECT  3 UNION ALL
         SELECT  4         UNION ALL SELECT  5 UNION ALL SELECT  6 UNION ALL SELECT  7 UNION ALL
         SELECT  8         UNION ALL SELECT  9 UNION ALL SELECT 10 UNION ALL SELECT 11 UNION ALL
         SELECT 12         UNION ALL SELECT 13 UNION ALL SELECT 14
     ) seq
+    WHERE df.device_category = 'VALIDATOR'
 ),
 -- FIX 7: spine filtered to >= 2024-01-01 (ML training window; excludes legacy pre-2024 rows)
 spine AS (
@@ -384,6 +381,39 @@ spine AS (
     FROM all_devices ad
     JOIN event_daily ed ON ed.DEVICE_ID = ad.DEVICE_ID
     WHERE ed.transit_day >= '2024-01-01'
+),
+-- R6-1 (2026-07-17): 5 rolling failure history features from S26 device_failures.
+--   Previously computed in notebook Cell 10b (Python) — moved to Gold SQL to prevent
+--   the SMOTE column-count mismatch bug and make the feature set reproducible at inference.
+--   Label shift: failure_date < transit_day (past-only lookback; today excluded to prevent leakage).
+--   90-day hard cap on LEFT JOIN to keep the range join efficient.
+--   days_since_fail = 999 when device has never failed in the training window.
+--   fail_free_streak = same as days_since_fail (current consecutive failure-free day count).
+failure_features AS (
+    SELECT
+        ad.DEVICE_KEY,
+        sp.transit_day,
+        COUNT(DISTINCT CASE
+            WHEN df.failure_date BETWEEN DATE_SUB(sp.transit_day, 7)
+                                    AND DATE_SUB(sp.transit_day, 1)
+            THEN df.failure_date END)                               AS roll_fail_7d,
+        COUNT(DISTINCT CASE
+            WHEN df.failure_date BETWEEN DATE_SUB(sp.transit_day, 30)
+                                    AND DATE_SUB(sp.transit_day, 1)
+            THEN df.failure_date END)                               AS roll_fail_30d,
+        COUNT(DISTINCT CASE
+            WHEN df.failure_date BETWEEN DATE_SUB(sp.transit_day, 90)
+                                    AND DATE_SUB(sp.transit_day, 1)
+            THEN df.failure_date END)                               AS roll_fail_90d,
+        MAX(CASE WHEN df.failure_date < sp.transit_day
+                 THEN df.failure_date END)                          AS last_fail_date
+    FROM spine sp
+    JOIN all_devices ad ON ad.DEVICE_ID = sp.DEVICE_ID
+    LEFT JOIN mars_dev.silver.device_failures df
+        ON  df.DEVICE_KEY    = ad.DEVICE_KEY
+        AND df.failure_date  < sp.transit_day
+        AND df.failure_date >= DATE_SUB(sp.transit_day, 90)
+    GROUP BY ad.DEVICE_KEY, sp.transit_day
 )
 SELECT
     sp.DEVICE_ID,
@@ -450,12 +480,33 @@ SELECT
     COALESCE(kp.kpi_count, 0)              AS kpi_count,
     COALESCE(kp.kpi_targets_met, 0)        AS kpi_targets_met,
     COALESCE(kp.kpi_targets_missed, 0)     AS kpi_targets_missed,
-    -- Metric features (S10 actual column names; METRIC_ID 800/810 absent in Chicago)
+    -- Metric features v1 (S10 original columns — GATE + VALIDATOR only; TVM = 0)
     COALESCE(md.m401_daily_txn_count, 0)   AS metric_txn_count,
     COALESCE(md.m401_txn_count_delta, 0)   AS metric_txn_delta,
     COALESCE(md.m401_avg_txn_time_ms, 0)   AS metric_avg_txn_ms,
     COALESCE(md.m401_max_txn_time_ms, 0)   AS metric_max_txn_ms,
     COALESCE(md.volume_drop_flag, FALSE)   AS volume_drop_flag,
+    -- Metric features v2 (R7-1 2026-07-17 — S10 v2 tap-timing enrichment)
+    -- All categories: GATE/VALIDATOR from M401; TVM = 0 (no Chicago DEVICE_METRIC data)
+    -- p95/p99: tail-latency signal — slow-card or degraded reader before failure
+    -- slow_tap_pct: % taps >1000ms — early degradation signal before device goes OOS
+    -- rolling_7d_avg: 7-day personal baseline for trend context
+    -- z_score_vs_28d: standard deviations above 28-day personal baseline (NULL first 28d + all TVM)
+    COALESCE(md.m401_p95_txn_time_ms, 0)           AS metric_p95_txn_ms,
+    COALESCE(md.m401_p99_txn_time_ms, 0)           AS metric_p99_txn_ms,
+    COALESCE(md.m401_slow_tap_count, 0)            AS metric_slow_tap_count,
+    COALESCE(md.m401_slow_tap_pct, 0)              AS metric_slow_tap_pct,
+    COALESCE(md.m401_rolling_7d_avg_ms, 0)         AS metric_rolling_7d_avg_ms,
+    md.m401_z_score_vs_28d                          AS metric_z_score_vs_28d,
+    -- Reader/comms event features (R7-2 2026-07-17 — sourced from S16 device_event_enriched)
+    -- TVM is INCLUDED here via the comms spine (S10 v2 unified spine includes TVM comms days)
+    -- Confirmed 2026-07-17: CSC Read err (21.9M GATE / 17.4M VALIDATOR / 1.1M TVM)
+    --                        Host Comm Lost, DeviceCommsLost also confirmed across all categories
+    COALESCE(md.comms_csc_read_err_count, 0)       AS comms_csc_read_err_count,
+    COALESCE(md.comms_host_comm_lost_count, 0)     AS comms_host_comm_lost_count,
+    COALESCE(md.comms_device_comms_lost_count, 0)  AS comms_device_comms_lost_count,
+    COALESCE(md.comms_total_count, 0)              AS comms_total_count,
+    COALESCE(md.comms_event_flag, FALSE)           AS comms_event_flag,
     -- TVM sales features (LEFT JOIN; 3.1% coverage; NULL/0 for GATE/VALIDATOR)
     COALESCE(ts.daily_sales_count, 0)      AS daily_sales_count,
     COALESCE(ts.error_txn_count, 0)        AS sales_error_txn_count,
@@ -474,6 +525,15 @@ SELECT
     COALESCE(ur.use_revenue_active_hours, 0)     AS use_revenue_active_hours,
     COALESCE(ur.use_revenue_7d_avg, 0)           AS use_revenue_7d_avg,
     COALESCE(ur.use_revenue_decline_flag, FALSE) AS use_revenue_decline_flag,
+    -- Rolling failure history (R6-1 2026-07-17) — from S26 device_failures
+    -- Replaces Cell 10b notebook features; same 5-feature definition.
+    -- All device categories: TVM/GATE from availability_events; VALIDATOR from device_event_enriched OOS.
+    COALESCE(ff.roll_fail_7d,  0)                                   AS roll_fail_7d,
+    COALESCE(ff.roll_fail_30d, 0)                                   AS roll_fail_30d,
+    COALESCE(ff.roll_fail_90d, 0)                                   AS roll_fail_90d,
+    COALESCE(DATEDIFF(sp.transit_day, ff.last_fail_date), 999)      AS days_since_fail,
+    -- fail_free_streak = consecutive failure-free days before today = days_since_fail
+    COALESCE(DATEDIFF(sp.transit_day, ff.last_fail_date), 999)      AS fail_free_streak,
     -- Incident history features (S24 -- R4-1 2026-07-07)
     -- TVM: 17.75% coverage; GATE: 3.33%; VALIDATOR: 0% (zero-filled throughout)
     -- Count columns: COALESCE 0 (no prior incidents is a valid state for the model)
@@ -534,7 +594,16 @@ LEFT JOIN kpi_device_daily kp          ON kp.DEVICE_ID   = sp.DEVICE_ID AND kp.t
 LEFT JOIN (
     -- GROUP BY (DEVICE_ID, transit_day) collapses BMV bus-assignment rows.
     -- metric_daily grain is (DEVICE_ID, DEVICE_KEY, transit_day): N rows/day for bus validators.
-    -- txn_count/delta: SUM; avg_ms: txn-count-weighted avg; max_ms: MAX; volume_drop: any-true.
+    -- Aggregation rules for multi-key collapse:
+    --   txn_count/delta/slow_tap_count/comms_*: SUM across assignments
+    --   avg_ms: txn-count-weighted avg across assignments
+    --   max_ms/p95_ms/p99_ms: MAX (worst assignment; conservative for anomaly detection)
+    --   slow_tap_pct: recalculated from SUM(slow_tap_count)/SUM(txn_count) — not avg-of-pcts
+    --   rolling_7d_avg: txn-count-weighted avg (proxy; buses rarely have concurrent dual assignments)
+    --   z_score_vs_28d: txn-count-weighted avg (NULL for TVM + first 28 days of device history)
+    --   volume_drop_flag/comms_event_flag: any-true (OR across assignments)
+    -- R7-1 (2026-07-17): added p95/p99, slow_tap_count/pct, rolling_7d_avg, z_score_vs_28d
+    -- R7-2 (2026-07-17): added comms_csc_read_err/host_comm_lost/device_comms_lost/total/flag
     SELECT
         DEVICE_ID,
         transit_day,
@@ -542,14 +611,33 @@ LEFT JOIN (
         ROUND(SUM(m401_avg_txn_time_ms * m401_daily_txn_count)
               / NULLIF(SUM(m401_daily_txn_count), 0), 2)                      AS m401_avg_txn_time_ms,
         MAX(m401_max_txn_time_ms)                                              AS m401_max_txn_time_ms,
+        MAX(m401_p95_txn_time_ms)                                              AS m401_p95_txn_time_ms,
+        MAX(m401_p99_txn_time_ms)                                              AS m401_p99_txn_time_ms,
+        SUM(m401_slow_tap_count)                                               AS m401_slow_tap_count,
+        ROUND(100.0 * SUM(m401_slow_tap_count)
+              / NULLIF(SUM(m401_daily_txn_count), 0), 2)                      AS m401_slow_tap_pct,
         SUM(m401_txn_count_delta)                                              AS m401_txn_count_delta,
-        CAST(MAX(CAST(volume_drop_flag AS INT)) AS BOOLEAN)                    AS volume_drop_flag
+        CAST(MAX(CAST(volume_drop_flag AS INT)) AS BOOLEAN)                    AS volume_drop_flag,
+        ROUND(SUM(m401_rolling_7d_avg_ms * COALESCE(m401_daily_txn_count, 1))
+              / NULLIF(SUM(COALESCE(m401_daily_txn_count, 1)), 0), 2)        AS m401_rolling_7d_avg_ms,
+        ROUND(SUM(COALESCE(m401_z_score_vs_28d, 0) * COALESCE(m401_daily_txn_count, 1))
+              / NULLIF(SUM(CASE WHEN m401_z_score_vs_28d IS NOT NULL
+                                THEN COALESCE(m401_daily_txn_count, 1) ELSE 0 END), 0), 3)
+                                                                               AS m401_z_score_vs_28d,
+        SUM(comms_csc_read_err_count)                                          AS comms_csc_read_err_count,
+        SUM(comms_host_comm_lost_count)                                        AS comms_host_comm_lost_count,
+        SUM(comms_device_comms_lost_count)                                     AS comms_device_comms_lost_count,
+        SUM(comms_total_count)                                                 AS comms_total_count,
+        CAST(MAX(CAST(comms_event_flag AS INT)) AS BOOLEAN)                    AS comms_event_flag
     FROM mars_dev.silver.metric_daily
     GROUP BY DEVICE_ID, transit_day
 ) md                                   ON md.DEVICE_ID  = sp.DEVICE_ID AND md.transit_day = sp.transit_day
 LEFT JOIN tvm_sales ts                 ON ts.DEVICE_ID   = sp.DEVICE_ID AND ts.transit_day   = sp.transit_day
 LEFT JOIN use_revenue ur               ON ur.DEVICE_ID   = sp.DEVICE_ID AND ur.transit_day   = sp.transit_day
 LEFT JOIN outage_label_days old         ON old.DEVICE_ID   = sp.DEVICE_ID AND old.label_day    = sp.transit_day
+-- R6-1 (2026-07-17): rolling failure features — join on DEVICE_KEY + transit_day
+LEFT JOIN failure_features ff            ON ff.DEVICE_KEY    = ad.DEVICE_KEY
+                                       AND ff.transit_day   = sp.transit_day
 -- R4-1 (2026-07-07): S24 incident features — join on DEVICE_KEY + transit_day
 LEFT JOIN mars_dev.silver.device_incident_features_daily inc24
                                         ON inc24.DEVICE_KEY  = ad.DEVICE_KEY

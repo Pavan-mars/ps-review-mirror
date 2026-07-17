@@ -400,6 +400,87 @@ if "error" not in r:
     print(f"       jan_feb_2025_rows={fmt(jan_feb)} [{jan_feb_ok}]")
 results.append(("silver", "S24", "device_incident_features_daily", s, r))
 
+# -- S25 incident_task_ci_link -----------------------------------------------
+r = check(f"""
+    SELECT COUNT(*) AS rows,
+           COUNT(DISTINCT DEVICE_KEY) AS distinct_devices,
+           COUNT(DISTINCT incident_number) AS distinct_incidents,
+           ROUND(100.0 * SUM(CASE WHEN incident_sys_id IS NOT NULL THEN 1 ELSE 0 END) / COUNT(*), 1)
+               AS incident_join_pct
+    FROM {catalog}.silver.incident_task_ci_link
+""")
+s = status(r, min_rows=1000)
+print(f"S25  incident_task_ci_link       {s}")
+if "error" not in r:
+    print(f"       distinct_devices={fmt(r.get('distinct_devices'))}  distinct_incidents={fmt(r.get('distinct_incidents'))}")
+    print(f"       incident_join_pct={r.get('incident_join_pct')}%  (expect ~91.8%)")
+results.append(("silver", "S25", "incident_task_ci_link", s, r))
+
+# -- S26 device_failures (NEW 2026-07-17) ----------------------------------------
+r = check(f"""
+    SELECT COUNT(*) AS rows,
+           COUNT(DISTINCT DEVICE_KEY) AS distinct_devices,
+           MIN(failure_date) AS min_day,
+           MAX(failure_date) AS max_day,
+           COUNT(DISTINCT device_category) AS categories,
+           COUNT(CASE WHEN failure_source = 'availability_events' THEN 1 END) AS tvm_gate_rows,
+           COUNT(CASE WHEN failure_source = 'device_event_enriched' THEN 1 END) AS validator_rows
+    FROM {catalog}.silver.device_failures
+""")
+s = status(r, min_rows=1000)
+print(f"S26  device_failures             {s}")
+if "error" not in r:
+    print(f"       distinct_devices={fmt(r.get('distinct_devices'))}  range={r.get('min_day')} to {r.get('max_day')}  categories={fmt(r.get('categories'))}")
+    print(f"       tvm_gate_rows={fmt(r.get('tvm_gate_rows'))}  validator_rows={fmt(r.get('validator_rows'))}")
+results.append(("silver", "S26", "device_failures", s, r))
+
+# -- S27 station_network_daily (NEW 2026-07-17) ----------------------------------
+r = check(f"""
+    SELECT COUNT(*) AS rows,
+           COUNT(DISTINCT FACILITY_ID) AS distinct_facilities,
+           MIN(transit_day) AS min_day,
+           MAX(transit_day) AS max_day,
+           SUM(CASE WHEN is_coordinated_failure = TRUE THEN 1 ELSE 0 END) AS coordinated_events,
+           SUM(CASE WHEN is_major_station_event = TRUE THEN 1 ELSE 0 END) AS major_events
+    FROM {catalog}.silver.station_network_daily
+""")
+s = status(r, min_rows=100)
+print(f"S27  station_network_daily       {s}")
+if "error" not in r:
+    print(f"       distinct_facilities={fmt(r.get('distinct_facilities'))}  range={r.get('min_day')} to {r.get('max_day')}")
+    print(f"       coordinated_events={fmt(r.get('coordinated_events'))}  major_events={fmt(r.get('major_events'))}")
+results.append(("silver", "S27", "station_network_daily", s, r))
+
+# -- S28 device_mttr (NEW 2026-07-17) --------------------------------------------
+r = check(f"""
+    SELECT COUNT(*) AS rows,
+           COUNT(DISTINCT DEVICE_KEY) AS distinct_devices,
+           MIN(failure_date) AS min_day,
+           MAX(failure_date) AS max_day,
+           ROUND(AVG(avg_downtime_30d), 1) AS avg_mttr_30d_min
+    FROM {catalog}.silver.device_mttr
+""")
+s = status(r, min_rows=1000)
+print(f"S28  device_mttr                 {s}")
+if "error" not in r:
+    print(f"       distinct_devices={fmt(r.get('distinct_devices'))}  range={r.get('min_day')} to {r.get('max_day')}  avg_mttr_30d={r.get('avg_mttr_30d_min')} min")
+results.append(("silver", "S28", "device_mttr", s, r))
+
+# -- S29 device_survival_intervals (NEW 2026-07-17) ------------------------------
+r = check(f"""
+    SELECT COUNT(*) AS rows,
+           COUNT(DISTINCT DEVICE_KEY) AS distinct_devices,
+           SUM(CASE WHEN is_ongoing = TRUE THEN 1 ELSE 0 END) AS ongoing_intervals,
+           SUM(CASE WHEN is_first_interval = TRUE THEN 1 ELSE 0 END) AS first_intervals,
+           ROUND(AVG(interval_days), 1) AS avg_interval_days
+    FROM {catalog}.silver.device_survival_intervals
+""")
+s = status(r, min_rows=100)
+print(f"S29  device_survival_intervals   {s}")
+if "error" not in r:
+    print(f"       distinct_devices={fmt(r.get('distinct_devices'))}  ongoing={fmt(r.get('ongoing_intervals'))}  first={fmt(r.get('first_intervals'))}  avg_days={r.get('avg_interval_days')}")
+results.append(("silver", "S29", "device_survival_intervals", s, r))
+
 # COMMAND ----------
 # =============================================================================
 # GOLD TABLES  PS1 - PS5
@@ -524,7 +605,7 @@ fail = [(l,c,t) for l,c,t,s,_ in results if s.startswith("FAIL")]
 print(f"  OK    : {len(ok):2d} tables")
 print(f"  WARN  : {len(warn):2d} tables")
 print(f"  FAIL  : {len(fail):2d} tables")
-print(f"  TOTAL : {len(results):2d} tables checked  (silver S01-S24 + gold PS1-PS5)")
+print(f"  TOTAL : {len(results):2d} tables checked  (silver S01-S29 + gold PS1-PS5)")
 
 if warn:
     print("\nWARNINGS:")

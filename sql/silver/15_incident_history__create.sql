@@ -348,7 +348,16 @@ ON mdl.model_category = mcat.model_category_name
 -- to confirm the match rate before relying on this for a PS-facing feature.
 LEFT JOIN mars_dev.silver.dim_device dd
 ON dd.DEVICE_ID = UPPER(TRIM(i.wm_asset))
-AND dd.is_current = TRUE;
+AND dd.is_current = TRUE
+-- Final dedup: LEFT JOINs to ci/mdl/mcat can fan-out on non-unique display-name keys
+-- (e.g. cmdb_ci.name not guaranteed unique across 43K rows). QUALIFY at outer level
+-- ensures incident_number grain is preserved regardless of which join causes fan-out.
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY i.incident_number
+    ORDER BY i.resolved_dtm DESC NULLS LAST,
+             i.closed_dtm  DESC NULLS LAST,
+             i.opened_dtm  DESC NULLS LAST
+) = 1;
 
 -- NOTE (confirmed 2026-07-15): edw_availability_events contains only TVM/RVG
 -- device IDs (e.g. TVM05303, RVG03007) -- no BMV/VALIDATOR device IDs exist

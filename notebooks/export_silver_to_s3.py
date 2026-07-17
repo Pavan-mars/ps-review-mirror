@@ -42,8 +42,11 @@ spark.conf.set("spark.databricks.delta.formatCheck.enabled", "false")
 
 SILVER_TABLES = [
     "device_event_enriched",
+    "device_failures",               # S26 (2026-07-17) — hardware OOS events, TVM/GATE/VALIDATOR
     "device_incident_features_daily",
+    "device_mttr",                   # S28 (2026-07-17) — rolling MTTR per device-failure-day
     "device_outage",
+    "device_survival_intervals",     # S29 (2026-07-17) — failure-free intervals (survival analysis)
     "device_uptime_intervals",
     "dim_device",
     "dim_event_matrix",
@@ -54,6 +57,7 @@ SILVER_TABLES = [
     "hw_config_current",
     "incident_history",
     "incident_root_cause",
+    "incident_task_ci_link",         # S25 — VALIDATOR incident signal via servicenow_task_ci join
     "kpi_avail_enriched",
     "kpi_daily",
     "kpi_monthly_benchmark",
@@ -61,6 +65,7 @@ SILVER_TABLES = [
     "metric_daily",
     "metric_hourly",
     "read_tap_daily",
+    "station_network_daily",         # S27 (2026-07-17) — station co-failure signal for PS2
     "tap_event_daily",
     "tvm_sale_daily",
     "usage_lifecycle_daily",

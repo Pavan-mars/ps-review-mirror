@@ -110,6 +110,18 @@ SILVER = {
     # S25: added 2026-07-15 — VALIDATOR incident signal via servicenow_task_ci bus-number join
     "incident_task_ci_link":         dict(date_cols=["incident_date"],
                                          notnull=["task_ci_sys_id"]),
+    # S26-S29: added 2026-07-17 — hardware failure signal, station network, MTTR, survival intervals
+    "device_failures":               dict(grain=["DEVICE_KEY", "device_category", "failure_date"],
+                                         date_cols=["failure_date"],
+                                         notnull=["DEVICE_KEY", "device_category"]),
+    "station_network_daily":         dict(grain=["FACILITY_ID", "device_category", "transit_day"],
+                                         date_cols=["transit_day"],
+                                         notnull=["FACILITY_ID"]),
+    "device_mttr":                   dict(grain=["DEVICE_KEY", "failure_date"],
+                                         date_cols=["failure_date"],
+                                         notnull=["DEVICE_KEY"]),
+    "device_survival_intervals":     dict(grain=["DEVICE_KEY", "interval_start_date"],
+                                         notnull=["DEVICE_KEY", "interval_start_date"]),
 }
 for t, cfg in SILVER.items():
     check_table(t, **cfg)
@@ -244,6 +256,145 @@ def chk_s25_no_fanout():
         "PASS" if d == 0 else "FAIL",
         f"{d:,} duplicate task_ci_sys_id rows (should be 0 — grain is one row per task_ci record)")
 safe("incident_task_ci_link", "no_fanout", chk_s25_no_fanout)
+
+# 10) S26 device_failures — all three device categories must be present
+def chk_s26_categories():
+    rows = spark.sql(f"SELECT device_category, COUNT(DISTINCT DEVICE_KEY) devs, COUNT(*) n "
+                     f"FROM {CAT}.{SCH}.device_failures GROUP BY device_category ORDER BY 1").collect()
+    cats = {r["device_category"]: (r["devs"], r["n"]) for r in rows}
+    tvm_ok  = cats.get("TVM",  (0,0))[0] > 0
+    gate_ok = cats.get("GATE", (0,0))[0] > 0
+    val_ok  = cats.get("VALIDATOR", (0,0))[0] > 0
+    ok = tvm_ok and gate_ok and val_ok
+    log("device_failures", "category_coverage", "PASS" if ok else "WARN",
+        str({k: f"{v[0]} devs / {v[1]} failure-days" for k, v in cats.items()}))
+safe("device_failures", "category_coverage", chk_s26_categories)
+
+def chk_s26_no_avm():
+    c = spark.sql(f"SELECT count(*) c FROM {CAT}.{SCH}.device_failures "
+                  f"WHERE DEVICE_ID LIKE 'AVM%'").first()["c"]
+    log("device_failures", "no_avm_rows", "PASS" if c == 0 else "FAIL",
+        f"{c} AVM rows (should be 0 — mars_device_category=OTHER excluded by filter)")
+safe("device_failures", "no_avm_rows", chk_s26_no_avm)
+
+# 11) S27 station_network_daily — coordinated failure flag sanity
+def chk_s27_coordinated():
+    r = spark.sql(f"SELECT count(*) total, "
+                  f"sum(CASE WHEN is_coordinated_failure THEN 1 ELSE 0 END) coord, "
+                  f"sum(CASE WHEN is_major_station_event THEN 1 ELSE 0 END) major "
+                  f"FROM {CAT}.{SCH}.station_network_daily").first()
+    pct = round(100.0 * (r["coord"] or 0) / max(r["total"] or 1, 1), 1)
+    log("station_network_daily", "coordinated_event_rate",
+        "PASS" if (r["total"] or 0) > 0 else "WARN",
+        f"{pct}% of station-failure-days coordinated (≥3 devices); major={r['major']} (≥5 devices)")
+safe("station_network_daily", "coordinated_event_rate", chk_s27_coordinated)
+
+# 12) S28 device_mttr — no negative rolling MTTR values
+def chk_s28_mttr_sanity():
+    r = spark.sql(f"SELECT "
+                  f"sum(CASE WHEN avg_downtime_30d < 0 THEN 1 ELSE 0 END) neg30, "
+                  f"sum(CASE WHEN avg_downtime_90d < 0 THEN 1 ELSE 0 END) neg90, "
+                  f"sum(CASE WHEN failure_days_30d < 1 THEN 1 ELSE 0 END) zero_days "
+                  f"FROM {CAT}.{SCH}.device_mttr").first()
+    ok = (r["neg30"] == 0) and (r["neg90"] == 0) and (r["zero_days"] == 0)
+    log("device_mttr", "mttr_sanity", "PASS" if ok else "FAIL",
+        f"neg_30d={r['neg30']} neg_90d={r['neg90']} zero_failure_days={r['zero_days']} (all should be 0)")
+safe("device_mttr", "mttr_sanity", chk_s28_mttr_sanity)
+
+# 13) S29 device_survival_intervals — interval_days ≥ 1; ongoing rows must have NULL end date
+def chk_s29_interval_days():
+    r = spark.sql(f"SELECT sum(CASE WHEN interval_days < 1 THEN 1 ELSE 0 END) bad "
+                  f"FROM {CAT}.{SCH}.device_survival_intervals").first()
+    log("device_survival_intervals", "interval_days_positive", "PASS" if r["bad"] == 0 else "FAIL",
+        f"{r['bad']} rows with interval_days < 1 (should be 0)")
+safe("device_survival_intervals", "interval_days_positive", chk_s29_interval_days)
+
+def chk_s29_ongoing_null_end():
+    r = spark.sql(f"SELECT "
+                  f"sum(CASE WHEN is_ongoing AND interval_end_date IS NOT NULL THEN 1 ELSE 0 END) bad_ongoing, "
+                  f"sum(CASE WHEN NOT is_ongoing AND interval_end_date IS NULL THEN 1 ELSE 0 END) bad_closed "
+                  f"FROM {CAT}.{SCH}.device_survival_intervals").first()
+    ok = (r["bad_ongoing"] == 0) and (r["bad_closed"] == 0)
+    log("device_survival_intervals", "ongoing_end_date_null", "PASS" if ok else "FAIL",
+        f"bad_ongoing={r['bad_ongoing']} (ongoing must have NULL end); bad_closed={r['bad_closed']} (closed must have end date)")
+safe("device_survival_intervals", "ongoing_end_date_null", chk_s29_ongoing_null_end)
+
+# 14) S10 metric_daily v2 (2026-07-17) — new M401 + comms columns present after rebuild
+def chk_s10_v2_cols():
+    cols_expected = [
+        "m401_p95_txn_time_ms", "m401_p99_txn_time_ms",
+        "m401_slow_tap_count", "m401_slow_tap_pct",
+        "m401_rolling_7d_avg_ms", "m401_z_score_vs_28d",
+        "comms_csc_read_err_count", "comms_host_comm_lost_count",
+        "comms_device_comms_lost_count", "comms_total_count", "comms_event_flag",
+    ]
+    actual = [c.lower() for c in spark.table(f"{CAT}.{SCH}.metric_daily").columns]
+    missing = [c for c in cols_expected if c not in actual]
+    log("metric_daily", "v2_cols_present",
+        "PASS" if not missing else "FAIL",
+        f"missing={missing} (should be empty after S10 v2 rebuild 2026-07-17)")
+safe("metric_daily", "v2_cols_present", chk_s10_v2_cols)
+
+# S10: TVM rows must be present (comms spine adds TVM even though TVM has no M401 data)
+def chk_s10_tvm_comms():
+    rows = spark.sql(
+        f"SELECT dd.mars_device_category cat, "
+        f"COUNT(DISTINCT md.DEVICE_KEY) devs, "
+        f"SUM(CAST(md.m401_daily_txn_count IS NULL AS INT)) null_m401_rows, "
+        f"SUM(md.comms_total_count) total_comms "
+        f"FROM {CAT}.{SCH}.metric_daily md "
+        f"JOIN {CAT}.{SCH}.dim_device dd ON dd.DEVICE_KEY = md.DEVICE_KEY AND dd.is_current = TRUE "
+        f"GROUP BY dd.mars_device_category ORDER BY 1"
+    ).collect()
+    cats = {r["cat"]: r for r in rows}
+    tvm_ok  = cats.get("TVM", {}).get("devs", 0) > 0
+    gate_ok = cats.get("GATE", {}).get("devs", 0) > 0
+    val_ok  = cats.get("VALIDATOR", {}).get("devs", 0) > 0
+    log("metric_daily", "tvm_comms_spine_present",
+        "PASS" if tvm_ok else "WARN",
+        str({k: f"{v['devs']} devs | null_m401={v['null_m401_rows']} | comms={v['total_comms']}"
+             for k, v in cats.items()}) +
+        " (TVM WARN = S10 not yet rebuilt with comms spine)")
+safe("metric_daily", "tvm_comms_spine_present", chk_s10_tvm_comms)
+
+# S10: slow_tap_pct must be 0-100; avg gives a sense of the degradation signal level
+def chk_s10_slow_tap_range():
+    r = spark.sql(
+        f"SELECT sum(CASE WHEN m401_slow_tap_pct < 0 OR m401_slow_tap_pct > 100 THEN 1 ELSE 0 END) bad, "
+        f"round(avg(m401_slow_tap_pct), 2) avg_pct "
+        f"FROM {CAT}.{SCH}.metric_daily WHERE m401_slow_tap_pct IS NOT NULL"
+    ).first()
+    log("metric_daily", "slow_tap_pct_range",
+        "PASS" if (r["bad"] or 0) == 0 else "FAIL",
+        f"{r['bad']} rows outside 0-100%; avg_slow_tap_pct={r['avg_pct']}% (>1000ms taps)")
+safe("metric_daily", "slow_tap_pct_range", chk_s10_slow_tap_range)
+
+# S10: z-score sanity — |z| > 10 std devs should be rare (<5% of non-null rows)
+def chk_s10_zscore_sanity():
+    r = spark.sql(
+        f"SELECT count(*) total, "
+        f"sum(CASE WHEN ABS(m401_z_score_vs_28d) > 10 THEN 1 ELSE 0 END) extreme "
+        f"FROM {CAT}.{SCH}.metric_daily WHERE m401_z_score_vs_28d IS NOT NULL"
+    ).first()
+    pct = round(100.0 * (r["extreme"] or 0) / max(r["total"] or 1, 1), 2)
+    log("metric_daily", "z_score_extreme_rate",
+        "PASS" if pct < 5 else "WARN",
+        f"{pct}% rows with |z_score_vs_28d| > 10 std devs (expect <5%)")
+safe("metric_daily", "z_score_extreme_rate", chk_s10_zscore_sanity)
+
+# S10: comms events non-zero — at least some rows should have comms events
+# (GATE: 21.9M CSC Read err confirmed 2026-07-17; VALIDATOR: 17.4M; TVM: 1.1M)
+def chk_s10_comms_nonzero():
+    r = spark.sql(
+        f"SELECT sum(CASE WHEN comms_event_flag THEN 1 ELSE 0 END) with_comms, count(*) total "
+        f"FROM {CAT}.{SCH}.metric_daily"
+    ).first()
+    pct = round(100.0 * (r["with_comms"] or 0) / max(r["total"] or 1, 1), 1)
+    log("metric_daily", "comms_event_coverage",
+        "PASS" if (r["with_comms"] or 0) > 0 else "WARN",
+        f"{pct}% of device-days have at least one reader/comms event "
+        f"(WARN = comms_grain CTE empty or S16 not yet rebuilt)")
+safe("metric_daily", "comms_event_coverage", chk_s10_comms_nonzero)
 
 # COMMAND ----------
 # Write scorecard + summary

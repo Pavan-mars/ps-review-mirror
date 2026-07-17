@@ -11,7 +11,7 @@
 --   TRANSIT_DAY_KEY      decimal(8,0)  - date key YYYYMMDD
 --   DEVICE_ID            varchar(15)   - device identifier, matches dim_device
 --   TRANSACTION_DTM      timestamp     - transaction timestamp (hour extraction)
---   TAP_STATUS_ID        decimal(3,0)  - approval code (1/900/901/701 = approved; confirmed 2026-07-15)
+--   TAP_STATUS_ID        decimal(3,0)  - approval code (1/900/901 = approved; 701 excluded per QR-2 fix 2026-07-17)
 --   REVENUE_OR_TEST      varchar(7)    - filter to 'REVENUE' (same as S21)
 --   TOKEN_ID             decimal(18,0) - fare media token (unique card count)
 --   OPERATOR_ID          decimal(5,0)  - operator
@@ -47,16 +47,19 @@ WITH tap_agg AS (
         COUNT(*)                                                AS daily_read_count,
         COUNT(DISTINCT rt.TOKEN_ID)                             AS unique_tokens,
 
-        -- Approval codes confirmed 2026-07-15 via SELECT TAP_STATUS_ID, COUNT(*) FROM
-        -- bronze.edw_read_transaction GROUP BY 1 ORDER BY 2 DESC:
-        --   900 (46.1%), 1 (19.5%), 901 (16.0%), 701 (15.4%), 4 (2.7%), NULL (0.2%)
-        -- 901 and 701 are READ_TRANSACTION-specific approval variants (not present in ABP_TAP).
-        -- 904 does not appear in current data (was assumed from ABP_TAP; removed).
-        -- ⚠ PENDING DOMAIN CONFIRMATION: 701/901 treated as approved below based on
-        --   frequency pattern. Verify with Robin / Ventra status-code reference before
-        --   treating reject_rate_pct as a production signal.
-        -- Codes 3, 4, 702, 703 (~2.8%) retained as rejected pending confirmation.
-        SUM(CASE WHEN rt.TAP_STATUS_ID IN (1, 900, 901, 701)
+        -- Approval codes (2026-07-17, QR-2 fix applied):
+        --   900 (46.1%) = Server Approved
+        --   1   (19.5%) = Device Approved
+        --   901 (16.0%) = READ_TRANSACTION-specific code; treated as approved pending
+        --                  QR-2 domain confirmation from Michael (not present in ABP_TAP)
+        --   701 (15.4%) = 'Stale Tap' — QR-2 FIX: EXCLUDED from both approved and rejected.
+        --                  Previously misclassified as approved based on frequency heuristic.
+        --                  701 is a reader card-detect timing metric, not a decision outcome.
+        --                  Rows still appear in daily_read_count; reject_rate_pct is unchanged.
+        --   4   ( 2.7%) = rejected (Risk Assessment)
+        --   NULL (0.2%) = counted as approved (implicit reader-level success)
+        -- QR-3 PENDING: if 905 is confirmed Server Approved Override, add to approved IN().
+        SUM(CASE WHEN rt.TAP_STATUS_ID IN (1, 900, 901)
                    OR rt.TAP_STATUS_ID IS NULL THEN 1 ELSE 0 END)
                                                                 AS approved_read_count,
         SUM(CASE WHEN rt.TAP_STATUS_ID IS NOT NULL

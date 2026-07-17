@@ -94,12 +94,12 @@ for t, cfg in GOLD.items():
 
 # PS1: label positive rate per category.
 # TVM/GATE: is_chargeable SLA failure within 3d (expect 0.6-15%).
-# VALIDATOR: tap rejection 2σ spike within 3d (R5-1 2026-07-16, expect 2-8%).
+# VALIDATOR: hardware OOS Set event within 3d from device_failures (R6-1 2026-07-17, expect 2-10%).
 # Overall rate check retained for quick summary; per-category check catches VALIDATOR=0 regression.
 def ps1_label():
     r = spark.sql("SELECT round(100.0*avg(will_fail_3d),2) pct FROM mars_dev.gold.device_ps1_daily").first()["pct"]
     log("device_ps1_daily", "label_positive_rate", "WARN" if (r or 0) > 15 else "PASS",
-        f"{r}% positive overall (TVM/GATE chargeable 3d; VALIDATOR tap-spike 3d)")
+        f"{r}% positive overall (TVM/GATE chargeable 3d; VALIDATOR OOS Set 3d from device_failures)")
 safe("device_ps1_daily", "label_positive_rate", ps1_label)
 
 def ps1_label_by_cat():
@@ -110,15 +110,42 @@ def ps1_label_by_cat():
     for row in rows:
         cat, pct, n = row["cat"], row["pct"] or 0, row["n"]
         if cat == "VALIDATOR":
-            # Tap-spike label: 0% means label CTE didn't fire — re-run gold SQL first
+            # OOS-event label (R6-1): 0% means device_failures is empty or gold SQL not re-run
             status = "PASS" if 0 < pct < 15 else "WARN"
-            hint = "tap-spike label; 0%=gold SQL not re-run; >15%=threshold too loose"
+            hint = "OOS Set label from device_failures; 0%=S26 empty or gold not re-run; >15%=too many OOS events"
         else:
             status = "WARN" if pct > 15 else "PASS"
             hint = "chargeable SLA; expect TVM 10-15%, GATE 0.5-3%"
         log("device_ps1_daily", f"label_positive_rate:{cat}", status,
             f"{pct}% positive ({n:,} rows) — {hint}")
 safe("device_ps1_daily", "label_positive_rate_by_cat", ps1_label_by_cat)
+
+# PS1: R6-1 fix (2026-07-17) — rolling failure feature columns from device_failures (S26)
+# 5 new columns: roll_fail_7d, roll_fail_30d, roll_fail_90d, days_since_fail, fail_free_streak
+def ps1_failure_feature_cols():
+    cols_expected = ["roll_fail_7d", "roll_fail_30d", "roll_fail_90d", "days_since_fail", "fail_free_streak"]
+    actual = [c.lower() for c in spark.table("mars_dev.gold.device_ps1_daily").columns]
+    missing = [c for c in cols_expected if c not in actual]
+    log("device_ps1_daily", "failure_feature_cols_present",
+        "PASS" if not missing else "FAIL",
+        f"missing={missing} (should be empty — all 5 rolling failure cols expected)")
+safe("device_ps1_daily", "failure_feature_cols_present", ps1_failure_feature_cols)
+
+def ps1_failure_feature_sanity():
+    r = spark.sql(
+        "SELECT "
+        "sum(CASE WHEN roll_fail_7d  > roll_fail_30d  THEN 1 ELSE 0 END) w7_gt_w30, "
+        "sum(CASE WHEN roll_fail_30d > roll_fail_90d  THEN 1 ELSE 0 END) w30_gt_w90, "
+        "sum(CASE WHEN days_since_fail < 0             THEN 1 ELSE 0 END) neg_days, "
+        "sum(CASE WHEN days_since_fail = 999           THEN 1 ELSE 0 END) never_failed "
+        "FROM mars_dev.gold.device_ps1_daily"
+    ).first()
+    violations = (r["w7_gt_w30"] or 0) + (r["w30_gt_w90"] or 0) + (r["neg_days"] or 0)
+    log("device_ps1_daily", "failure_feature_window_sanity",
+        "PASS" if violations == 0 else "FAIL",
+        f"w7>w30={r['w7_gt_w30']} w30>w90={r['w30_gt_w90']} neg_days={r['neg_days']} "
+        f"never_failed={r['never_failed']:,} (999=device never failed in window, expected for GATE/some TVMs)")
+safe("device_ps1_daily", "failure_feature_window_sanity", ps1_failure_feature_sanity)
 
 # PS3: target class balance — flag classes with too few rows to learn
 def ps3_balance():
@@ -173,6 +200,48 @@ def ps3_leak():
         f"target-derived cols in table (exclude from X): {leaky}")
 safe("device_ps3_incident", "leakage_columns_present", ps3_leak)
 
+# PS2: S27 station network columns present and non-trivial (2026-07-17)
+def ps2_station_cols():
+    cols_expected = ["is_coordinated_station_failure", "is_major_station_event",
+                     "station_devices_failed", "station_total_downtime_min"]
+    actual = [c.lower() for c in spark.table("mars_dev.gold.device_ps2_chains").columns]
+    missing = [c for c in cols_expected if c not in actual]
+    log("device_ps2_chains", "station_cols_present",
+        "PASS" if not missing else "FAIL",
+        f"missing={missing} (should be empty — S27 join added 2026-07-17)")
+safe("device_ps2_chains", "station_cols_present", ps2_station_cols)
+
+def ps2_station_coordinated_rate():
+    r = spark.sql(
+        "SELECT sum(CASE WHEN is_coordinated_station_failure THEN 1 ELSE 0 END) coord, "
+        "count(*) total FROM mars_dev.gold.device_ps2_chains"
+    ).first()
+    pct = round(100.0 * (r["coord"] or 0) / max(r["total"] or 1, 1), 2)
+    log("device_ps2_chains", "station_coordinated_rate", "PASS" if r["total"] > 0 else "WARN",
+        f"{pct}% of chains are part of a coordinated station event (≥3 devices same day/station)")
+safe("device_ps2_chains", "station_coordinated_rate", ps2_station_coordinated_rate)
+
+# PS2: S29 survival interval columns present (2026-07-17)
+def ps2_survival_cols():
+    cols_expected = ["days_healthy_before_chain", "last_failure_before_chain", "no_prior_failure_in_window"]
+    actual = [c.lower() for c in spark.table("mars_dev.gold.device_ps2_chains").columns]
+    missing = [c for c in cols_expected if c not in actual]
+    log("device_ps2_chains", "survival_cols_present",
+        "PASS" if not missing else "FAIL",
+        f"missing={missing} (should be empty — S29 join added 2026-07-17)")
+safe("device_ps2_chains", "survival_cols_present", ps2_survival_cols)
+
+def ps2_days_healthy_sanity():
+    r = spark.sql(
+        "SELECT sum(CASE WHEN days_healthy_before_chain < 0 THEN 1 ELSE 0 END) neg, "
+        "round(avg(days_healthy_before_chain), 1) avg_days "
+        "FROM mars_dev.gold.device_ps2_chains"
+    ).first()
+    log("device_ps2_chains", "days_healthy_before_chain_sanity",
+        "PASS" if (r["neg"] == 0) else "FAIL",
+        f"neg_values={r['neg']} (should be 0)  avg_days_healthy={r['avg_days']}")
+safe("device_ps2_chains", "days_healthy_before_chain_sanity", ps2_days_healthy_sanity)
+
 # PS4: ensemble anomaly rate (sanity — not 0% and not ~100%)
 def ps4_rate():
     r = spark.sql("SELECT round(100.0*avg(ensemble_anomaly_flag),2) pct FROM mars_dev.gold.device_ps4_hourly").first()["pct"]
@@ -204,6 +273,70 @@ def ps5_cens():
                   "FROM mars_dev.gold.device_ps5_component").first()["pct"]
     log("device_ps5_component", "censoring_rate", "PASS", f"{r}% censored (no observed failure)")
 safe("device_ps5_component", "censoring_rate", ps5_cens)
+
+# PS5: S28 MTTR columns present and non-zero for VALIDATOR (2026-07-17)
+def ps5_mttr_cols():
+    cols_expected = ["avg_downtime_per_fail_day_min", "avg_rolling_mttr_30d_min",
+                     "avg_rolling_mttr_90d_min", "max_downtime_ever_min",
+                     "total_failure_days_s28", "last_failure_date_s28"]
+    actual = [c.lower() for c in spark.table("mars_dev.gold.device_ps5_component").columns]
+    missing = [c for c in cols_expected if c not in actual]
+    log("device_ps5_component", "mttr_cols_present",
+        "PASS" if not missing else "FAIL",
+        f"missing={missing} (should be empty — S28 join added 2026-07-17)")
+safe("device_ps5_component", "mttr_cols_present", ps5_mttr_cols)
+
+def ps5_validator_mttr_coverage():
+    r = spark.sql(
+        "SELECT mars_device_category cat, "
+        "sum(CASE WHEN avg_downtime_per_fail_day_min > 0 THEN 1 ELSE 0 END) with_mttr, "
+        "count(*) total "
+        "FROM mars_dev.gold.device_ps5_component "
+        "GROUP BY mars_device_category"
+    ).collect()
+    for row in r:
+        pct = round(100.0 * (row["with_mttr"] or 0) / max(row["total"] or 1, 1), 1)
+        cat = row["cat"]
+        expected = "expect >0% for all 3 categories after S28 join (VALIDATOR was 0% via S15)"
+        log("device_ps5_component", f"mttr_coverage:{cat}",
+            "PASS" if pct > 0 else "WARN",
+            f"{pct}% rows with avg_downtime_per_fail_day_min > 0 — {expected}")
+safe("device_ps5_component", "validator_mttr_coverage", ps5_validator_mttr_coverage)
+
+# PS1: S10 v2 comms/timing features in PS1 daily (R7-1/R7-2 2026-07-17)
+# Gold SQL updated 2026-07-17 — aliases: metric_p95/p99/slow_tap/rolling/z_score, comms_*
+def ps1_s10_v2_features():
+    cols_expected = [
+        "metric_p95_txn_ms", "metric_p99_txn_ms",
+        "metric_slow_tap_count", "metric_slow_tap_pct",
+        "metric_rolling_7d_avg_ms", "metric_z_score_vs_28d",
+        "comms_csc_read_err_count", "comms_host_comm_lost_count",
+        "comms_device_comms_lost_count", "comms_total_count", "comms_event_flag",
+    ]
+    actual = [c.lower() for c in spark.table("mars_dev.gold.device_ps1_daily").columns]
+    missing = [c for c in cols_expected if c not in actual]
+    log("device_ps1_daily", "s10_v2_feature_cols",
+        "PASS" if not missing else "FAIL",
+        f"missing={missing}")
+safe("device_ps1_daily", "s10_v2_feature_cols", ps1_s10_v2_features)
+
+# PS1: cross-wired output table (device + component/serial grain, written by NB2 CELL 38)
+# Written as parquet to S3; check if also registered as a Delta table in gold catalog
+def ps1_cross_wired_output():
+    in_catalog = spark.sql(
+        "SELECT count(*) n FROM mars_dev.information_schema.tables "
+        "WHERE table_schema='gold' AND table_name='device_ps1_cross_wired_daily'"
+    ).first()["n"] > 0
+    if in_catalog:
+        r = spark.sql("SELECT count(*) n, count(DISTINCT DEVICE_KEY) devs "
+                      "FROM mars_dev.gold.device_ps1_cross_wired_daily").first()
+        log("device_ps1_cross_wired_daily", "exists_and_populated",
+            "PASS" if r["n"] > 0 else "FAIL",
+            f"{r['n']:,} rows, {r['devs']:,} devices (device+component grain for ServiceNow API)")
+    else:
+        log("device_ps1_cross_wired_daily", "exists_and_populated",
+            "WARN", "not in gold catalog (written as S3 parquet by NB2 CELL 38 — register as table if needed)")
+safe("device_ps1_cross_wired_daily", "exists_and_populated", ps1_cross_wired_output)
 
 # PS5: Gap fix — COMPONENT_TYPE_NAME null rate should improve after COALESCE with derived_component_type_hw
 # Censored components (is_censored=TRUE) previously always had NULL COMPONENT_TYPE_NAME

@@ -17,7 +17,13 @@
 --       904 = Server Approved Cached   (0.03%)
 --       All other codes = rejected     (5.49%)
 --     Rejection categories include: 901 Server Denied, 5 Passback,
---       11 Timeout, 4 Risk Assessment, 903 Multi-Ride Denied, 701 Stale Tap
+--       11 Timeout, 4 Risk Assessment, 903 Multi-Ride Denied
+--     QR-2 FIX (2026-07-17): 701 'Stale Tap' excluded from both approved AND rejected.
+--       701 is a reader card-detect timing baseline (METRIC_ID 701 in METRIC_DIMENSION),
+--       not a tap decision outcome. tap_reject_count and tap_reject_rate_pct no longer
+--       include 701 events. 0.09% of ABP_TAP rows affected (~510K rows).
+--     QR-3 PENDING: if 905 'Server Approved Override' is confirmed by Michael,
+--       add 905 to the approved IN(1, 900, 904) set.
 --   - peak_hour_tap_count: MAX hourly tap count per device per day;
 --     replaces the unsupported LEFT JOIN LATERAL with a subquery CTE
 --   - FACILITY_ID not in ABP_TAP; sourced from mars_dev.silver.dim_device join
@@ -72,7 +78,8 @@ WITH tap_agg AS (
         -- Approved: Device Approved (1), Server Approved (900), Server Approved Cached (904)
         SUM(CASE WHEN t.TAP_STATUS_ID IN (1, 900, 904) THEN 1 ELSE 0 END)
                                                                AS tap_approved_count,
-        SUM(CASE WHEN t.TAP_STATUS_ID NOT IN (1, 900, 904) THEN 1 ELSE 0 END)
+        -- QR-2 fix: 701 excluded — timing metric, not a decision outcome
+        SUM(CASE WHEN t.TAP_STATUS_ID NOT IN (1, 900, 904, 701) THEN 1 ELSE 0 END)
                                                                AS tap_reject_count,
         SUM(COALESCE(t.FARE_DUE, 0))                          AS total_fare,
         AVG(COALESCE(t.FARE_DUE, 0))                          AS avg_fare,

@@ -1,10 +1,24 @@
 -- =============================================================================
 -- S15: silver.incident_history -- rebuilt on servicenow_incident (2026-07-20)
+--       source swapped to servicenow_incident_conformed same day (see below)
 -- =============================================================================
 -- STATUS: ACTIVE. Promoted to production 2026-07-20, replacing the
 -- cta_servicenow_incident-based build. The prior version is archived as
 -- 15_incident_history__create_v1_cta_DEPRECATED.sql in this same folder --
 -- kept for reference/rollback, not run by anything.
+--
+-- UPDATE 2026-07-21: source switched from servicenow_incident to
+-- servicenow_incident_conformed. Identical 321-column schema (same u_wm_asset
+-- join key, same columns used below) -- zero compatibility risk, pure source
+-- swap. servicenow_incident_conformed reconciles the XML export against the
+-- CSV export (cta_servicenow_incident) and adds 20,761 incidents present only
+-- in the CSV (321,792 rows vs. servicenow_incident's 301,034).
+-- IMPORTANT CAVEAT: of those 20,761 CSV-unique rows, only 1 falls in the
+-- 2023-07-01..2023-12-31 window -- they're old records (same 2020-10-26
+-- earliest date as before), not anything from the period this whole rebuild
+-- was extending into. This swap improves overall historical completeness
+-- (+6.9% incident volume) but does NOT address the GATE recall regression
+-- found after the training-window extension -- that remains open.
 --
 -- WHY THIS CHANGED:
 -- cta_servicenow_incident (v1's source) had regressed from a documented
@@ -152,7 +166,7 @@ SELECT
     contact_type,
     u_estimated_time                                   AS estimated_time_hours
 
-FROM mars_dev.bronze.servicenow_incident
+FROM mars_dev.bronze.servicenow_incident_conformed
 WHERE CAST(opened_at AS DATE) >= '2023-07-01'
 QUALIFY ROW_NUMBER() OVER (PARTITION BY sys_id ORDER BY sys_updated_on DESC) = 1
 )

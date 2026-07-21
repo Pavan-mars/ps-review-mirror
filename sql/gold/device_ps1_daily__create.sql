@@ -4,7 +4,8 @@
 -- Grain: (device_id, transit_day)
 -- Target: will_fail_3d -- 1 if device has a chargeable SLA failure within next 3 days
 --         (VALIDATOR excluded: zero ServiceNow incidents in incident_root_cause)
--- Training window: transit_day >= 2024-01-01 (pre-2024 legacy data excluded)
+-- Training window: transit_day >= 2023-07-01 (moved from 2024-01-01 on 2026-07-20 --
+--   edw_device_event confirmed to have real data back to 2023-07-01 after bronze rerun)
 --
 -- Sources (silver):
 --   S06  mars_dev.silver.dim_device
@@ -35,7 +36,8 @@
 --           bronze ABP_TAP has data entry rows to 2032-12-14
 --   FIX 6: tap.avg_timing_ms / p95_timing_ms / has_slow_transactions removed --
 --           ABP_USE_TRAN_TIMING_DATA is PATH_NOT_FOUND; replaced with peak_hour_tap_count
---   FIX 7: spine filtered to transit_day >= 2024-01-01 (ML training window)
+--   FIX 7: spine filtered to transit_day >= 2023-07-01 (ML training window;
+--           moved from 2024-01-01 on 2026-07-20, see header)
 --   FIX 8: will_fail_7d uses duration_min > 0 NOT severity IN ('CRITICAL','WARN') --
 --           severity filter produced only 17 positive labels (confirmed pre-validation V08)
 --           explode-backward label approach used (equi-join, faster than EXISTS/range join)
@@ -375,12 +377,13 @@ outage_label_days_14d AS (
     ) seq
     WHERE df.device_category = 'VALIDATOR'
 ),
--- FIX 7: spine filtered to >= 2024-01-01 (ML training window; excludes legacy pre-2024 rows)
+-- FIX 7: spine filtered to >= 2023-07-01 (ML training window; moved from 2024-01-01
+-- on 2026-07-20 -- edw_device_event confirmed to have real data back to 2023-07-01)
 spine AS (
     SELECT DISTINCT ad.DEVICE_ID, ed.transit_day
     FROM all_devices ad
     JOIN event_daily ed ON ed.DEVICE_ID = ad.DEVICE_ID
-    WHERE ed.transit_day >= '2024-01-01'
+    WHERE ed.transit_day >= '2023-07-01'
 ),
 -- R6-1 (2026-07-17): 5 rolling failure history features from S26 device_failures.
 --   Previously computed in notebook Cell 10b (Python) — moved to Gold SQL to prevent

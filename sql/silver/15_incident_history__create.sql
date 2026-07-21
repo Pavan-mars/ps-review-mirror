@@ -1,75 +1,66 @@
 -- =============================================================================
--- S15: silver.incident_history
--- S-code: S15 | Build file: 17 | Status: READY (CTA Export CSVs loaded to bronze 2026-06-24)
--- NOTE: Renumbered from S05 -> S15 (2026-06-23). S05 = metric_hourly, S19 = maintenance_ledger,
--- S20 = usage_lifecycle_daily.
+-- S15: silver.incident_history -- rebuilt on servicenow_incident (2026-07-20)
+-- =============================================================================
+-- STATUS: ACTIVE. Promoted to production 2026-07-20, replacing the
+-- cta_servicenow_incident-based build. The prior version is archived as
+-- 15_incident_history__create_v1_cta_DEPRECATED.sql in this same folder --
+-- kept for reference/rollback, not run by anything.
 --
--- PURPOSE:
--- Full ServiceNow incident history for Chicago/CTA.
--- Replaces simplified silver.incident_root_cause (V1) which uses only
--- CTA.SERVICENOW_AVAILABILITY_EVENTS (295,960 rows, 57 cols).
+-- WHY THIS CHANGED:
+-- cta_servicenow_incident (v1's source) had regressed from a documented
+-- 7,028,048 rows (load 2026-06-24, see the archived v1 file's header) to a
+-- live 278,001 rows, and had essentially no data in the 2023-07-01 ..
+-- 2023-12-31 window (4 rows) needed to extend the PS1 training window back
+-- from 2024-01-01 to 2023-07-01.
 --
--- SOURCES (4 CTA Export CSV files loaded to bronze 2026-06-24):
--- 1. incident - 7,028,048 rows, 44 columns
--- 2. cmdb_ci - 43,130 rows, 108 columns
--- 3. cmdb_model - 99,966 rows, 95 columns
--- 4. cmdb_model_category - 426 rows, 21 columns
+-- servicenow_incident was checked as an alternative (2026-07-20 validation):
+--   - u_wm_asset -> dim_device.DEVICE_ID join (the SAME join key v1 already
+--     used): 57.33% overall match rate (172,577 / 301,034 rows), and NONE of
+--     those matches land outside TVM/GATE (137,769 TVM + 34,808 GATE = the
+--     full matched count) -- confirms this source reaches the same TVM/GATE
+--     population v1 targeted, just with far healthier volume.
+--   - TVM-matched rows go back to 2020-10-26 (22,800 rows in the 2023 H2
+--     window).
+--   - GATE-matched rows only go back to 2023-06-30 (2,911 rows in the 2023 H2
+--     window) -- this source has no GATE history before mid-2023 either, but
+--     that's still full coverage for the 2023-07-01 target date.
 --
--- Bronze catalog tables (CSV exports registered as Delta tables in mars_dev.bronze):
--- mars_dev.bronze.cta_servicenow_incident (7,028,048 rows, 44 cols)
--- mars_dev.bronze.cta_servicenow_cmdb_ci (43,130 rows, 108 cols)
--- mars_dev.bronze.cta_servicenow_cmdb_model (99,966 rows, 95 cols)
--- mars_dev.bronze.cta_servicenow_cmdb_model_category (426 rows, 21 cols)
+-- CMDB ENRICHMENT: CONFIRMED NOT AVAILABLE (checked 2026-07-20) --------------
+-- serial_number, install_date, manufacturer, model_category (the fields
+-- driving S15 v1's documented PS3 +25% / PS5 +20% lift) are NOT wired in
+-- below, and cannot be from any source checked so far:
+--   1. servicenow_incident.cmdb_ci_sys_id was joined against all 5 XML-based
+--      CMDB tables (servicenow_cmdb_ci_pos_device / card_handling / netgear /
+--      onboard_card_interface / acc) -- ZERO matches across all 5. Their
+--      columns (install_date/purchase_date/delivery_date/attested_date-style
+--      fields only, no transit-hardware structure) suggest these are generic
+--      corporate IT asset tables, not CTA transit fare equipment.
+--   2. Tried cross-referencing servicenow_incident.cmdb_ci_display_value
+--      against the OLD CSV-based cta_servicenow_cmdb_ci.name (the table S15
+--      v1 already uses) in case the two export systems shared a naming
+--      convention -- 0.30% match rate (520 / 172,577 TVM+GATE incidents),
+--      i.e. noise, not a real link. The two systems name CIs incompletely
+--      differently; there's no cross-reference path between them.
+-- Net: this table has full incident-core data (timing, priority, severity,
+-- category, cause, chargeable, description, device linkage) but no
+-- CMDB-derived columns. This is sufficient for PS1 incident_frequency/MTTR
+-- features; PS3/PS5 CMDB-dependent features would need a different source not
+-- yet identified, or would have to keep reading from S15 v1 (currently
+-- depleted, see above) until one is found.
 --
--- Bronze registration (run once in Databricks before executing this SQL):
--- CREATE TABLE mars_dev.bronze.cta_servicenow_incident
--- USING DELTA LOCATION 's3://cubic-mars-pm-s3-datalake-dev-bronze-170202974600/chicago_ventra/sn/incident/';
--- CREATE TABLE mars_dev.bronze.cta_servicenow_cmdb_ci
--- USING DELTA LOCATION 's3://cubic-mars-pm-s3-datalake-dev-bronze-170202974600/chicago_ventra/sn/cmdb_ci/';
--- CREATE TABLE mars_dev.bronze.cta_servicenow_cmdb_model
--- USING DELTA LOCATION 's3://cubic-mars-pm-s3-datalake-dev-bronze-170202974600/chicago_ventra/sn/cmdb_model/';
--- CREATE TABLE mars_dev.bronze.cta_servicenow_cmdb_model_category
--- USING DELTA LOCATION 's3://cubic-mars-pm-s3-datalake-dev-bronze-170202974600/chicago_ventra/sn/cmdb_model_category/';
+-- DEDUP NOTE: unlike cta_servicenow_incident (CSV export, no sys_id, dedup by
+-- incident number -- see S15 v1's "33 incident_number duplicates" comment),
+-- servicenow_incident is an XML/CDC-style export with a real sys_id and an
+-- _action = 'INSERT_OR_UPDATE' pattern suggesting repeat snapshots per record.
+-- Dedup below keys off sys_id first (inner CTE), keeping each record's most
+-- recently updated version; the outer QUALIFY by incident_number is kept as a
+-- defensive backstop matching S15 v1's own pattern, in case dim_device's join
+-- ever fans out.
 --
--- JOIN LOGIC (no sys_id in any CSV export - all joins on display/name values):
--- incident.cmdb_ci -> cmdb_ci.name (e.g. "SAG00901 TRNSTL ASY-TWA GDI UPGRD,CTA, SAG")
--- cmdb_ci.model_id -> cmdb_model.name (e.g. "VENDOR ASSY-CTA OSFS")
--- cmdb_model.cmdb_model_category -> cmdb_model_category.name (e.g. "Gate/Turnstile")
--- incident.u_wm_asset -> dim_device.DEVICE_ID (e.g. "SAG00901")
---
--- KEY COLUMN CORRECTIONS vs original design:
--- REMOVED (not in CSV): sys_id, type, urgency, impact, u_duration, u_ettr,
--- u_cause_category, u_cause_subcategory, u_event_duration, u_out_of_service,
--- u_outage_start_time, u_outage_end_time, u_downtime, u_resolution_method,
--- u_summary_of_cause, opened_by, u_customer, u_out_of_hours_callout,
--- u_safety_issue, u_vandalism, made_sla, escalate, major_incident_state,
--- u_potentially_revenue_impacting, u_kpi_impacting, u_kpi_level, cmdb_ci_sys_id
--- ADDED (in CSV, not in original design):
--- u_ncs_device_id, u_chargeable_level, u_reason_code, severity,
--- calendar_duration, description, reopen_count, u_major_incident
--- FIXED: SPLIT_PART (PostgreSQL) -> SPLIT()[index] (Databricks)
---
--- PS IMPACT:
--- PS1 +12%: incident_frequency, calendar_duration (MTTR proxy), repeat_incident flags
--- PS3 +25%: category, subcategory, cause, u_chargeable_level, cmdb_model context
--- PS5 +20%: incident history per device via CMDB_CI serial_number + install_date
---
--- Michael R2 confirmation (2026-06-23):
--- is_chargeable = u_chargeable = 'true' (or failure_level > 0 from AVAILABILITY_EVENTS)
--- Planned vs real: category = 'Corrective Maintenance' = real breakdown
--- Event code format: "NNN - Description" in u_event_code field
---
--- JOIN-KEY VALIDATION NOTE (added 2026-07-07, validation pass):
--- The dim_device join below uses u_wm_asset (aliased wm_asset), NOT asset_tag.
--- This diverges from the join key the 2026-06-25 CMDB probe (probe_cmdb_device_join.py)
--- validated: that probe found asset_tag = dim_device.DEVICE_ID reached ~29% of the
--- fleet, and explicitly flagged u_ncs_device_id as too sparse to use (2.8-3%
--- populated in cmdb_ci/incident). u_wm_asset does not appear in that probe at all --
--- it is plausibly a genuinely better/different field available in this newer 4-file
--- CSV export (the probe ran against an earlier drop), but that has not been
--- independently re-confirmed since this table was built. Run the spot-check in
--- sql/diagnostics/s15_wm_asset_join_match_rate.sql before treating this join's
--- match rate as proven -- see that file for the full query and what to look for.
+-- SCOPE: TVM + GATE only, by explicit device-category filter below -- same
+-- scope as S15 v1 (see that file's footer note: "S15 remains TVM + GATE only
+-- by design"). VALIDATOR incident coverage remains silver.incident_task_ci_link
+-- (S25), unaffected by this file.
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.silver.incident_history;
@@ -80,278 +71,159 @@ PARTITIONED BY (city_id)
 AS
 WITH
 
--- -- SOURCE 1: INCIDENT (7,028,048 rows) --------------------------------------
+-- -- SOURCE: servicenow_incident, deduped to one row per sys_id -------------
 inc AS (
 SELECT
--- Primary key (no sys_id in export - use incident number)
-number AS incident_number,
-incident_state,
+    sys_id,
+    number                                            AS incident_number,
+    CAST(incident_state AS INT)                       AS incident_state,
+    u_maintenance_type                                AS maintenance_type,
 
--- Maintenance type (Corrective Maintenance / Planned Maintenance)
-u_maintenance_type AS maintenance_type,
+    -- Timing
+    CAST(opened_at   AS TIMESTAMP)                    AS opened_dtm,
+    CAST(resolved_at AS TIMESTAMP)                    AS resolved_dtm,
+    CAST(closed_at   AS TIMESTAMP)                    AS closed_dtm,
 
--- Timing
-CAST(opened_at AS TIMESTAMP) AS opened_dtm,
-CAST(resolved_at AS TIMESTAMP) AS resolved_dtm,
-CAST(closed_at AS TIMESTAMP) AS closed_dtm,
+    CASE
+        WHEN resolved_at IS NOT NULL AND opened_at IS NOT NULL
+        THEN (unix_timestamp(CAST(resolved_at AS TIMESTAMP))
+            - unix_timestamp(CAST(opened_at   AS TIMESTAMP))) / 60.0
+        ELSE NULL
+    END                                                AS time_to_resolve_minutes,
 
--- Duration: calendar_duration is in seconds
-CAST(calendar_duration AS BIGINT) AS duration_seconds,
+    CASE
+        WHEN closed_at IS NOT NULL AND opened_at IS NOT NULL
+        THEN (unix_timestamp(CAST(closed_at AS TIMESTAMP))
+            - unix_timestamp(CAST(opened_at AS TIMESTAMP))) / 60.0
+        ELSE NULL
+    END                                                AS time_to_close_minutes,
 
--- Derived: time to resolve in minutes (precise, not day-granular)
-CASE
-WHEN resolved_at IS NOT NULL AND opened_at IS NOT NULL
-THEN (unix_timestamp(CAST(resolved_at AS TIMESTAMP))
-- unix_timestamp(CAST(opened_at AS TIMESTAMP))) / 60.0
-ELSE NULL
-END AS time_to_resolve_minutes,
+    -- Priority / Severity -- already numeric here, unlike cta_servicenow_incident's
+    -- "1 - Critical" STRING format (no SPLIT() needed)
+    CAST(priority AS INT)                             AS priority,
+    CAST(severity AS INT)                             AS severity,
 
-CASE
-WHEN closed_at IS NOT NULL AND opened_at IS NOT NULL
-THEN (unix_timestamp(CAST(closed_at AS TIMESTAMP))
-- unix_timestamp(CAST(opened_at AS TIMESTAMP))) / 60.0
-ELSE NULL
-END AS time_to_close_minutes,
+    -- Categories
+    category,
+    subcategory,
+    u_category,
+    cause,
 
--- Priority / Severity (format: "1 - Critical", "3 - Low")
--- SPLIT returns 0-indexed array in Databricks
-CAST(SPLIT(priority, ' - ')[0] AS INT) AS priority,
-SPLIT(priority, ' - ')[1] AS priority_label,
-CAST(SPLIT(severity, ' - ')[0] AS INT) AS severity,
-SPLIT(severity, ' - ')[1] AS severity_label,
+    -- Descriptions
+    short_description,
+    description,
+    close_notes                                       AS resolution_notes,
+    close_code,
 
--- Categories (what type of incident)
-category AS category,
-subcategory AS subcategory,
-u_category AS u_category,
+    -- Device linkage (same join key S15 v1 already uses)
+    u_wm_asset                                         AS wm_asset,
+    cmdb_ci_sys_id,
+    cmdb_ci_display_value,
+    u_ncs_device_id                                    AS ncs_device_id,
+    location_display_value                             AS location_name,
+    assignment_group_display_value                     AS assignment_group,
+    assigned_to_display_value                          AS assigned_to,
+    caller_id_display_value                            AS caller,
 
--- Cause (free text from ServiceNow - what caused the incident)
-cause AS cause,
+    -- Event data -- already split into id/display_value by the ingestion's
+    -- flatten_reference_columns() (per S25 header) -- no manual " - " parse
+    -- needed here, unlike cta_servicenow_incident's raw u_event_code string.
+    u_event_code_sys_id                                AS event_code_id,
+    u_event_code_display_value                         AS event_code_name,
+    CAST(u_event_cleared AS TIMESTAMP)                 AS event_cleared_dtm,
 
--- Descriptions
-short_description,
-description,
-close_notes AS resolution_notes,
-close_code,
+    -- Chargeable -- native BOOLEAN in servicenow_incident, cast to INT (not the
+    -- LOWER(TRIM(...)) = 'true' string-comparison v1 used on cta_servicenow_incident's
+    -- BOOLEAN column -- that pattern was fragile; a direct CAST is not). Kept
+    -- numeric (0/1) rather than passed through as BOOLEAN because S24 and gold
+    -- PS5's device_inc_lifetime both do SUM(is_chargeable)/SUM(is_major_incident)
+    -- against this table -- Spark's SUM() requires a numeric input type, so a
+    -- native BOOLEAN column breaks both at CreateTableAsSelect analysis time
+    -- (confirmed live: DATATYPE_MISMATCH on S24 2026-07-20).
+    CAST(u_chargeable AS INT)                          AS is_chargeable,
+    u_chargeable_level_display_value                   AS chargeable_level,
+    CAST(u_chargeable_override AS INT)                 AS is_chargeable_override,
 
--- Device linkage
-u_wm_asset AS wm_asset, -- e.g. SAG00901
-cmdb_ci AS cmdb_ci_name, -- join key to cmdb_ci.name
-u_ncs_device_id AS ncs_device_id, -- NCS device ID
-location AS location_name,
-assignment_group,
-assigned_to,
-caller_id AS caller,
+    CAST(reopen_count AS INT)                          AS reopen_count,
+    CAST(u_major_incident AS INT)                      AS is_major_incident,
 
--- Event data (format: "220 - Missing CSC Keys")
-u_event_code AS event_code_raw,
-CASE
-WHEN u_event_code IS NOT NULL AND INSTR(u_event_code, ' - ') > 0
-THEN CAST(TRIM(SPLIT(u_event_code, ' - ')[0]) AS INT)
-END AS event_code_id,
-CASE
-WHEN u_event_code IS NOT NULL AND INSTR(u_event_code, ' - ') > 0
-THEN TRIM(SPLIT(u_event_code, ' - ')[1])
-ELSE u_event_code
-END AS event_code_name,
-CAST(u_event_cleared AS TIMESTAMP) AS event_cleared_dtm,
+    u_reason_code                                      AS reason_code,
+    business_impact,
+    contact_type,
+    u_estimated_time                                   AS estimated_time_hours
 
--- Chargeable (from R2: is_chargeable = failure_level > 0)
-CASE WHEN LOWER(TRIM(u_chargeable)) = 'true' THEN 1 ELSE 0 END AS is_chargeable,
-u_chargeable_level AS chargeable_level,
-CASE WHEN LOWER(TRIM(u_chargeable_override)) = 'true' THEN 1 ELSE 0 END AS is_chargeable_override,
-
--- Incident quality
-CAST(reopen_count AS INT) AS reopen_count,
-CASE WHEN LOWER(TRIM(u_major_incident)) = 'true' THEN 1 ELSE 0 END AS is_major_incident,
-
--- Reason / additional classification
-u_reason_code AS reason_code,
-business_impact,
-contact_type,
-u_estimated_time AS estimated_time_hours
-
-FROM mars_dev.bronze.cta_servicenow_incident
-WHERE CAST(opened_at AS DATE) >= '2024-01-01'
--- 33 incident_number duplicates confirmed in bronze source (same incident imported multiple times).
--- Keep the most recently resolved/closed record; fall back to opened_at for unresolved incidents.
-QUALIFY ROW_NUMBER() OVER (PARTITION BY number ORDER BY resolved_at DESC NULLS LAST, closed_at DESC NULLS LAST, opened_at DESC NULLS LAST) = 1
-),
-
--- -- SOURCE 2: CMDB_CI (43,130 rows - one row per CTA device/component) -------
--- Join key: cmdb_ci.name = incident.cmdb_ci (display value)
--- Key columns for PS5: serial_number, install_date, operational_status
-ci AS (
-SELECT
-name AS ci_name, -- join key
-asset_tag AS ci_asset_tag,
-model_id AS ci_model_id, -- join key to cmdb_model.name
-operational_status AS ci_operational_status,
-install_status AS ci_install_status,
-CAST(install_date AS DATE) AS ci_install_date,
-location AS ci_location,
-serial_number AS ci_serial_number, -- PS5: physical serial
-u_ncs_device_id AS ci_ncs_device_id,
-u_ncs_device_name AS ci_ncs_device_name,
-u_component_id AS ci_component_id,
-u_component_position AS ci_component_position,
-manufacturer AS ci_manufacturer,
-CAST(warranty_expiration AS DATE) AS ci_warranty_expiration,
-sys_class_name AS ci_class_name,
-CAST(fault_count AS INT) AS ci_fault_count
-FROM mars_dev.bronze.cta_servicenow_cmdb_ci
-),
-
--- -- SOURCE 3: CMDB_MODEL (99,966 rows - model catalog) -----------------------
--- Join key: cmdb_model.name = cmdb_ci.model_id (display value)
-mdl AS (
-SELECT
-name AS model_name, -- join key
-cmdb_model_category AS model_category, -- join key to cmdb_model_category.name
-u_model_type AS model_type,
-u_life_expectancy AS model_life_expectancy,
-CASE WHEN LOWER(TRIM(u_repairable)) = 'true' THEN 1 ELSE 0 END AS model_is_repairable,
-CASE WHEN LOWER(TRIM(u_rotable)) = 'true' THEN 1 ELSE 0 END AS model_is_rotable,
-status AS model_status,
-sys_class_name AS model_class_name
-FROM mars_dev.bronze.cta_servicenow_cmdb_model
-),
-
--- -- SOURCE 4: CMDB_MODEL_CATEGORY (426 rows - category hierarchy) ------------
--- Join key: cmdb_model_category.name = cmdb_model.cmdb_model_category
--- Note: source column 'parent_cateogry' has a typo (missing 'e') - use as-is
-mcat AS (
-SELECT
-name AS model_category_name, -- join key
-parent_cateogry AS model_parent_category,
-cmdb_ci_class AS cmdb_ci_class,
-asset_class AS asset_class
-FROM mars_dev.bronze.cta_servicenow_cmdb_model_category
+FROM mars_dev.bronze.servicenow_incident
+WHERE CAST(opened_at AS DATE) >= '2023-07-01'
+QUALIFY ROW_NUMBER() OVER (PARTITION BY sys_id ORDER BY sys_updated_on DESC) = 1
 )
 
--- -- FINAL SELECT -------------------------------------------------------------
+-- -- FINAL SELECT -----------------------------------------------------------
 SELECT
--- -- Incident core -----------------------------------------------------
-i.incident_number,
-i.incident_state,
-i.maintenance_type,
+    i.incident_number,
+    i.incident_state,
+    i.maintenance_type,
 
--- Timing
-i.opened_dtm,
-i.resolved_dtm,
-i.closed_dtm,
-CAST(DATE(i.opened_dtm) AS DATE) AS incident_date,
-i.duration_seconds,
-i.time_to_resolve_minutes,
-i.time_to_close_minutes,
+    i.opened_dtm,
+    i.resolved_dtm,
+    i.closed_dtm,
+    CAST(DATE(i.opened_dtm) AS DATE)                   AS incident_date,
+    i.time_to_resolve_minutes,
+    i.time_to_close_minutes,
 
--- Priority / Severity
-i.priority,
-i.priority_label,
-i.severity,
-i.severity_label,
+    i.priority,
+    i.severity,
 
--- Categories
-i.category,
-i.subcategory,
-i.u_category,
-i.cause,
+    i.category,
+    i.subcategory,
+    i.u_category,
+    i.cause,
 
--- Description
-i.short_description,
-i.description,
-i.resolution_notes,
-i.close_code,
+    i.short_description,
+    i.description,
+    i.resolution_notes,
+    i.close_code,
 
--- Device linkage
-i.wm_asset,
-i.cmdb_ci_name,
-i.ncs_device_id,
-i.location_name,
-i.assignment_group,
-i.assigned_to,
-i.caller,
+    i.wm_asset,
+    i.cmdb_ci_sys_id,
+    i.cmdb_ci_display_value,
+    i.ncs_device_id,
+    i.location_name,
+    i.assignment_group,
+    i.assigned_to,
+    i.caller,
 
--- Event code
-i.event_code_raw,
-i.event_code_id,
-i.event_code_name,
-i.event_cleared_dtm,
+    i.event_code_id,
+    i.event_code_name,
+    i.event_cleared_dtm,
 
--- Chargeable / billing
-i.is_chargeable,
-i.chargeable_level,
-i.is_chargeable_override,
+    i.is_chargeable,
+    i.chargeable_level,
+    i.is_chargeable_override,
 
--- Incident quality
-i.reopen_count,
-i.is_major_incident,
-i.reason_code,
-i.business_impact,
-i.contact_type,
-i.estimated_time_hours,
+    i.reopen_count,
+    i.is_major_incident,
+    i.reason_code,
+    i.business_impact,
+    i.contact_type,
+    i.estimated_time_hours,
 
--- -- CMDB_CI enrichment ------------------------------------------------
-ci.ci_asset_tag,
-ci.ci_operational_status,
-ci.ci_install_status,
-ci.ci_install_date,
-ci.ci_serial_number, -- PS5: physical serial number
-ci.ci_ncs_device_id,
-ci.ci_ncs_device_name,
-ci.ci_component_id,
-ci.ci_component_position,
-ci.ci_manufacturer,
-ci.ci_warranty_expiration,
-ci.ci_class_name,
-ci.ci_fault_count,
+    -- No CMDB enrichment columns (serial_number, install_date, manufacturer,
+    -- model_category) -- confirmed no viable source exists for this incident
+    -- table; see header note "CMDB ENRICHMENT: CONFIRMED NOT AVAILABLE".
 
--- -- CMDB_MODEL enrichment ---------------------------------------------
-mdl.model_name AS cmdb_model_name,
-mdl.model_type AS cmdb_model_type,
-mdl.model_life_expectancy AS cmdb_model_life_expectancy,
-mdl.model_is_repairable AS cmdb_model_is_repairable,
-mdl.model_is_rotable AS cmdb_model_is_rotable,
+    dd.DEVICE_KEY,
+    dd.mars_device_category,
+    dd.FACILITY_NAME,
+    dd.FACILITY_ID,
+    dd.OPERATOR_ID,
 
--- -- CMDB_MODEL_CATEGORY enrichment -----------------------------------
-mcat.model_category_name AS cmdb_model_category,
-mcat.model_parent_category AS cmdb_model_parent_category,
-
--- -- dim_device enrichment (join on u_wm_asset = DEVICE_ID) -----------
-dd.DEVICE_KEY,
-dd.mars_device_category,
-dd.FACILITY_NAME,
-dd.FACILITY_ID,
-dd.OPERATOR_ID,
-
--- Partition
-'CHICAGO' AS city_id
+    'CHICAGO' AS city_id
 
 FROM inc i
-
--- CMDB_CI: join via incident.cmdb_ci display value = cmdb_ci.name
-LEFT JOIN ci
-ON i.cmdb_ci_name = ci.ci_name
-
--- CMDB_MODEL: via CI model_id display value = model name
-LEFT JOIN mdl
-ON ci.ci_model_id = mdl.model_name
-
--- CMDB_MODEL_CATEGORY: via model category name
-LEFT JOIN mcat
-ON mdl.model_category = mcat.model_category_name
-
--- dim_device: wm_asset (SAG00901) = DEVICE_ID
--- See the JOIN-KEY VALIDATION NOTE in the header (2026-07-07) -- this join key
--- (u_wm_asset) has not been independently re-validated against the fleet the way
--- asset_tag was on 2026-06-25. Run sql/diagnostics/s15_wm_asset_join_match_rate.sql
--- to confirm the match rate before relying on this for a PS-facing feature.
 LEFT JOIN mars_dev.silver.dim_device dd
-ON dd.DEVICE_ID = UPPER(TRIM(i.wm_asset))
-AND dd.is_current = TRUE
--- Final dedup: LEFT JOINs to ci/mdl/mcat can fan-out on non-unique display-name keys
--- (e.g. cmdb_ci.name not guaranteed unique across 43K rows). QUALIFY at outer level
--- ensures incident_number grain is preserved regardless of which join causes fan-out.
+    ON dd.DEVICE_ID = UPPER(TRIM(i.wm_asset))
+   AND dd.is_current = TRUE
+WHERE dd.mars_device_category IN ('TVM', 'GATE')
 QUALIFY ROW_NUMBER() OVER (
     PARTITION BY i.incident_number
     ORDER BY i.resolved_dtm DESC NULLS LAST,
@@ -359,15 +231,11 @@ QUALIFY ROW_NUMBER() OVER (
              i.opened_dtm  DESC NULLS LAST
 ) = 1;
 
--- NOTE (confirmed 2026-07-15): edw_availability_events contains only TVM/RVG
--- device IDs (e.g. TVM05303, RVG03007) -- no BMV/VALIDATOR device IDs exist
--- in that table. The UNION ALL supplement added here on 2026-07-07 produced 0
--- rows and has been removed.
---
--- VALIDATOR incident signal is addressed via silver.incident_task_ci_link (S25):
--- 823 VALIDATOR devices / 10,453 distinct incidents confirmed 2026-07-15 via
--- servicenow_task_ci bus-number join (CONCAT('BMV', LPAD(bus_num, 5, '0'))).
--- S15 remains TVM + GATE only by design.
-
 -- Post-load optimisation:
 -- OPTIMIZE mars_dev.silver.incident_history ZORDER BY (incident_date, wm_asset);
+
+-- Suggested validation queries after building this table:
+-- SELECT mars_device_category, COUNT(*), MIN(incident_date), MAX(incident_date),
+--        SUM(CASE WHEN incident_date BETWEEN '2023-07-01' AND '2023-12-31' THEN 1 ELSE 0 END) AS h2_2023_rows
+-- FROM mars_dev.silver.incident_history
+-- GROUP BY mars_device_category;

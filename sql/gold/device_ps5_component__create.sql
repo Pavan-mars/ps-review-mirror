@@ -162,6 +162,9 @@ component_failures AS (
 -- Grain: one row per DEVICE_KEY (lifetime aggregates — NOT rolling windows like S24)
 -- Covers TVM + GATE only (VALIDATOR/BMV* = 0 ServiceNow incidents confirmed 2026-07-07)
 -- Separate from device_outage (S18): these are technician-filed tickets, not NCS telemetry events
+-- UPDATE 2026-07-20: date floor moved 2024-01-01 -> 2023-07-01 -- S15 rebuilt on
+-- servicenow_incident, which has real TVM/GATE incident data back into 2023H2
+-- (unlike the prior cta_servicenow_incident source); see 15_incident_history__create.sql
 device_inc_lifetime AS (
     SELECT
         DEVICE_KEY,
@@ -175,12 +178,15 @@ device_inc_lifetime AS (
     FROM mars_dev.silver.incident_history
     WHERE DEVICE_KEY IS NOT NULL
       AND incident_date IS NOT NULL
-      AND incident_date >= '2024-01-01'
+      AND incident_date >= '2023-07-01'
     GROUP BY DEVICE_KEY
 ),
 -- R5 (2026-07-07): device-level usage intensity from S13 tap_event_daily
 -- Higher usage = faster mechanical wear -> shorter component survival time
 -- Covers all device types (TVM/GATE/VALIDATOR bus farebox)
+-- UPDATE 2026-07-20: date floor moved 2024-01-01 -> 2023-07-01 -- edw_abp_tap
+-- (S13's bronze source) confirmed to have real data back to 2023-07-01 after
+-- bronze rerun (previously hard-started 2024-01-01, same issue as edw_device_event)
 device_usage_lifetime AS (
     SELECT
         DEVICE_ID,
@@ -190,7 +196,7 @@ device_usage_lifetime AS (
         MAX(transit_day)                                                  AS last_tap_day
     FROM mars_dev.silver.tap_event_daily
     WHERE DEVICE_ID IS NOT NULL
-      AND transit_day >= '2024-01-01'
+      AND transit_day >= '2023-07-01'
     GROUP BY DEVICE_ID
 ),
 -- R6 (2026-07-17): device-level MTTR lifetime from S28 device_mttr

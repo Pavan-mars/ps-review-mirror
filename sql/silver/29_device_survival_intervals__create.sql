@@ -121,7 +121,9 @@ ongoing_intervals AS (
 
 -- ── First interval in window: period before a device's very first recorded failure ─
 -- Left-censored: we do not know when the prior failure (if any) occurred before
--- the training window start (2024-01-01). Marked is_first_interval=TRUE.
+-- the training window start (2023-07-01, moved from 2024-01-01 on 2026-07-20 --
+-- edw_device_event/edw_abp_tap now have real data back to 2023-07-01, confirmed
+-- via bronze rerun). Marked is_first_interval=TRUE.
 first_failures AS (
     SELECT
         DEVICE_KEY,
@@ -136,16 +138,16 @@ first_intervals AS (
         ff.DEVICE_KEY,
         ff.DEVICE_ID,
         ff.device_category,
-        DATE '2024-01-01'                                   AS interval_start_date,
+        DATE '2023-07-01'                                   AS interval_start_date,
         DATE_SUB(ff.first_failure_date, 1)                  AS interval_end_date,
-        DATEDIFF(DATE_SUB(ff.first_failure_date, 1), DATE '2024-01-01') + 1
+        DATEDIFF(DATE_SUB(ff.first_failure_date, 1), DATE '2023-07-01') + 1
                                                             AS interval_days,
         CAST(NULL AS DATE)                                  AS preceding_failure_date,
         ff.first_failure_date                               AS following_failure_date,
         FALSE                                               AS is_ongoing,
         TRUE                                                AS is_first_interval
     FROM first_failures ff
-    WHERE DATEDIFF(ff.first_failure_date, DATE '2024-01-01') > 0  -- first failure not on 2024-01-01 itself
+    WHERE DATEDIFF(ff.first_failure_date, DATE '2023-07-01') > 0  -- first failure not on 2023-07-01 itself
 )
 
 SELECT * FROM past_intervals

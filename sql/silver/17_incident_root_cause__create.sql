@@ -5,7 +5,9 @@
 -- Sources (mars_dev.bronze catalog):
 --   CTA.SERVICENOW_AVAILABILITY_EVENTS  (375,578 rows, 57 cols) -> mars_dev.bronze.cta_servicenow_availability_events
 --   CTA.SERVICENOW_DATA_FROM_JUMPBOX    (604 rows,    27 cols)  -> mars_dev.bronze.cta_servicenow_data_from_jumpbox
---   silver.incident_history (S15)       (7,028,048 rows)        -- sn_category / sn_maintenance_type enrichment
+--   silver.incident_history (S15)       (rebuilt 2026-07-20 on servicenow_incident;
+--                                         see 15_incident_history__create.sql)
+--                                                                -- sn_category / sn_maintenance_type enrichment
 --
 -- CRITICAL DATA GAP -- SVN_STAGE TABLES ALL HAVE 0 ROWS IN ORACLE:
 --   SVN_STAGE.INCIDENT, FAULT, WORK_ORDER, WORK_ORDER_TASK, CMDB_CI, CHANGE_REQUEST
@@ -15,7 +17,10 @@
 --   CTA.SERVICENOW_DATA_FROM_JUMPBOX (604 rows) supplements with additional SN fields.
 --   IMPACT: No work-order lifecycle, no CMDB CI lineage, no technician detail.
 --   UPDATE 2026-06-24: silver.incident_history (S15) now provides full SN incident
---   data (7M rows). Joined here on device_id + date to enrich with sn_category.
+--   data. Joined here on device_id + date to enrich with sn_category.
+--   UPDATE 2026-07-20: S15 rebuilt on servicenow_incident (its cta_servicenow_incident
+--   source had regressed to near-empty for 2023H2); sn_priority_label dropped from
+--   this enrichment as a result -- see comment at s17_first below.
 --
 -- Notes:
 --   - AE_TRANSIT_DAY_KEY: 8-digit YYYYMMDD confirmed (no mixed-format issue)
@@ -113,7 +118,15 @@ s17_first AS (
         category                                AS sn_category,
         maintenance_type                        AS sn_maintenance_type,
         priority                                AS sn_priority,
-        priority_label                          AS sn_priority_label,
+        -- sn_priority_label dropped 2026-07-20: S15 was rebuilt on
+        -- servicenow_incident (see 15_incident_history__create.sql), whose
+        -- priority column is already a plain integer -- no embedded
+        -- "N - Label" string like cta_servicenow_incident had, so there's no
+        -- label left to split out. Nothing downstream (checked gold PS3)
+        -- referenced this field, so it's dropped rather than guessed at --
+        -- fabricating a code-to-label mapping without a confirmed source
+        -- would risk mislabeling priority codes 2/4/5 (only "1 - Critical"
+        -- and "3 - Low" were ever confirmed from the old export).
         chargeable_level                        AS sn_chargeable_level,
         event_code_id                           AS sn_event_code_id,
         event_code_name                         AS sn_event_code_name,
@@ -213,7 +226,6 @@ SELECT
     s17.sn_category,            -- 'Corrective Maintenance' = real breakdown; 'Planned Maintenance' = scheduled
     s17.sn_maintenance_type,    -- 'Corrective Maintenance' / 'Planned Maintenance'
     s17.sn_priority,
-    s17.sn_priority_label,
     s17.sn_chargeable_level,
     s17.sn_event_code_id,
     s17.sn_event_code_name,

@@ -58,7 +58,8 @@
 --   FIX 11: NULL::text -> CAST(NULL AS STRING)
 --   FIX 12: silver./gold. prefixes -> mars_dev.silver. / mars_dev.gold.
 --   FIX 13: CREATE INDEX (x6) -> removed (not supported on Delta); use OPTIMIZE/ZORDER
---   FIX 14: transit_day >= 2024-01-01 added to fault_events (ML training window)
+--   FIX 14: transit_day >= 2023-07-01 added to fault_events (ML training window;
+--           moved from 2024-01-01 on 2026-07-20, see device_ps1_daily__create.sql header)
 --
 -- Expected output: ~1.06M rows (V06b: VALIDATOR 563K + GATE 255K + TVM 245K)
 -- =============================================================================
@@ -93,7 +94,7 @@ WITH fault_events AS (
     WHERE dee.mars_device_category IN ('TVM','GATE','VALIDATOR')
       AND dee.is_hardware_oos_event = TRUE
       AND dee.EVENT_STATE_TYPE_NAME = 'Set'
-      AND dee.transit_day >= '2024-01-01'
+      AND dee.transit_day >= '2023-07-01'
 ),
 days_with_cascade AS (
     SELECT DEVICE_ID, transit_day, COUNT(*) AS fault_event_count

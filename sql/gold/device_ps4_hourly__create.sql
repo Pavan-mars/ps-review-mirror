@@ -53,7 +53,8 @@
 --   FIX 12: avg_timing_ms in tap subquery -> removed (CTA.ABP_USE_TRAN_TIMING_DATA = PATH_NOT_FOUND)
 --           avg_tap_timing_ms feature -> replaced with peak_hour_tap_count (from S13)
 --   FIX 13: transit_day <= CURRENT_DATE() added to tap subquery (2032 future dates confirmed PS1)
---           transit_day >= '2024-01-01' added to hourly_events (ML training window)
+--           transit_day >= '2023-07-01' added to hourly_events (ML training window;
+--           moved from 2024-01-01 on 2026-07-20, see device_ps1_daily__create.sql header)
 --   FIX 14: CREATE INDEX (x6) -> removed; not supported on Delta
 -- =============================================================================
 
@@ -89,8 +90,8 @@ WITH hourly_events AS (
     FROM mars_dev.silver.device_event_enriched dee
     WHERE dee.mars_device_category IN ('TVM','GATE','VALIDATOR')
       AND dee.hour_bucket IS NOT NULL
-      -- FIX 13: ML training window (device_event_enriched starts 2024-01-01)
-      AND dee.transit_day >= '2024-01-01'
+      -- FIX 13: ML training window (device_event_enriched now has data back to 2023-07-01)
+      AND dee.transit_day >= '2023-07-01'
     GROUP BY dee.DEVICE_ID, dee.DEVICE_KEY, dee.mars_device_category,
              dee.hour_bucket, dee.transit_day
 ),

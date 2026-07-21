@@ -10,8 +10,10 @@
 -- incident history context from ServiceNow.
 --
 -- SOURCE (silver):
--- mars_dev.silver.incident_history (S15) -- 278,029 rows, 68 cols
--- Filtered to: DEVICE_KEY IS NOT NULL, 2024-01-01+
+-- mars_dev.silver.incident_history (S15) -- rebuilt 2026-07-20 on
+-- servicenow_incident (see 15_incident_history__create.sql); row/col counts
+-- above are stale pending a fresh check against the rebuilt table.
+-- Filtered to: DEVICE_KEY IS NOT NULL, 2023-07-01+
 -- Device incidents only: rows across TVM (473 devices) + GATE (824 devices)
 -- VALIDATOR (BMV*): 0 rows -- no ServiceNow incidents exist for bus validators
 --
@@ -93,8 +95,11 @@ AS
 
 WITH
 
--- -- SOURCE: incident_history filtered to device incidents only (149,820 rows) -
--- Excludes: non-device rows (DEVICE_KEY IS NULL), pre-2024
+-- -- SOURCE: incident_history filtered to device incidents only ---------------
+-- Excludes: non-device rows (DEVICE_KEY IS NULL), pre-2023-07
+-- Row count comment above is stale (pending recheck) -- source table rebuilt
+-- 2026-07-20 on servicenow_incident; date floor moved 2024-01-01 -> 2023-07-01
+-- to match the extended PS1 training window.
 src AS (
 SELECT
 DEVICE_KEY,
@@ -107,7 +112,7 @@ event_code_id
 FROM mars_dev.silver.incident_history
 WHERE DEVICE_KEY IS NOT NULL
 AND incident_date IS NOT NULL
-AND incident_date >= '2024-01-01'
+AND incident_date >= '2023-07-01'
 ),
 
 -- -- DAILY AGGREGATION: one row per DEVICE_KEY + transit_day ------------------
@@ -226,10 +231,10 @@ FROM windowed;
 
 -- Post-load verification:
 -- SELECT
--- COUNT(*) AS total_rows, -- Expect ~96,840
--- COUNT(DISTINCT DEVICE_KEY) AS distinct_devices, -- Expect ~1,297
--- MIN(transit_day) AS earliest, -- Expect 2024-01-01
--- MAX(transit_day) AS latest, -- Expect 2026-05-30
+-- COUNT(*) AS total_rows, -- stale expected value (pre-2026-07-20 rebuild), recheck
+-- COUNT(DISTINCT DEVICE_KEY) AS distinct_devices, -- stale expected value, recheck
+-- MIN(transit_day) AS earliest, -- Expect ~2023-07-01 now (was 2024-01-01)
+-- MAX(transit_day) AS latest, -- stale expected value, recheck
 -- SUM(CASE WHEN incident_count_7d_past IS NULL THEN 1 ELSE 0 END) AS null_7d, -- Expect 0
 -- SUM(CASE WHEN incident_count_30d_past IS NULL THEN 1 ELSE 0 END) AS null_30d, -- Expect 0
 -- SUM(CASE WHEN avg_mttr_30d_past IS NULL THEN 1 ELSE 0 END) AS null_mttr,-- Expect ~1,297 (first rows)

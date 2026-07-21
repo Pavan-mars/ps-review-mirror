@@ -45,14 +45,17 @@
 --           Levels 6/98/99 = Operational (not hardware failures) -- exclude
 --           NEW: WHERE AE_FAILURE_LEVEL IN (1,2,3,4,5,16) -> all cat-2 hardware faults
 --           Expected rows: ~66,962 + ~55,000 levels-4/5/16 = ~122K total
---   FIX 9: transit_day >= '2024-01-01' added to all_incidents
---           V06 confirmed data back to 2017 (e.g., 2017-03-18). device_event_enriched
---           starts 2024-01-01, so pre-2024 incidents always yield 0 event lookups.
+--   FIX 9: transit_day >= '2023-07-01' added to all_incidents (moved from 2024-01-01
+--           on 2026-07-20). V06 confirmed data back to 2017 (e.g., 2017-03-18).
+--           device_event_enriched previously started 2024-01-01, so pre-2024 incidents
+--           always yielded 0 event lookups; a bronze rerun confirmed edw_device_event
+--           now has real data back to 2023-07-01, so the floor moved to match.
 --   FIX 10: mars_device_category IN ('TVM','GATE','READER','VALIDATOR') in all_incidents
 --            correctly excludes 81,362 null-category rows (bus devices not in dim_device)
 --            READER=0, VALIDATOR=0 incidents confirmed by V01
 --
--- Expected output: ~122K rows (levels 1/2/3/4/5/16, 2024-01-01+, TVM+GATE+VALIDATOR)
+-- Expected output: stale row estimate (~122K rows was for the 2024-01-01+ window);
+-- 2023-07-01+, levels 1/2/3/4/5/16, TVM+GATE+VALIDATOR -- recheck after rebuild
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.gold.device_ps3_incident;
@@ -63,8 +66,9 @@ WITH all_incidents AS (
     FROM mars_dev.silver.incident_root_cause
     -- READER removed: reader is a component (not a device category) -- Michael 2026-06-22
     WHERE mars_device_category IN ('TVM','GATE','VALIDATOR')
-      -- FIX 9: 2024+ only; pre-2024 incidents get 0 event matches in lookups
-      AND transit_day >= '2024-01-01'
+      -- FIX 9: 2023-07-01+ only (moved from 2024-01-01); device_event_enriched now
+      -- has real data back to this date, so incidents in this range get valid event matches
+      AND transit_day >= '2023-07-01'
       -- FIX 8 (updated 2026-06-23): levels 4/5/16 are real hardware faults (confirmed by Michael)
       AND AE_FAILURE_LEVEL IN (1, 2, 3, 4, 5, 16)
     -- Dedup: two fan-out sources confirmed in validate_gold grain check:
@@ -194,8 +198,18 @@ component_derived AS (
             ELSE NULL
         END) AS derived_component_type
     FROM all_incidents ai
+    -- UPDATE 2026-07-20: sn_event_code_id changed meaning when S15 moved to
+    -- servicenow_incident -- it's now a ServiceNow sys_id (long alphanumeric
+    -- string), not the small numeric fault code v1 parsed out of
+    -- cta_servicenow_incident's "NNN - Description" text. servicenow_incident
+    -- never carries that raw combined string (already split into
+    -- sys_id/display_value at ingestion, per S25's header), so there's no
+    -- numeric code to recover. This join now never matches (safe string
+    -- compare, cast explicitly to avoid an unsafe numeric parse of a sys_id) --
+    -- det.component_subsystem always NULL, derived_component_type falls
+    -- through to its free-text/ELSE branches only.
     LEFT JOIN mars_dev.silver.dim_event_type det
-        ON det.EVENT_TYPE_ID = ai.sn_event_code_id
+        ON CAST(det.EVENT_TYPE_ID AS STRING) = ai.sn_event_code_id
     GROUP BY ai.availability_event_id
 ),
 -- PS3-GAP 3 partial fix: map event_code_id + failure_level → KPI_ID via edw_kpi_rules
@@ -318,7 +332,11 @@ LEFT JOIN events_24h_prior e24  ON e24.availability_event_id = ai.availability_e
 LEFT JOIN critical_7d_prior c7d ON c7d.availability_event_id = ai.availability_event_id
 LEFT JOIN hw_best_match hw      ON hw.availability_event_id  = ai.availability_event_id
 LEFT JOIN component_derived cd  ON cd.availability_event_id  = ai.availability_event_id
-LEFT JOIN kpi_cause_class kcc   ON CAST(kcc.event_id_str AS INT) = ai.sn_event_code_id
+-- UPDATE 2026-07-20: same sn_event_code_id semantic change as component_derived
+-- above (numeric fault code -> ServiceNow sys_id) -- kpi_rule_id/kpi_category_name
+-- below will now always be NULL. Compared as STRING (not CAST(... AS INT)) to
+-- avoid a runtime cast failure/NULL-cast surprise on non-numeric sys_id values.
+LEFT JOIN kpi_cause_class kcc   ON kcc.event_id_str = ai.sn_event_code_id
                                 AND kcc.kr_failure_level = ai.AE_FAILURE_LEVEL;
 
 -- FIX 6: CREATE INDEX (x6) removed -- not supported on Delta tables

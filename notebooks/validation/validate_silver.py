@@ -1,7 +1,7 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # validate_silver — runtime DQ checks for the 25 silver tables (`mars_dev.silver`)
-# MAGIC Operationalizes `docs/PS_Data_Quality_Gaps.docx` gap fixes (2026-07-15 batch).
+# MAGIC # validate_silver — runtime DQ checks for silver tables (`mars_dev.silver`)
+# MAGIC Operationalizes `docs/PS_Data_Quality_Gaps.docx` + Michael audit 2026-07-22 (SIL-C1/H1/H2/H3/M5).
 # MAGIC
 # MAGIC Per table: existence, row count, grain uniqueness, future/2032-sentinel dates, key-column null rates.
 # MAGIC Plus special checks: `dim_device` SCD2 one-current-per-device, `read_tap_daily` 2032 sentinel,
@@ -86,7 +86,7 @@ SILVER = {
     "kpi_avail_enriched":            dict(date_cols=["transit_day"], notnull=["DEVICE_ID"]),  # event grain
     "kpi_daily":                     dict(date_cols=["transit_day"]),                     # EVENTS grain by design (see special check)
     "tap_event_daily":               dict(grain=["DEVICE_ID", "transit_day", "OPERATOR_ID", "BUS_ID"], date_cols=["transit_day"],
-                                         notnull=["DEVICE_ID", "tap_timeout_count"]),     # Gap 4 fix: timeout cols added
+                                         notnull=["DEVICE_ID", "DEVICE_KEY", "tap_timeout_count"]),     # SIL-H3: DEVICE_KEY added 2026-07-22
     # S14 actual grain is (DEVICE_ID, transit_day, OPERATOR_ID, FACILITY_ID) — header comment says
     # (device_id, transit_day) but the SQL groups by OPERATOR_ID + FACILITY_ID too. VALIDATOR bus
     # devices serve multiple operators/facilities per day, producing N rows per (DEVICE_ID, transit_day).
@@ -96,19 +96,23 @@ SILVER = {
     # Gap fix: grain changed to incident_number (not "number" — column was always incident_number in S15 schema)
     "incident_history":              dict(grain=["incident_number"], notnull=["incident_number"]),
     "device_event_enriched":         dict(grain=["DW_DEVICE_EVENT_ID"], date_cols=["transit_day"], notnull=["DEVICE_ID"]),
-    "incident_root_cause":           dict(date_cols=["transit_day"], notnull=["device_id"]),   # AE_DEVICE_ID aliased to device_id in final SELECT
+    "incident_root_cause":           dict(grain=["availability_event_id"], date_cols=["transit_day"],
+                                         notnull=["device_id", "availability_event_id"]),   # SIL-C1: grain fixed 2026-07-22
     "device_outage":                 dict(date_cols=["transit_day"], notnull=["DEVICE_ID"]),
     "maintenance_ledger":            dict(date_cols=["ledger_date"], notnull=["DEVICE_ID"]),
     "usage_lifecycle_daily":         dict(grain=["DEVICE_KEY", "transit_day"], date_cols=["transit_day"], notnull=["DEVICE_KEY"]),
     "use_revenue_daily":             dict(grain=["DEVICE_ID", "transit_day"], date_cols=["transit_day"], notnull=["DEVICE_ID"]),
     "read_tap_daily":                dict(grain=["DEVICE_ID", "transit_day", "OPERATOR_ID", "FACILITY_ID", "BUS_ID"],
                                          date_cols=["transit_day"], notnull=["DEVICE_ID"]),
+    # S30: device-day collapse of read_tap_daily (SIL-H2 2026-07-22)
+    "read_tap_device_daily":         dict(grain=["DEVICE_ID", "transit_day"], date_cols=["transit_day"],
+                                         notnull=["DEVICE_ID", "DEVICE_KEY"]),
     "kpi_monthly_benchmark":         dict(grain=["month_start", "KPI_ID"], notnull=["KPI_ID"]),
     # S24: added 2026-07-15 — was missing from prior validation
     "device_incident_features_daily":dict(grain=["DEVICE_KEY", "transit_day"],
                                          date_cols=["transit_day"], notnull=["DEVICE_KEY"]),
     # S25: added 2026-07-15 — VALIDATOR incident signal via servicenow_task_ci bus-number join
-    "incident_task_ci_link":         dict(date_cols=["incident_date"],
+    "incident_task_ci_link":         dict(grain=["task_ci_sys_id"], date_cols=["incident_date"],
                                          notnull=["task_ci_sys_id"]),
     # S26-S29: added 2026-07-17 — hardware failure signal, station network, MTTR, survival intervals
     "device_failures":               dict(grain=["DEVICE_KEY", "device_category", "failure_date"],
@@ -395,6 +399,59 @@ def chk_s10_comms_nonzero():
         f"{pct}% of device-days have at least one reader/comms event "
         f"(WARN = comms_grain CTE empty or S16 not yet rebuilt)")
 safe("metric_daily", "comms_event_coverage", chk_s10_comms_nonzero)
+
+# 15) SIL-C1 (2026-07-22) — incident_root_cause must be unique on availability_event_id
+def chk_s17_ae_grain():
+    d = spark.sql(
+        f"SELECT COALESCE(SUM(cnt - 1), 0) d FROM "
+        f"(SELECT count(*) cnt FROM {CAT}.{SCH}.incident_root_cause "
+        f"GROUP BY availability_event_id HAVING count(*) > 1)"
+    ).first()["d"]
+    log("incident_root_cause", "sil_c1_ae_grain_unique",
+        "PASS" if d == 0 else "FAIL",
+        f"{d:,} duplicate rows on availability_event_id (SIL-C1 — expect 0 after S17 rebuild)")
+safe("incident_root_cause", "sil_c1_ae_grain_unique", chk_s17_ae_grain)
+
+# 16) SIL-H2 — read_tap_device_daily: reject_rate recomputed from summed counts (not sum of rates)
+def chk_s30_rate_sanity():
+    r = spark.sql(f"""
+        SELECT round(avg(reject_rate_pct), 2) avg_rate,
+               sum(CASE WHEN reject_rate_pct < 0 OR reject_rate_pct > 100 THEN 1 ELSE 0 END) bad
+        FROM {CAT}.{SCH}.read_tap_device_daily
+    """).first()
+    log("read_tap_device_daily", "reject_rate_range",
+        "PASS" if (r["bad"] or 0) == 0 else "FAIL",
+        f"avg reject_rate_pct={r['avg_rate']}%  out-of-range rows={r['bad']}")
+safe("read_tap_device_daily", "reject_rate_range", chk_s30_rate_sanity)
+
+def chk_s30_row_le_read_tap():
+    r = spark.sql(f"""
+        SELECT (SELECT count(*) FROM {CAT}.{SCH}.read_tap_device_daily) collapsed,
+               (SELECT count(*) FROM (
+                    SELECT DISTINCT DEVICE_ID, transit_day FROM {CAT}.{SCH}.read_tap_daily
+                )) raw_dev_days
+    """).first()
+    ok = (r["collapsed"] or 0) <= (r["raw_dev_days"] or 0)
+    log("read_tap_device_daily", "collapsed_le_raw_dev_days",
+        "PASS" if ok else "WARN",
+        f"collapsed={r['collapsed']:,}  distinct(device,day) in read_tap_daily={r['raw_dev_days']:,}")
+safe("read_tap_device_daily", "collapsed_le_raw_dev_days", chk_s30_row_le_read_tap)
+
+# 17) SIL-H1 — incident_history row count should reflect conformed SN source (~300K+ incidents)
+def chk_s15_conformed_volume():
+    n = spark.sql(f"SELECT count(*) n FROM {CAT}.{SCH}.incident_history").first()["n"]
+    log("incident_history", "conformed_sn_volume",
+        "PASS" if n >= 250000 else "WARN",
+        f"{n:,} rows (expect ~278K+ after servicenow_incident_conformed rebuild; <250K = stale S15)")
+safe("incident_history", "conformed_sn_volume", chk_s15_conformed_volume)
+
+# 18) SIL-L5 / audit — incident_task_ci_link _silver_load_ts present after S25 rebuild
+def chk_s25_load_ts():
+    cols = [c.lower() for c in spark.table(f"{CAT}.{SCH}.incident_task_ci_link").columns]
+    log("incident_task_ci_link", "silver_load_ts_col",
+        "PASS" if "_silver_load_ts" in cols else "WARN",
+        f"_silver_load_ts present={('_silver_load_ts' in cols)} (added 2026-07-22)")
+safe("incident_task_ci_link", "silver_load_ts_col", chk_s25_load_ts)
 
 # COMMAND ----------
 # Write scorecard + summary

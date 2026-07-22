@@ -24,7 +24,7 @@
 --
 -- Notes:
 --   - AE_TRANSIT_DAY_KEY: 8-digit YYYYMMDD confirmed (no mixed-format issue)
---   - Grain: one row per availability event (same as silver.kpi_avail_enriched)
+--   - Grain: one row per availability event (SIL-C1 fix 2026-07-22: QUALIFY dedup)
 --   - AE_FAULT_DESCRIPTION, AE_SYMPTOM, AE_PROBLEM, AE_RESOLUTION = PS3 NLP features
 --   - AE_FAILURE_LEVEL: Ventra KPI taxonomy (Michael R2 confirmed 2026-06-22)
 --       is_chargeable = AE_FAILURE_LEVEL > 0 (hardware failure, chargeable to SLA)
@@ -188,7 +188,12 @@ classified AS (
         sb.AE_FAILURE_LEVEL IN (1, 2, 3, 4, 5, 16) AS is_device_fault
 
     FROM sn_base sb
-)
+),
+
+-- SIL-C1 (2026-07-22): dedup on availability_event_id before writing silver.
+-- Two fan-out sources: SN 2-rows-per-sys_id and multi-WOT-per-AE joins.
+-- PS3 gold had a workaround QUALIFY; fix at source so device_outage/S17 consumers are clean.
+enriched AS (
 SELECT
     c.SN_U_EVENT_ID,
     c.SN_SYS_ID,
@@ -269,7 +274,15 @@ LEFT JOIN jb_base jb
 LEFT JOIN s17_first s17
     ON  s17.wm_asset     = c.AE_DEVICE_ID
     AND s17.incident_date = c.transit_day
-    AND s17.rn            = 1;
+    AND s17.rn            = 1
+)
+
+SELECT *
+FROM enriched
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY availability_event_id
+    ORDER BY EDW_UPDATED_DTM DESC NULLS LAST, from_cta_sn_mirror DESC
+) = 1;
 
 -- Post-load optimisation:
 -- OPTIMIZE mars_dev.silver.incident_root_cause ZORDER BY (device_id, transit_day);

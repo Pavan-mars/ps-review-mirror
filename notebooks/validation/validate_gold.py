@@ -1,7 +1,7 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC # validate_gold — runtime DQ + ML-readiness checks for the 5 gold PS tables (`mars_dev.gold`)
-# MAGIC Operationalizes `docs/PS_Data_Quality_Gaps.docx` gap fixes (2026-07-15 batch).
+# MAGIC Operationalizes gap fixes + expects clean S17 grain after silver audit rebuild (2026-07-22).
 # MAGIC
 # MAGIC Per table: existence, row count, grain uniqueness, future dates, key/label null rates.
 # MAGIC Plus PS-specific checks: PS1 label positive-rate, PS3 target class balance + new column presence
@@ -199,6 +199,18 @@ def ps3_leak():
     log("device_ps3_incident", "leakage_columns_present", "WARN" if leaky else "PASS",
         f"target-derived cols in table (exclude from X): {leaky}")
 safe("device_ps3_incident", "leakage_columns_present", ps3_leak)
+
+# PS3: after SIL-C1 silver fix, gold dedup should still pass (belt-and-suspenders)
+def ps3_silver_c1_clean():
+    d = spark.sql(
+        "SELECT COALESCE(SUM(cnt - 1), 0) d FROM "
+        "(SELECT count(*) cnt FROM mars_dev.silver.incident_root_cause "
+        "GROUP BY availability_event_id HAVING count(*) > 1)"
+    ).first()["d"]
+    log("device_ps3_incident", "silver_s17_ae_grain",
+        "PASS" if d == 0 else "WARN",
+        f"silver incident_root_cause has {d:,} AE dupes — rebuild S17 before trusting PS3 features")
+safe("device_ps3_incident", "silver_s17_ae_grain", ps3_silver_c1_clean)
 
 # PS2: S27 station network columns present and non-trivial (2026-07-17)
 def ps2_station_cols():

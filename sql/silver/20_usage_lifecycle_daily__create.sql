@@ -29,6 +29,8 @@
 --
 -- Validation run 2026-06-23:
 -- metric_daily data: 2024-01-01 to 2025-11-07 (bronze ingestion stalled, see S10 note)
+-- SIL-M5 fix (2026-07-22): base CTE filters transit_day <= current_date() to drop
+-- future-dated sentinel rows from bronze.edw_device_metric (max TRANSIT_DAY_KEY 2028-05-13).
 -- device_outage: filtered to is_hardware_oos_event = TRUE (hardware failures only)
 -- maintenance_ledger: REPAIR_EPISODE + TECH_LOGIN + MAINTENANCE_MODE
 --
@@ -119,6 +121,7 @@ AND do.transit_day = md.transit_day
 LEFT JOIN daily_maint dm
 ON dm.DEVICE_ID = md.DEVICE_ID
 AND dm.transit_day = md.transit_day
+WHERE md.transit_day <= CURRENT_DATE()
 )
 
 -- -- Final: compute cumulative lifecycle features via window functions ----------

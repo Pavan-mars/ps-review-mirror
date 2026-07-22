@@ -1,5 +1,13 @@
 # Databricks notebook source
 # run_layer_gold — execute sql/gold/*.sql in filename order
+#
+# Run AFTER run_layer_silver + validate_silver when silver audit fixes (2026-07-22)
+# have been applied — gold reads rebuilt silver tables (especially S17/S18/S20).
+#
+# Gold tables (5):
+#   device_ps1_daily, device_ps2_chains, device_ps3_incident,
+#   device_ps4_hourly, device_ps5_component
+#
 # Widgets: catalog (mars_dev), repo_root (auto-detected)
 import os
 import re
@@ -41,6 +49,7 @@ def statements(sql_text):
 files = sorted(f for f in os.listdir(sql_dir) if f.endswith(".sql") and f not in SKIP)
 
 print(f"[gold] catalog={catalog}  dir={sql_dir}  -> {len(files)} file(s) to run")
+print("[gold] requires fresh silver rebuild (S17 dedup, S25 conformed SN, S20 date filter)")
 print("-" * 70)
 
 for idx, fn in enumerate(files, 1):
@@ -59,3 +68,4 @@ for idx, fn in enumerate(files, 1):
 
 print("-" * 70)
 print(f"[gold] done — {len(files)} script(s) executed successfully")
+print("[gold] next: validate_gold → export_gold_to_s3")

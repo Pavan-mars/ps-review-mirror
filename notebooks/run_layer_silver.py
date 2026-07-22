@@ -1,5 +1,23 @@
 # Databricks notebook source
 # run_layer_silver — execute sql/silver/*.sql in filename order
+#
+# Silver audit fixes applied 2026-07-22 (Michael Silver_Tables_Audit_22Jul2026):
+#   SIL-C1  17_incident_root_cause     — QUALIFY dedup on availability_event_id
+#   SIL-H1c 25_incident_task_ci_link   — servicenow_incident_conformed source
+#   SIL-H2  30_read_tap_device_daily   — device-day collapse of read_tap_daily
+#   SIL-H3  13_tap_event_daily         — DEVICE_KEY via dim_device
+#   SIL-M5  20_usage_lifecycle_daily   — transit_day <= current_date() filter
+#
+# Prerequisite (run BEFORE this notebook if incident tables are stale):
+#   NB100 + NB101 → bronze/silver servicenow_incident_conformed
+#
+# Recommended full rebuild order after SQL changes:
+#   1. run_layer_silver (this notebook)
+#   2. validate_silver
+#   3. run_layer_gold
+#   4. validate_gold
+#   5. export_silver_to_s3 → export_gold_to_s3
+#
 # Widgets: catalog (mars_dev), repo_root (auto-detected)
 import os
 import re
@@ -41,6 +59,7 @@ def statements(sql_text):
 files = sorted(f for f in os.listdir(sql_dir) if f.endswith(".sql") and f not in SKIP)
 
 print(f"[silver] catalog={catalog}  dir={sql_dir}  -> {len(files)} file(s) to run")
+print("[silver] audit fixes 2026-07-22: S17 dedup | S25 conformed SN | S30 read_tap_device_daily | S13 DEVICE_KEY | S20 date filter")
 print("-" * 70)
 
 for idx, fn in enumerate(files, 1):
@@ -59,3 +78,4 @@ for idx, fn in enumerate(files, 1):
 
 print("-" * 70)
 print(f"[silver] done — {len(files)} script(s) executed successfully")
+print("[silver] next: validate_silver → run_layer_gold → validate_gold → export_*_to_s3")

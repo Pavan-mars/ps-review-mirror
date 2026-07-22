@@ -47,5 +47,11 @@ Thumbs.db
 
 # local context file — kept local, never shared in the repo
 local-notes.md
+
+# Local skill files — kept local, never shared in the repo
+skill/
 !dashboard/src/data/
 !dashboard/src/data/**
+
+# Local validation docs (Michael audits, etc.) — never commit
+validation_docs/

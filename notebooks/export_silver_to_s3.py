@@ -3,6 +3,7 @@
 # export_silver_to_s3 — Export all silver Delta tables to S3 for SageMaker
 #
 # Run this in Databricks after building/refreshing silver tables.
+# After silver audit fixes (2026-07-22): run run_layer_silver first, then validate_silver.
 # Writes Parquet (not Delta) to the gold bucket under the chicago/silver/
 # prefix so SageMaker notebooks can read them via pd.read_parquet().
 #
@@ -65,6 +66,7 @@ SILVER_TABLES = [
     "metric_daily",
     "metric_hourly",
     "read_tap_daily",
+    "read_tap_device_daily",         # S30 (2026-07-22) — device-day collapse for VALIDATOR PS1
     "station_network_daily",         # S27 (2026-07-17) — station co-failure signal for PS2
     "tap_event_daily",
     "tvm_sale_daily",

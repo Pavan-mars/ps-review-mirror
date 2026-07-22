@@ -10,8 +10,10 @@
 -- coverage). Safe to point PS1/PS3 gold at this table.
 --
 -- PURPOSE:
--- Wires Robin's XML-based ServiceNow export (bronze.servicenow_incident +
--- servicenow_task_ci) into the project as a VALIDATOR incident signal source.
+-- UPDATE 2026-07-22 (SIL-H1c): incident side repointed to
+-- bronze.servicenow_incident_conformed (same schema as servicenow_incident;
+-- merged CTA+XML export via NB100+NB101). Adds ~44K CTA-unique incidents.
+-- Wires ServiceNow task_ci + conformed incidents as VALIDATOR incident signal.
 -- Does NOT replace S15 incident_history or S17 incident_root_cause, which
 -- remain the proven CSV-based path for TVM + GATE incidents.
 --
@@ -72,7 +74,7 @@ TBLPROPERTIES (
 AS
 WITH
 
--- -- Incident core: key fields from the XML-based servicenow_incident export ----
+-- -- Incident core: conformed SN export (SIL-H1c 2026-07-22) ------------------
 inc AS (
   SELECT
     sys_id                              AS incident_sys_id,
@@ -99,7 +101,8 @@ inc AS (
     u_maintenance_type,
     u_outage_start_time,
     u_outage_end_time
-  FROM mars_dev.bronze.servicenow_incident
+  FROM mars_dev.bronze.servicenow_incident_conformed
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY sys_id ORDER BY sys_updated_on DESC) = 1
 ),
 
 -- -- task_ci: incident-to-CI linkage; ci_item_display_value carries bus numbers -
@@ -174,7 +177,9 @@ SELECT
   i.u_major_incident                    AS is_major_incident,
   i.u_maintenance_type                  AS maintenance_type,
   i.u_outage_start_time,
-  i.u_outage_end_time
+  i.u_outage_end_time,
+
+  current_timestamp()                   AS _silver_load_ts
 
 FROM task_link t
 LEFT JOIN inc i

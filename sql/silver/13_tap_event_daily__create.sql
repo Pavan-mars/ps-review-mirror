@@ -49,6 +49,7 @@
 --   BUG 11: TRANSIT_DAY_KEY -> does not exist in ABP_TAP;
 --           transit_day derived as DATE(TRANSACTION_DTM)
 --   BUG 12: t.DEVICE_KEY -> does not exist in ABP_TAP; removed from GROUP BY and SELECT
+--   SIL-H3 fix (2026-07-22): DEVICE_KEY re-added via dim_device join (PS1 spine key)
 --   BUG 13: t.MEDIA_ID -> t.TOKEN_ID
 --   BUG 14: t.TRANSACTION_STATUS_ID -> t.TAP_STATUS_ID
 --   BUG 15: t.AMOUNT -> t.FARE_DUE
@@ -132,6 +133,7 @@ SELECT
     ta.first_tap_dtm,
     ta.last_tap_dtm,
     -- Device enrichment (FACILITY_ID not in ABP_TAP; from dim_device)
+    dd.DEVICE_KEY,
     dd.FACILITY_ID,
     dd.DEVICE_NAME,
     dd.DEVICE_TYPE_NAME,

@@ -2,7 +2,7 @@
 # =============================================================================
 # export_gold_to_s3 — Export all 5 gold Delta tables to S3 for SageMaker
 #
-# Run this in Databricks AFTER building all gold tables (PS1-PS5).
+# Run AFTER run_layer_gold + validate_gold (rebuild gold after silver audit fixes 2026-07-22).
 # SageMaker notebooks read from S3 using the deltalake Python library;
 # they cannot read directly from Unity Catalog managed storage.
 #

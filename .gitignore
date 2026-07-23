@@ -52,6 +52,15 @@ local-notes.md
 skill/
 !dashboard/src/data/
 !dashboard/src/data/**
+<<<<<<< HEAD
 
 # Local validation docs (Michael audits, etc.) — never commit
 validation_docs/
+=======
+# build artifacts / local env (never commit these)
+node_modules/
+dist/
+.vite/
+.env
+.env.local
+>>>>>>> 65b808f (feat(repo): add ServiceNow NB100/101, PS1/PS3 notebooks, catalog docs+generator, skills; ignore build artifacts; update export_silver_to_s3)

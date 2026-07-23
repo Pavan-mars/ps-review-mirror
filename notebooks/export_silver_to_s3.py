@@ -117,6 +117,61 @@ for i, table in enumerate(SILVER_TABLES, 1):
         if not skip_errors:
             raise
 
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Part 2 — Computed silver exports (not pre-built Delta tables)
+# These require Spark SQL to compute; they are written directly to S3.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── warnings_daily (degradation-warning precursors for PS1) ────────────────
+# Aggregates device_event_enriched down to a compact per-device-day warning
+# table. Output: ~50k device-days/year (only days with a warning/service call).
+# Prereq: silver.device_event_enriched must be current.
+WARNING_EXPORT_SQL = """
+SELECT
+    e.DEVICE_ID, e.transit_day AS event_date,
+    SUM(CASE WHEN lower(coalesce(e.EVENT_TYPE_NAME,''))
+             RLIKE '(low|near ?full|paper out|tubes out|near end|almost|bin full|cap ?bin|empty)'
+             THEN 1 ELSE 0 END)                                       AS warn_events,
+    SUM(CASE WHEN e.requires_service_call THEN 1 ELSE 0 END)          AS service_call_events,
+    SUM(CASE WHEN lower(coalesce(e.EVENT_TYPE_NAME,''))
+             RLIKE '(near ?full|almost|bin full|cap ?bin)' THEN 1 ELSE 0 END) AS nearfull_events,
+    SUM(CASE WHEN lower(coalesce(e.EVENT_TYPE_NAME,''))
+             RLIKE '(low|paper out|tubes out|near end|empty)' THEN 1 ELSE 0 END) AS low_events,
+    SUM(CASE WHEN e.component_subsystem = 'CHU'                THEN 1 ELSE 0 END) AS warn_chu,
+    SUM(CASE WHEN e.component_subsystem = 'BHU'                THEN 1 ELSE 0 END) AS warn_bhu,
+    SUM(CASE WHEN e.component_subsystem IN ('PRINTER','PRN')   THEN 1 ELSE 0 END) AS warn_printer,
+    SUM(CASE WHEN e.component_subsystem = 'COMMS'              THEN 1 ELSE 0 END) AS warn_comms,
+    SUM(CASE WHEN e.is_reader_event                            THEN 1 ELSE 0 END) AS warn_reader
+FROM mars_dev.silver.device_event_enriched e
+WHERE e.transit_day >= '2024-01-01'
+  AND (e.is_oos_event = false OR e.is_oos_event IS NULL)
+  AND ( e.requires_service_call = true
+     OR lower(coalesce(e.EVENT_TYPE_NAME,''))
+        RLIKE '(low|near ?full|paper out|tubes out|near end|almost|bin full|cap ?bin|empty)' )
+GROUP BY e.DEVICE_ID, e.transit_day
+HAVING warn_events > 0 OR service_call_events > 0
+"""
+
+print("\n[Part 2] Exporting computed table: warnings_daily")
+warn_dest = f"s3://{bucket}/{prefix}/warnings_daily"
+try:
+    for subpath in [f"{warn_dest}/_delta_log", warn_dest]:
+        try: dbutils.fs.rm(subpath, recurse=True)
+        except Exception: pass
+    (spark.sql(WARNING_EXPORT_SQL)
+         .write.format("parquet").mode("overwrite").save(warn_dest))
+    warn_count = spark.read.format("parquet").load(warn_dest).count()
+    print(f"[Part 2] warnings_daily -> {warn_count:,} rows -> {warn_dest}")
+    results.append({"table": "warnings_daily", "status": "OK", "rows": warn_count, "error": None})
+except Exception as exc:
+    msg = str(exc)[:200]
+    print(f"[Part 2] warnings_daily FAIL: {msg}")
+    results.append({"table": "warnings_daily", "status": "FAIL", "rows": None, "error": msg})
+    if not skip_errors:
+        raise
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 ok   = [r for r in results if r["status"] == "OK"]
 fail = [r for r in results if r["status"] == "FAIL"]

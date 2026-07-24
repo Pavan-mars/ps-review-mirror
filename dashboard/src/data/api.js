@@ -20,6 +20,7 @@ import {
   getPS3SeveritySummary,
   getPS3SeverityDrivers,
 } from './mockData';
+import { getPS5ReliabilityDetail, getPS5DeviceRUL, getPS5SerialHealth } from './ps5ReliabilityMock';
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 export const API_ENABLED = !!BASE;
@@ -132,6 +133,89 @@ export async function apiPS5Status(city) {
       interpretation: mock.interpretation || '',
     };
   } catch { return getPS5ReliabilityStatus(city); }
+}
+
+// PS5 v5 reliability (RUL/survival on the hardware-OOS-Set event). Device rows come live from
+// /ps5/reliability; falls back to the mock detail (illustrative pending the live v5 run).
+export async function apiPS5Reliability(city) {
+  try {
+    const d = await apiGet('/ps5/reliability', city);
+    if (d === undefined) return getPS5ReliabilityDetail(city);
+    if (!d || !Array.isArray(d.devices) || d.devices.length === 0) return null;
+    return {
+      event_definition: d.event_definition,
+      event_def_version: d.event_def_version,
+      window: d.window,
+      floor: N(d.floor) ?? 0.65,
+      is_sample: false,
+      devices: d.devices.map((x) => ({
+        device: DEVICE_LABEL[x.device_type] || x.device,
+        cv_cindex: N(x.cv_cindex),
+        champion: x.champion,
+        gate_pass: x.gate_pass === true || x.gate_pass === 't' || x.gate_pass === 'true',
+        rul_median_days: N(x.rul_median_days),
+        rul_p10_days: N(x.rul_p10_days),
+        rul_p90_days: N(x.rul_p90_days),
+        days_since_fail: N(x.days_since_fail),
+        roll_fail_30d: N(x.roll_fail_30d),
+        n_events: N(x.n_events),
+        ibs: N(x.ibs),
+        survival: Array.isArray(x.survival) ? x.survival.map((p) => ({ day: N(p.day), surv: N(p.surv) })) : [],
+      })),
+      note: d.note || '',
+    };
+  } catch { return getPS5ReliabilityDetail(city); }
+}
+
+const CAT_LABEL = { TVM: 'TVMs', GATE: 'Gates', VALIDATOR: 'Validators' };
+
+// PS5 v5.1 device-grain RUL (hardware-OOS-Set). Live from /ps5/devices; mock fallback (labelled sample).
+export async function apiPS5DeviceRUL(city) {
+  try {
+    const d = await apiGet('/ps5/devices', city);
+    if (d === undefined) return getPS5DeviceRUL(city);
+    if (!d || !Array.isArray(d.devices) || d.devices.length === 0) return null;
+    return {
+      is_sample: false, event_definition: d.event_definition, event_def_version: d.event_def_version,
+      floor: N(d.floor) ?? 0.65, window: d.window,
+      devices: d.devices.map((x) => ({
+        device_id: x.device_id,
+        device_type: CAT_LABEL[x.mars_device_category] || x.device_type || x.mars_device_category,
+        mars_device_category: x.mars_device_category, facility_id: x.facility_id,
+        current_age_days: N(x.current_healthy_age_days ?? x.current_age_days),
+        rul_days: N(x.rul_standard_days ?? x.rul_days),
+        rul_p10: N(x.rul_p10 ?? x.rul_p10_days), rul_p90: N(x.rul_p90 ?? x.rul_p90_days),
+        hazard_score: N(x.hazard_score), risk_band: x.risk_band,
+        days_since_hw_oos: N(x.days_since_hw_oos), roll_fail_30d: N(x.roll_fail_30d),
+        is_overdue: x.is_overdue === true || x.is_overdue === 't' || x.is_overdue === 'true',
+        cv_cindex: N(x.concordance_index ?? x.cv_cindex),
+        gate_pass: x.data_quality_gate_passed === true || x.gate_pass === true,
+      })),
+      note: d.note || '',
+    };
+  } catch { return getPS5DeviceRUL(city); }
+}
+
+// PS5 v5.1 serial-grain health (hardware-OOS-Set). Live from /ps5/serials; mock fallback (labelled sample).
+export async function apiPS5SerialHealth(city) {
+  try {
+    const d = await apiGet('/ps5/serials', city);
+    if (d === undefined) return getPS5SerialHealth(city);
+    if (!d || !Array.isArray(d.serials) || d.serials.length === 0) return null;
+    return {
+      is_sample: false, event_def_version: d.event_def_version,
+      serials: d.serials.map((x) => ({
+        device_id: x.device_id, serial: x.component_serial_nbr ?? x.serial,
+        component_type: x.component_type ?? x.component_type_name, mars_device_category: x.mars_device_category,
+        component_age_days: N(x.component_age_days),
+        oos_failures: N(x.device_oos_failures_total ?? x.oos_failures),
+        risk_score: N(x.risk_score), risk_tier: x.risk_tier,
+        component_rul_days: N(x.expected_component_rul_days ?? x.component_rul_days),
+        is_overdue: x.is_overdue === true || x.is_overdue === 't' || x.is_overdue === 'true',
+      })),
+      note: d.note || '',
+    };
+  } catch { return getPS5SerialHealth(city); }
 }
 
 // ---- PS3 FAILURE SEVERITY (severity classifier, NOT root cause) -------------

@@ -16,7 +16,8 @@ import {
   getComplianceScorecard,
   getPS5ReliabilityStatus,
 } from '../../data/mockData';
-import { apiPS5Status, useLiveData } from '../../data/api';
+import { apiPS5Status, apiPS5Reliability, apiPS5DeviceRUL, apiPS5SerialHealth, useLiveData } from '../../data/api';
+import { getPS5ReliabilityDetail, getPS5DeviceRUL, getPS5SerialHealth } from '../../data/ps5ReliabilityMock';
 
 const CITY_COLOR_MAP = {};
 CITIES.forEach((c) => { CITY_COLOR_MAP[c.id] = c.color; });
@@ -28,6 +29,8 @@ const SUB_TABS = [
   { key: 'breaches', label: 'Breach Tracking' },
   { key: 'compliance', label: 'Compliance Reporting' },
   { key: 'reliability', label: 'Reliability Metrics' },
+  { key: 'devicerul', label: 'Device RUL' },
+  { key: 'serial', label: 'Serial Health' },
 ];
 
 const DOWNTIME_INCIDENTS = [
@@ -76,6 +79,12 @@ export default function PS5SLAReliabilityTab({ city, selectedDevices }) {
   const complianceScorecard = useMemo(() => getComplianceScorecard(selectedCities, selectedDevices), [selectedCities, selectedDevices]);
   // Reliability Metrics sub-tab: live from cubic-mars-dashboard-api; mock fallback.
   const ps5Status = useLiveData(getPS5ReliabilityStatus(city), () => apiPS5Status(city), [city]);
+  const ps5Detail = useLiveData(getPS5ReliabilityDetail(city), () => apiPS5Reliability(city), [city]);
+  // v5.1 device-grain RUL + serial-grain health (hardware-OOS-Set); live from /ps5/devices , /ps5/serials.
+  const ps5Devices = useLiveData(getPS5DeviceRUL(city), () => apiPS5DeviceRUL(city), [city]);
+  const ps5Serials = useLiveData(getPS5SerialHealth(city), () => apiPS5SerialHealth(city), [city]);
+  const [devSort, setDevSort] = useState({ key: 'rul_days', dir: 'asc' });
+  const [serSort, setSerSort] = useState({ key: 'risk_score', dir: 'desc' });
 
   const cityName = CITIES.find(c => c.id === city)?.name || city;
 
@@ -119,6 +128,17 @@ export default function PS5SLAReliabilityTab({ city, selectedDevices }) {
 
   // PS5 concordance-index color helper (0.5 = coin flip, everything here is currently weak)
   function ciColor(ci) { if (ci >= 0.7) return '#22c55e'; if (ci >= 0.6) return '#f59e0b'; return '#ef4444'; }
+  function sortRows(rows, s) {
+    const out = [...(rows || [])];
+    out.sort((a, b) => {
+      const av = a[s.key], bv = b[s.key];
+      const c = (typeof av === 'number' && typeof bv === 'number') ? av - bv : String(av).localeCompare(String(bv));
+      return s.dir === 'asc' ? c : -c;
+    });
+    return out;
+  }
+  const toggleSort = (setter, cur, key) => setter(cur.key === key ? { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });
+  const bandBadge = (b) => `badge badge-${b === 'CRITICAL' ? 'critical' : b === 'HIGH' ? 'high' : b === 'MEDIUM' ? 'medium' : 'success'}`;
 
   return (
     <div>
@@ -330,7 +350,7 @@ export default function PS5SLAReliabilityTab({ city, selectedDevices }) {
       {/* Reliability Metrics — real PS5 model outputs (RUL / Weibull / Cox), gated */}
       {activeTab === 'reliability' && (
         <div>
-          {!ps5Status ? (
+          {!ps5Detail ? (
             <div className="card" style={{ padding: 32, textAlign: 'center' }}>
               <div className="card-header">PS5 — Reliability / RUL</div>
               <p style={{ opacity: 0.7, marginTop: 12 }}>
@@ -340,44 +360,191 @@ export default function PS5SLAReliabilityTab({ city, selectedDevices }) {
             </div>
           ) : (
             <div>
-              <div className="card" style={{ marginBottom: 24, padding: 16, borderLeft: '4px solid #ef4444', background: 'rgba(239,68,68,0.06)' }}>
-                <div style={{ fontWeight: 700, color: '#ef4444', marginBottom: 8 }}>⚠ PS5 is not dashboard-ready — data quality gate active</div>
-                <p style={{ fontSize: 13, opacity: 0.85, margin: 0 }}>{ps5Status.interpretation}</p>
-                <ul style={{ fontSize: 12, opacity: 0.8, marginTop: 8, marginBottom: 0, paddingLeft: 18 }}>
-                  {ps5Status.shared_blockers.map((b) => <li key={b.id}><strong>{b.id}</strong> — {b.issue}</li>)}
-                </ul>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${ps5Status.devices.length}, 1fr)`, gap: 16, marginBottom: 24 }}>
-                {ps5Status.devices.map((d) => (
-                  <div className="card" key={d.device}>
-                    <div className="card-header">{d.device} — Concordance Index</div>
-                    <div className="kpi-value" style={{ color: ciColor(d.concordance_index) }}>{d.concordance_index.toFixed(4)}</div>
-                    <div className="kpi-label">0.50 = random · 1.00 = perfect ranking</div>
-                    <div style={{ marginTop: 8, fontSize: 11 }}>
-                      <span className={`badge ${d.registry_status === 'clean_v1' ? 'badge-success' : 'badge-critical'}`}>
-                        {d.registry_status === 'clean_v1' ? 'Registry clean' : 'Registry broken'}
-                      </span>
-                    </div>
-                    {d.blockers.length > 0 && (
-                      <div style={{ fontSize: 11, opacity: 0.75, marginTop: 8 }}>{d.blockers.join('; ')}</div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div className="card" style={{ padding: 20 }}>
-                <div className="card-header">What will render here once PS5 clears the gate</div>
-                <p style={{ fontSize: 13, opacity: 0.8 }}>
-                  RUL heatmap (remaining useful life, days), Weibull survival probability curves per
-                  device category, and Cox proportional-hazards ratios per fault code — the same
-                  layout previously scaffolded here — will be restored once tasks #66 (code review),
-                  #88 (implausible RUL fix), #89 (TVM MLflow champion-selection fix), and #91
-                  (oversized CoxPH artifact fix) are resolved. Showing placeholder numbers for these
-                  now would misrepresent known-broken model output to Cubic, so they are intentionally
-                  withheld rather than faked.
+              {/* v5 status — models rebuilt on the redefined hardware-OOS-Set event; still below the promotion floor */}
+              <div className="card" style={{ marginBottom: 24, padding: 16, borderLeft: '4px solid #f59e0b', background: 'rgba(245,158,11,0.06)' }}>
+                <div style={{ fontWeight: 700, color: '#f59e0b', marginBottom: 8 }}>PS5 v5 — rebuilt on redefined failure event, not yet promoted</div>
+                <p style={{ fontSize: 13, opacity: 0.85, margin: 0 }}>
+                  The survival event was redefined to <strong>any hardware OOS "Set"</strong>, and the notebook rebuilt on the
+                  telemetry-era window (2024-01-01+) with verified feature–label alignment. RUL estimates are now plausible
+                  (tens of days, not decades), superseding the earlier implausible-RUL, oversized-artifact and missing-notebook
+                  blockers. All three device types still sit below the C-index ≥ {ps5Detail.floor} promotion floor on the latest
+                  run, so RUL and survival below are a labelled <strong>SAMPLE</strong> pending the live v5 scoring run into RDS —
+                  nothing here is shown as promoted output.
                 </p>
               </div>
+
+              {ps5Detail && (
+                <div>
+                  {/* Event-definition chip + provenance (reads ps5_event_definition once RDS is live) */}
+                  <div className="card" style={{ marginBottom: 24, padding: 16 }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+                      <span style={{ padding: '4px 10px', borderRadius: 6, background: 'rgba(99,102,241,0.15)', color: '#a5b4fc', fontSize: 12, fontWeight: 600 }}>
+                        Failure = {ps5Detail.event_definition} · v{ps5Detail.event_def_version}
+                      </span>
+                      <span style={{ fontSize: 12, opacity: 0.7 }}>Window: {ps5Detail.window}</span>
+                      <span style={{ fontSize: 12, opacity: 0.7 }}>Promotion floor: C-index ≥ {ps5Detail.floor}</span>
+                      {ps5Detail.is_sample && (
+                        <span style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 6, background: 'rgba(245,158,11,0.15)', color: '#fbbf24', fontSize: 11, fontWeight: 700, letterSpacing: 0.4 }}>
+                          SAMPLE — RUL / survival illustrative pending live v5 run
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Per-device RUL + as-of recency (days_since_fail, roll_fail_30d) on the hardware-OOS-Set event */}
+                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${ps5Detail.devices.length}, 1fr)`, gap: 16, marginBottom: 24 }}>
+                    {ps5Detail.devices.map((d) => (
+                      <div className="card" key={d.device}>
+                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span>{d.device} — Remaining Useful Life</span>
+                          <span className={`badge ${d.gate_pass ? 'badge-success' : 'badge-critical'}`}>{d.gate_pass ? 'Gate pass' : 'Below floor'}</span>
+                        </div>
+                        <div className="kpi-value" style={{ color: ciColor(d.cv_cindex) }}>{d.rul_median_days}<span style={{ fontSize: 14, opacity: 0.6 }}> days</span></div>
+                        <div className="kpi-label">Median RUL · P10–P90 {d.rul_p10_days}–{d.rul_p90_days}d</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 12, fontSize: 12 }}>
+                          <div><div style={{ opacity: 0.6 }}>CV C-index</div><div style={{ fontWeight: 600, color: ciColor(d.cv_cindex) }}>{d.cv_cindex.toFixed(4)}</div></div>
+                          <div><div style={{ opacity: 0.6 }}>Days since HW-OOS</div><div style={{ fontWeight: 600 }}>{d.days_since_fail}</div></div>
+                          <div><div style={{ opacity: 0.6 }}>Failures / 30d</div><div style={{ fontWeight: 600 }}>{d.roll_fail_30d}</div></div>
+                          <div><div style={{ opacity: 0.6 }}>Events (n)</div><div style={{ fontWeight: 600 }}>{d.n_events.toLocaleString()}</div></div>
+                        </div>
+                        <div style={{ marginTop: 10, fontSize: 11, opacity: 0.7 }}>{d.champion} · IBS {d.ibs.toFixed(3)}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Survival curves S(t) per device type — event = hardware OOS (Set) */}
+                  <div className="card" style={{ marginBottom: 24 }}>
+                    <div className="card-header">Survival Probability S(t) by Device Type — event = {ps5Detail.event_definition}</div>
+                    <ResponsiveContainer width="100%" height={320}>
+                      <LineChart margin={{ top: 8, right: 24, bottom: 16, left: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
+                        <XAxis type="number" dataKey="day" allowDuplicatedCategory={false} tick={{ fontSize: 11 }} label={{ value: 'Days in service', position: 'insideBottom', offset: -6, fontSize: 11 }} />
+                        <YAxis domain={[0, 1]} tick={{ fontSize: 11 }} label={{ value: 'S(t)', angle: -90, position: 'insideLeft', fontSize: 11 }} />
+                        <Tooltip formatter={(v) => (typeof v === 'number' ? v.toFixed(3) : v)} labelFormatter={(l) => `Day ${l}`} />
+                        <Legend />
+                        {ps5Detail.devices.map((d) => (
+                          <Line key={d.device} type="monotone" dataKey="surv" data={d.survival} name={d.device} stroke={DEVICE_COLORS[d.device] || '#8884d8'} strokeWidth={2} dot={false} />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="card" style={{ padding: 16 }}>
+                    <div className="card-header">How to read this</div>
+                    <p style={{ fontSize: 12, opacity: 0.8, margin: 0 }}>{ps5Detail.note}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Device RUL — per-device remaining useful life on the hardware-OOS-Set event */}
+      {activeTab === 'devicerul' && (
+        <div>
+          {!ps5Devices ? (
+            <div className="card" style={{ padding: 32, textAlign: 'center' }}>
+              <div className="card-header">PS5 — Device RUL</div>
+              <p style={{ opacity: 0.7, marginTop: 12 }}>No PS5 device-level reliability run for {cityName} yet.</p>
+            </div>
+          ) : (
+            <div>
+              <div className="card" style={{ marginBottom: 16, padding: 14 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+                  <span style={{ padding: '4px 10px', borderRadius: 6, background: 'rgba(99,102,241,0.15)', color: '#a5b4fc', fontSize: 12, fontWeight: 600 }}>Failure = {ps5Devices.event_definition} · v{ps5Devices.event_def_version}</span>
+                  <span style={{ fontSize: 12, opacity: 0.7 }}>{ps5Devices.devices.length} devices · {ps5Devices.window}</span>
+                  {ps5Devices.is_sample && <span style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 6, background: 'rgba(245,158,11,0.15)', color: '#fbbf24', fontSize: 11, fontWeight: 700 }}>SAMPLE — pending live run</span>}
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+                {['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((b) => {
+                  const n = ps5Devices.devices.filter((d) => d.risk_band === b).length;
+                  const col = { CRITICAL: '#ef4444', HIGH: '#f59e0b', MEDIUM: '#3b82f6', LOW: '#22c55e' }[b];
+                  return (<div className="card" key={b}><div className="card-header">{b}</div><div className="kpi-value" style={{ color: col }}>{n}</div><div className="kpi-label">devices</div></div>);
+                })}
+              </div>
+              <div className="card" style={{ overflowX: 'auto' }}>
+                <div className="card-header">Device Remaining Useful Life — click a column to sort</div>
+                <table className="data-table">
+                  <thead><tr>
+                    {[['device_id', 'Device'], ['device_type', 'Type'], ['facility_id', 'Facility'], ['current_age_days', 'Age (d)'], ['rul_days', 'RUL (d)'], ['risk_band', 'Risk'], ['days_since_hw_oos', 'Days since HW-OOS'], ['roll_fail_30d', 'Fails/30d'], ['is_overdue', 'Overdue']].map(([k, l]) => (
+                      <th key={k} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => toggleSort(setDevSort, devSort, k)}>{l}{devSort.key === k ? (devSort.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {sortRows(ps5Devices.devices, devSort).map((d, i) => (
+                      <tr key={i}>
+                        <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{d.device_id}</td>
+                        <td>{d.device_type}</td>
+                        <td style={{ fontSize: 11, opacity: 0.8 }}>{d.facility_id}</td>
+                        <td>{d.current_age_days}</td>
+                        <td style={{ fontWeight: 600, color: ciColor(d.cv_cindex) }}>{d.rul_days}<span style={{ opacity: 0.5, fontSize: 10 }}> ({d.rul_p10}–{d.rul_p90})</span></td>
+                        <td><span className={bandBadge(d.risk_band)}>{d.risk_band}</span></td>
+                        <td>{d.days_since_hw_oos}</td>
+                        <td>{d.roll_fail_30d}</td>
+                        <td>{d.is_overdue ? <span style={{ color: '#ef4444', fontWeight: 600 }}>Yes</span> : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p style={{ fontSize: 12, opacity: 0.75, marginTop: 12 }}>{ps5Devices.note}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Serial Health — per-component reliability on the hardware-OOS-Set event */}
+      {activeTab === 'serial' && (
+        <div>
+          {!ps5Serials ? (
+            <div className="card" style={{ padding: 32, textAlign: 'center' }}>
+              <div className="card-header">PS5 — Serial Health</div>
+              <p style={{ opacity: 0.7, marginTop: 12 }}>No PS5 serial-level reliability run for {cityName} yet.</p>
+            </div>
+          ) : (
+            <div>
+              <div className="card" style={{ marginBottom: 16, padding: 14 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+                  <span style={{ padding: '4px 10px', borderRadius: 6, background: 'rgba(99,102,241,0.15)', color: '#a5b4fc', fontSize: 12, fontWeight: 600 }}>Failure = hardware OOS (Set) · v{ps5Serials.event_def_version}</span>
+                  <span style={{ fontSize: 12, opacity: 0.7 }}>{ps5Serials.serials.length} components</span>
+                  {ps5Serials.is_sample && <span style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 6, background: 'rgba(245,158,11,0.15)', color: '#fbbf24', fontSize: 11, fontWeight: 700 }}>SAMPLE — pending live run</span>}
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+                {['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((t) => {
+                  const n = ps5Serials.serials.filter((s) => s.risk_tier === t).length;
+                  const col = { CRITICAL: '#ef4444', HIGH: '#f59e0b', MEDIUM: '#3b82f6', LOW: '#22c55e' }[t];
+                  return (<div className="card" key={t}><div className="card-header">{t}</div><div className="kpi-value" style={{ color: col }}>{n}</div><div className="kpi-label">components</div></div>);
+                })}
+              </div>
+              <div className="card" style={{ overflowX: 'auto' }}>
+                <div className="card-header">Serial / Component Reliability — click a column to sort</div>
+                <table className="data-table">
+                  <thead><tr>
+                    {[['device_id', 'Device'], ['serial', 'Serial'], ['component_type', 'Component'], ['component_age_days', 'Age (d)'], ['oos_failures', 'OOS fails'], ['risk_score', 'Risk score'], ['risk_tier', 'Tier'], ['component_rul_days', 'Comp. RUL (d)'], ['is_overdue', 'Overdue']].map(([k, l]) => (
+                      <th key={k} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => toggleSort(setSerSort, serSort, k)}>{l}{serSort.key === k ? (serSort.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {sortRows(ps5Serials.serials, serSort).map((s, i) => (
+                      <tr key={i}>
+                        <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{s.device_id}</td>
+                        <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{s.serial}</td>
+                        <td style={{ fontSize: 11 }}>{s.component_type}</td>
+                        <td>{s.component_age_days}</td>
+                        <td>{s.oos_failures}</td>
+                        <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{s.risk_score}</td>
+                        <td><span className={bandBadge(s.risk_tier)}>{s.risk_tier}</span></td>
+                        <td style={{ fontWeight: 600 }}>{s.component_rul_days}</td>
+                        <td>{s.is_overdue ? <span style={{ color: '#ef4444', fontWeight: 600 }}>Yes</span> : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p style={{ fontSize: 12, opacity: 0.75, marginTop: 12 }}>{ps5Serials.note}</p>
             </div>
           )}
         </div>

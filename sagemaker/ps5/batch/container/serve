@@ -1,0 +1,5 @@
+#!/bin/bash
+# SageMaker runs `docker run <image> serve` for hosting/batch-transform.
+# Launch gunicorn on 8080 serving the Flask app in serve.py.
+exec gunicorn --bind 0.0.0.0:8080 --workers "${GUNICORN_WORKERS:-2}" \
+     --timeout "${GUNICORN_TIMEOUT:-120}" --graceful-timeout 30 serve:app

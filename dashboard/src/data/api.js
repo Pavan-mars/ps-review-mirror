@@ -447,3 +447,148 @@ export async function apiPS1Features(city) {
     }));
   } catch { return getPS1Features(); }
 }
+
+// ============================================================================
+// PS3 DEEP-DIVE fetchers (21-Jul-2026) -- device/serial risk leaderboards,
+// per-entity SHAP drivers, component x severity cross-tab, rolling risk
+// trend, on-demand "Score new data" (real-time endpoint via /ps3/infer), and
+// the ServiceNow dispatcher. Backs PS3DeepDiveAnalytics.jsx. Same
+// fetch-with-honest-empty-fallback shape as every other fetcher above; these
+// are brand-new tables with no existing mock convention, so "no data yet, run
+// the notebook" is more honest here than inventing numbers (same choice the
+// PS2 serial-grain additions made).
+// ============================================================================
+export async function apiPS3DeepdiveMetric(city, metric, params = {}) {
+  if (!BASE) return [];
+  try {
+    const qs = new URLSearchParams({ city, ...params }).toString();
+    const res = await fetch(`${BASE}/ps3/deepdive/${encodeURIComponent(metric)}?${qs}`);
+    if (!res.ok) return [];
+    const rows = await res.json();
+    return Array.isArray(rows) ? rows : [];
+  } catch { return []; }
+}
+
+export async function apiPS3Device360Deepdive(city, deviceId) {
+  if (!BASE || !deviceId) return null;
+  try {
+    const res = await fetch(`${BASE}/ps3/device-360-deepdive?city=${encodeURIComponent(city)}&device_id=${encodeURIComponent(deviceId)}`);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+export async function apiPS3Infer(city, instances) {
+  if (!BASE) return { status: 'api_not_configured', predictions: [] };
+  try {
+    const res = await fetch(`${BASE}/ps3/infer?city=${encodeURIComponent(city)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instances }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return { status: 'error', httpStatus: res.status, error: body.error || 'request failed', predictions: [] };
+    return { status: 'ok', ...body };
+  } catch (e) { return { status: 'error', error: String(e), predictions: [] }; }
+}
+
+export async function apiPS3ServiceNowStatus(city, correlationId) {
+  if (!BASE || !correlationId) return { status: 'unknown' };
+  try {
+    const res = await fetch(`${BASE}/ps3/servicenow/status?city=${encodeURIComponent(city)}&correlation_id=${encodeURIComponent(correlationId)}`);
+    if (!res.ok) return { status: 'unknown' };
+    return await res.json();
+  } catch { return { status: 'unknown' }; }
+}
+
+export async function apiPS3ServiceNowCreateIncident(city, { deviceId, serialId, window: win }) {
+  if (!BASE) return { status: 'api_not_configured' };
+  try {
+    const res = await fetch(`${BASE}/ps3/servicenow/create-incident?city=${encodeURIComponent(city)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceId, serial_id: serialId, window: win }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return { status: 'error', httpStatus: res.status, error: body.error || 'request failed' };
+    return { status: body.status || 'created', inc_number: body.inc_number };
+  } catch (e) { return { status: 'error', error: String(e) }; }
+}
+
+// ============================================================================
+// PS2 SERIAL-GRAIN + NEW-FAMILY fetchers (22-Jul-2026) -- generic route over
+// /ps2/serial/:metric on cubic-mars-dashboard-api, backed by the 16-entry
+// allow-list (phi, markov, hmm, condprob, assoc, impact, velocity, chronic,
+// leadlag, recurrence, suppression, crossps, sankey, network, ignition,
+// facility) the RDS-push Lambda populates from the PS2 serial-grain notebook.
+// Same honest-empty-on-no-data contract as the PS3 deep-dive fetchers -- these
+// are brand-new tables, so "no data yet" beats inventing numbers.
+//
+// Also: the REAL PS2 ServiceNow dispatcher (create_incident against the live
+// ctsdev2cubic incwowot API, resolved via ps2_device_cmdb_map, audited in
+// servicenow_incidents) -- distinct from the older /ps1/servicenow-stage
+// flow Device360Modal uses, which only stages a payload and never calls
+// ServiceNow. Verified end-to-end 22-Jul-2026 (real 401 back from ctsdev2cubic
+// against the current placeholder credentials -- full plumbing proven, only
+// the client's real Basic Auth creds are outstanding).
+// ============================================================================
+export async function apiPS2SerialMetric(city, metric, params = {}) {
+  if (!BASE) return [];
+  try {
+    const qs = new URLSearchParams({ city, ...params }).toString();
+    const res = await fetch(`${BASE}/ps2/serial/${encodeURIComponent(metric)}?${qs}`);
+    if (!res.ok) return [];
+    const rows = await res.json();
+    return Array.isArray(rows) ? rows : [];
+  } catch { return []; }
+}
+
+export async function apiPS2ServiceNowStatus(city, correlationId) {
+  if (!BASE || !correlationId) return { status: 'unknown' };
+  try {
+    const res = await fetch(`${BASE}/ps2/servicenow/status?city=${encodeURIComponent(city)}&correlation_id=${encodeURIComponent(correlationId)}`);
+    if (!res.ok) return { status: 'unknown' };
+    return await res.json();
+  } catch { return { status: 'unknown' }; }
+}
+
+export async function apiPS2ServiceNowCreateIncident(city, { deviceId, serialId, window: win }) {
+  if (!BASE) return { status: 'api_not_configured' };
+  try {
+    const res = await fetch(`${BASE}/ps2/servicenow/create-incident?city=${encodeURIComponent(city)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: deviceId, serial_id: serialId, window: win, ps_source: 'PS2' }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) return { status: 'error', httpStatus: res.status, error: body.error || 'request failed' };
+    return { status: body.status || 'created', inc_number: body.inc_number, already_filed: body.already_filed === true };
+  } catch (e) { return { status: 'error', error: String(e) }; }
+}
+
+// ============================================================================
+// Serial -> device resolution (22-Jul-2026), for the "Analyse" button rollout.
+// PS2's serial-grain tables (chronic recurrence, lead/lag, association rules,
+// etc.) carry serial_id only -- Device360Modal is device-keyed, so opening a
+// cross-PS analysis from a serial row means resolving serial_id -> device_id
+// first. ps2_device_cmdb_map already carries both columns (device_id,
+// serial_id, cmdb_ci_sys_id) -- it was built for the ServiceNow dispatcher's
+// cmdb_ci lookup, and doubles perfectly as this map. Reads it via the same
+// generic /ps2/serial/:metric route -- the 'cmdb' entry is confirmed present
+// in the allow-list on cubic-mars-dashboard-api (verified 24-Jul-2026 via the
+// deployed handler.py). Row-level population of ps2_device_cmdb_map itself has
+// NOT yet been smoke-tested end-to-end -- if that table is still empty,
+// apiPS2SerialMetric(city, 'cmdb') returns [] -> the map is empty -> every
+// AnalyseButton on a serial-only row renders disabled with an honest "no
+// device mapping yet" tooltip rather than guessing or crashing.
+export function useSerialDeviceMap(city) {
+  const [map, setMap] = useState({});
+  useEffect(() => {
+    let alive = true;
+    apiPS2SerialMetric(city, 'cmdb').then((rows) => {
+      if (!alive) return;
+      const m = {};
+      (rows || []).forEach((r) => { if (r.serial_id && r.device_id) m[r.serial_id] = r.device_id; });
+      setMap(m);
+    });
+    return () => { alive = false; };
+  }, [city]);
+  return map;
+}

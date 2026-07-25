@@ -48,6 +48,25 @@ export function FilterProvider({ children }) {
   const [selectedTOCs, setSelectedTOCs] = useState([...ALL_TOC_OPTIONS]);
   const [dateRange, setDateRange] = useState(getDefaultDateRange);
 
+  // --- Dashboard-wide granular filters (24-Jul-2026) ---------------------
+  // deviceQuery: free-text device ID / serial number search, applies to any
+  // tab that has row-level device_id or serial_id data (client-side filter,
+  // no API/query-param change needed).
+  const [deviceQuery, setDeviceQuery] = useState('');
+
+  // selectedFailureTypes: e.g. PS2 error codes / severity bands. Vocabulary
+  // is page-specific (PS2's error codes differ from PS3's severity labels),
+  // so a page registers its own option list via setFailureTypeOptions on
+  // mount (and clears it on unmount) rather than the vocabulary being fixed
+  // here -- keeps this context reusable dashboard-wide instead of PS2-only.
+  const [failureTypeOptions, setFailureTypeOptions] = useState([]);
+  const [selectedFailureTypes, setSelectedFailureTypes] = useState([]);
+
+  // selectedComponents: e.g. PS2 subsystems (SYSTEM, COMMS, CHU, ...). Same
+  // page-registered-vocabulary pattern as failure types above.
+  const [componentOptions, setComponentOptions] = useState([]);
+  const [selectedComponents, setSelectedComponents] = useState([]);
+
   // When user changes (login/logout), reset selections to their allowed set
   useEffect(() => {
     setSelectedCities([...allowedCities]);
@@ -75,6 +94,30 @@ export function FilterProvider({ children }) {
   const clearDevices = useCallback(() => setSelectedDevices([]), []);
   const clearTOCs = useCallback(() => setSelectedTOCs([]), []);
 
+  // --- Failure-type / component toggles (same shape as toggleDevice above) ---
+  const toggleFailureType = useCallback((val) => {
+    setSelectedFailureTypes((prev) => (prev.includes(val) ? prev.filter((v) => v !== val) : [...prev, val]));
+  }, []);
+  const selectAllFailureTypes = useCallback(() => setSelectedFailureTypes([...failureTypeOptions]), [failureTypeOptions]);
+  const clearFailureTypes = useCallback(() => setSelectedFailureTypes([]), []);
+
+  const toggleComponent = useCallback((val) => {
+    setSelectedComponents((prev) => (prev.includes(val) ? prev.filter((v) => v !== val) : [...prev, val]));
+  }, []);
+  const selectAllComponents = useCallback(() => setSelectedComponents([...componentOptions]), [componentOptions]);
+  const clearComponents = useCallback(() => setSelectedComponents([]), []);
+
+  // A page registers its option vocabulary (and gets an all-selected default)
+  // on mount; call with [] on unmount to hide the facet again in FilterBar.
+  const registerFailureTypeOptions = useCallback((opts) => {
+    setFailureTypeOptions(opts || []);
+    setSelectedFailureTypes(opts && opts.length ? [...opts] : []);
+  }, []);
+  const registerComponentOptions = useCallback((opts) => {
+    setComponentOptions(opts || []);
+    setSelectedComponents(opts && opts.length ? [...opts] : []);
+  }, []);
+
   const isTOCSelected = selectedCities.includes('TOC');
 
   const value = useMemo(
@@ -98,6 +141,21 @@ export function FilterProvider({ children }) {
       allowedCities,
       allowedDevices,
       allowedTOCs,
+      // Dashboard-wide granular filters
+      deviceQuery,
+      setDeviceQuery,
+      failureTypeOptions,
+      selectedFailureTypes,
+      toggleFailureType,
+      selectAllFailureTypes,
+      clearFailureTypes,
+      registerFailureTypeOptions,
+      componentOptions,
+      selectedComponents,
+      toggleComponent,
+      selectAllComponents,
+      clearComponents,
+      registerComponentOptions,
     }),
     [
       selectedCities, selectedDevices, selectedTOCs, dateRange,
@@ -105,6 +163,10 @@ export function FilterProvider({ children }) {
       selectAllDevices, selectAllTOCs,
       clearDevices, clearTOCs,
       isTOCSelected, allowedCities, allowedDevices, allowedTOCs,
+      deviceQuery, failureTypeOptions, selectedFailureTypes,
+      toggleFailureType, selectAllFailureTypes, clearFailureTypes, registerFailureTypeOptions,
+      componentOptions, selectedComponents,
+      toggleComponent, selectAllComponents, clearComponents, registerComponentOptions,
     ]
   );
 

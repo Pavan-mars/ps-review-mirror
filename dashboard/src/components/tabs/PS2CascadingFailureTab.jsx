@@ -61,7 +61,13 @@ const nfmt = (v) => (v === null || v === undefined ? '-' : Number(v).toLocaleStr
 // null field (e.g. from a partial live API row) hit `.toFixed()` directly and
 // threw, unmounting the whole app (no error boundary catches render errors).
 const dfmt = (v, d) => (v === null || v === undefined || Number.isNaN(Number(v)) ? '--' : Number(v).toFixed(d));
-const parseSubsystems = (s) => (s || '').split('+').map((t) => t.trim()).filter(Boolean);
+// Smoke-test fix (2026-07-25): the live association-rules data joins compound
+// antecedent/consequent sides with ", " (e.g. "COMMS, DOPP"), not "+" -- the
+// original split('+') treated "COMMS, DOPP" as one atomic subsystem name,
+// silently breaking both the Focus-button drill-down and the subsystem
+// involvement ranking chart for any rule with a multi-subsystem side. Split on
+// either delimiter so both real-data formats decompose correctly.
+const parseSubsystems = (s) => (s || '').split(/[+,]/).map((t) => t.trim()).filter(Boolean);
 
 export default function PS2CascadingFailureTab({ city }) {
   const cityName = CITIES.find((c) => c.id === city)?.name || city;

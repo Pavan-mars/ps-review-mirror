@@ -67,3 +67,6 @@ _v*.txt
 _validator_extract.txt
 _audit_*.py
 _find_cells.py
+
+# Station reference dimension consumed by the dashboard-api migrate step (not bulk data)
+!api/lambda/cubic-mars-dashboard-api/sql/*.csv

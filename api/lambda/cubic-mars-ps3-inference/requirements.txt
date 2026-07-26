@@ -1,0 +1,10 @@
+# boto3 is already in the Lambda Python runtime -- listed here only for local test envs.
+boto3>=1.34
+# pandas + pyarrow are NOT in the base runtime -- attach the AWS-managed
+# "AWSSDKPandas-Python312" (or matching runtime version) layer at deploy time
+# rather than bundling these in the zip (keeps the deployment package small and
+# matches how every other pandas-using MARS Lambda in this account is wired).
+pandas>=2.0
+pyarrow>=14.0
+# dev/test only:
+pytest>=8.0

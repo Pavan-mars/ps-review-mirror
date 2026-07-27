@@ -8,6 +8,7 @@ build/
 venv/
 .venv/
 env/
+.pytest_cache/
 
 # Jupyter
 .ipynb_checkpoints/
@@ -62,8 +63,30 @@ node_modules/
 .vite/
 .env.local
 
-# Agent/session scratch files (never commit)
+# Agent / session scratch files (never commit)
 _v*.txt
 _validator_extract.txt
 _audit_*.py
 _find_cells.py
+**/_extract/
+
+# Notebook local run outputs (figures, logs, checkpoints, MLflow local store)
+console.log
+**/spark_tmp/
+**/checkpoints/
+mlruns/
+*.joblib
+
+# Notebook OUT_DIR folders (PS1–PS5 SageMaker / local runs)
+ps1_*_outputs/
+ps4_outputs/
+ps4_pyspark_outputs/
+ps4_clustering_outputs/
+ps4_clustering_*_outputs/
+ps5_*_outputs/
+PS2_pavan/
+PS5_reliability_v5_outputs/
+
+# Notebook HTML exports (nbconvert); keep docs/ HTML tracked
+**/PS2_SerialGrain*.html
+**/PS4_FaultClustering*_output_*.html

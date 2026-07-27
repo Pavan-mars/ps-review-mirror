@@ -1,0 +1,99 @@
+# Databricks Asset Bundle — CUBIC MARS Chicago
+# Deploy:  databricks bundle validate && databricks bundle deploy -t dev
+# Run job:  databricks bundle run cross_wired_daily -t dev
+#
+# See docs/deployment/Databricks_on_AWS_Deployment_Guide.md for workspace setup.
+
+bundle:
+  name: cubic-mars-chicago
+
+variables:
+  catalog:
+    description: Unity Catalog name
+    default: mars_dev
+  gold_bucket:
+    description: S3 bucket for gold / cross-wire parquet exports
+    default: cubic-mars-pm-s3-datalake-dev-gold-170202974600
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      host: https://dbc-c05ec222-36c5.cloud.databricks.com
+
+resources:
+  jobs:
+    cross_wired_daily:
+      name: "[${bundle.target}] cubic-mars cross-wire daily"
+      description: |
+        Unified PS1–PS5 cross-wire export to S3 for Dispatcher → Handler → RDS.
+        Spec: docs/architecture/Cross_Wire_Databricks_Daily_Job_Column_Manifest.md
+      schedule:
+        quartz_cron_expression: "0 30 6 * * ?"
+        timezone_id: America/Chicago
+        pause_status: PAUSED
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+      tasks:
+        - task_key: cross_wired_export
+          description: Build and write cross-wire parquet + manifest to S3
+          notebook_task:
+            notebook_path: ./notebooks/cross_wired_daily_job.py
+            base_parameters:
+              catalog: ${var.catalog}
+              bucket: ${var.gold_bucket}
+              cross_wire_prefix: chicago/cross_wired
+              city_id: CHI
+              lookback_days: "1"
+              register_delta: "true"
+              asof_date: ""
+          new_cluster: &cross_wire_cluster
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: m5d.xlarge
+            num_workers: 2
+            spark_conf:
+              spark.databricks.delta.formatCheck.enabled: "false"
+            data_security_mode: SINGLE_USER
+          timeout_seconds: 3600
+
+    medallion_and_cross_wire:
+      name: "[${bundle.target}] cubic-mars gold export + cross-wire"
+      tasks:
+        - task_key: gold_build
+          notebook_task:
+            notebook_path: ./notebooks/run_layer_gold.py
+            base_parameters:
+              catalog: ${var.catalog}
+          new_cluster: &medallion_cluster
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: m5d.2xlarge
+            num_workers: 4
+            data_security_mode: SINGLE_USER
+
+        - task_key: export_gold_s3
+          depends_on:
+            - task_key: gold_build
+          notebook_task:
+            notebook_path: ./notebooks/export_gold_to_s3.py
+            base_parameters:
+              catalog: ${var.catalog}
+              bucket: ${var.gold_bucket}
+              prefix: chicago/gold
+              mode: overwrite
+          new_cluster: *medallion_cluster
+
+        - task_key: cross_wired_export
+          depends_on:
+            - task_key: export_gold_s3
+          notebook_task:
+            notebook_path: ./notebooks/cross_wired_daily_job.py
+            base_parameters:
+              catalog: ${var.catalog}
+              bucket: ${var.gold_bucket}
+              cross_wire_prefix: chicago/cross_wired
+              city_id: CHI
+              lookback_days: "1"
+              register_delta: "true"
+          new_cluster: *medallion_cluster

@@ -81,8 +81,10 @@ mlruns/
 ps1_*_outputs/
 ps4_outputs/
 ps4_pyspark_outputs/
-ps4_clustering_outputs/
+ps4_clustering_gate_outputs/
 ps4_clustering_*_outputs/
+ps4_clustering_pyspark_outputs/
+ps4_clustering_outputs/
 ps5_*_outputs/
 PS2_pavan/
 PS5_reliability_v5_outputs/

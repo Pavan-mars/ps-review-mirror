@@ -14,6 +14,9 @@ variables:
   gold_bucket:
     description: S3 bucket for gold / cross-wire parquet exports
     default: cubic-mars-pm-s3-datalake-dev-gold-170202974600
+  artifact_bucket:
+    description: S3 bucket for SageMaker ML artifacts (PS1 cross-wired scores)
+    default: cubic-mars-pm-s3-datalake-dev-artifacts-170202974600
 
 targets:
   dev:
@@ -44,6 +47,7 @@ resources:
             base_parameters:
               catalog: ${var.catalog}
               bucket: ${var.gold_bucket}
+              artifact_bucket: ${var.artifact_bucket}
               cross_wire_prefix: chicago/cross_wired
               city_id: CHI
               lookback_days: "1"
@@ -92,6 +96,7 @@ resources:
             base_parameters:
               catalog: ${var.catalog}
               bucket: ${var.gold_bucket}
+              artifact_bucket: ${var.artifact_bucket}
               cross_wire_prefix: chicago/cross_wired
               city_id: CHI
               lookback_days: "1"

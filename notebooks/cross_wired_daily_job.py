@@ -7,7 +7,7 @@
 #
 # Prerequisites (run on schedule BEFORE this job, or ensure tables are fresh):
 #   run_layer_gold → validate_gold → export_gold_to_s3
-#   Optional: SageMaker PS1 CELL 24 → device_ps1_cross_wired_daily on S3
+#   Optional: SageMaker PS1 CELL 24 → s3://<artifact_bucket>/chicago/device_ps1_cross_wired_daily/{gate|tvm|validator}/
 #   Optional: PS4 PySpark CELL 19 → chicago/ps4/scored/
 #   Optional: PS5 batch → chicago/ps5/scored/
 #
@@ -41,6 +41,7 @@ from pyspark.sql import Window
 # ---- widgets ----------------------------------------------------------------
 dbutils.widgets.text("catalog", "mars_dev")
 dbutils.widgets.text("bucket", "cubic-mars-pm-s3-datalake-dev-gold-170202974600")
+dbutils.widgets.text("artifact_bucket", "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600")
 dbutils.widgets.text("cross_wire_prefix", "chicago/cross_wired")
 dbutils.widgets.text("asof_date", "")
 dbutils.widgets.text("city_id", "CHI")
@@ -49,6 +50,7 @@ dbutils.widgets.dropdown("register_delta", "true", ["true", "false"])
 
 catalog = dbutils.widgets.get("catalog").strip()
 bucket = dbutils.widgets.get("bucket").strip()
+artifact_bucket = dbutils.widgets.get("artifact_bucket").strip()
 cross_wire_prefix = dbutils.widgets.get("cross_wire_prefix").strip().rstrip("/")
 city_id = dbutils.widgets.get("city_id").strip().upper()
 lookback_days = max(1, int(dbutils.widgets.get("lookback_days").strip() or "1"))
@@ -271,23 +273,87 @@ if _table_exists(ps5_tbl):
     if len(join_keys) == 2:
         cross = cross.join(ps5_sig, on=join_keys, how="left")
 
-# ---- optional PS1 SageMaker cross-wired scores from S3 -------------------------
-ps1_xw_s3 = f"s3://{bucket}/chicago/gold/device_ps1_cross_wired_daily"
-try:
-    ps1_xw = spark.read.parquet(ps1_xw_s3)
-    xw_keep = [c for c in [
-        "DEVICE_KEY", "transit_day", "COMPONENT_SERIAL_NBR",
-        "ps1_fail_prob", "ps1_predicted", "ps1_risk_tier", "threshold_used",
-        "device_category", "is_prob_anomaly",
-    ] if c in ps1_xw.columns]
-    if "DEVICE_KEY" in xw_keep and "transit_day" in xw_keep:
-        ps1_xw = ps1_xw.filter(F.col("transit_day").isin(target_days)).select(*xw_keep).dropDuplicates(
-            [c for c in ["DEVICE_KEY", "transit_day", "COMPONENT_SERIAL_NBR"] if c in xw_keep]
+# ---- optional PS1 SageMaker cross-wired scores from S3 (per device category) ---
+ps1_xw_base = f"s3://{artifact_bucket}/chicago/device_ps1_cross_wired_daily"
+ps1_xw_legacy_bases = [f"s3://{bucket}/chicago/gold/device_ps1_cross_wired_daily"]
+ps1_xw_slugs = {"GATE": "gate", "TVM": "tvm", "VALIDATOR": "validator"}
+xw_keep = [
+    "DEVICE_KEY", "transit_day", "COMPONENT_SERIAL_NBR",
+    "ps1_fail_prob", "ps1_predicted", "ps1_risk_tier", "threshold_used",
+    "device_category", "is_prob_anomaly",
+]
+ps1_xw_parts = []
+_missing_ps1_cats: list[str] = []
+for _cat, _slug in ps1_xw_slugs.items():
+    _path = f"{ps1_xw_base}/{_slug}/"
+    try:
+        _df = spark.read.parquet(_path)
+        _cols = [c for c in xw_keep if c in _df.columns]
+        if "DEVICE_KEY" not in _cols or "transit_day" not in _cols:
+            print(f"[INFO] PS1 cross-wired {_cat}: missing join keys at {_path}")
+            _missing_ps1_cats.append(_cat)
+            continue
+        _df = (
+            _df.filter(F.col("transit_day").isin(target_days))
+            .select(*_cols)
+            .dropDuplicates([c for c in ["DEVICE_KEY", "transit_day", "COMPONENT_SERIAL_NBR"] if c in _cols])
         )
-        cross = cross.join(ps1_xw, on=[c for c in ["DEVICE_KEY", "transit_day", "COMPONENT_SERIAL_NBR"] if c in xw_keep], how="left")
-        print(f"Joined PS1 cross-wired scores from {ps1_xw_s3}")
-except Exception as exc:
-    print(f"[INFO] PS1 cross-wired S3 not joined ({exc})")
+        if "device_category" not in _df.columns:
+            _df = _df.withColumn("device_category", F.lit(_cat))
+        ps1_xw_parts.append(_df)
+        print(f"Joined PS1 cross-wired scores from {_path}")
+    except Exception as exc:
+        print(f"[INFO] PS1 cross-wired {_cat} not joined at {_path} ({exc})")
+        _missing_ps1_cats.append(_cat)
+
+# Legacy gold-bucket layout — backfill categories missing from artifacts path
+if _missing_ps1_cats:
+    for _legacy_base in ps1_xw_legacy_bases:
+        for _cat in list(_missing_ps1_cats):
+            _slug = ps1_xw_slugs[_cat]
+            _slug_path = f"{_legacy_base}/{_slug}/"
+            try:
+                _df = spark.read.parquet(_slug_path)
+                _cols = [c for c in xw_keep if c in _df.columns]
+                if "DEVICE_KEY" not in _cols or "transit_day" not in _cols:
+                    continue
+                _df = (
+                    _df.filter(F.col("transit_day").isin(target_days))
+                    .select(*_cols)
+                    .dropDuplicates([c for c in ["DEVICE_KEY", "transit_day", "COMPONENT_SERIAL_NBR"] if c in _cols])
+                )
+                if "device_category" not in _df.columns:
+                    _df = _df.withColumn("device_category", F.lit(_cat))
+                ps1_xw_parts.append(_df)
+                _missing_ps1_cats.remove(_cat)
+                print(f"Joined PS1 cross-wired {_cat} from legacy path {_slug_path}")
+            except Exception:
+                pass
+        if _missing_ps1_cats:
+            try:
+                _legacy = spark.read.parquet(_legacy_base)
+                _cols = [c for c in xw_keep if c in _legacy.columns]
+                if "DEVICE_KEY" in _cols and "transit_day" in _cols and "device_category" in _legacy.columns:
+                    _legacy = (
+                        _legacy.filter(F.col("transit_day").isin(target_days))
+                        .select(*_cols)
+                        .dropDuplicates([c for c in ["DEVICE_KEY", "transit_day", "COMPONENT_SERIAL_NBR"] if c in _cols])
+                    )
+                    for _cat in list(_missing_ps1_cats):
+                        _sub = _legacy.filter(F.upper(F.col("device_category")) == _cat)
+                        if not _sub.isEmpty():
+                            ps1_xw_parts.append(_sub)
+                            _missing_ps1_cats.remove(_cat)
+                            print(f"Joined PS1 cross-wired {_cat} from legacy flat path {_legacy_base}")
+            except Exception as exc:
+                print(f"[INFO] PS1 cross-wired legacy path not joined ({_legacy_base}: {exc})")
+
+if ps1_xw_parts:
+    ps1_xw = ps1_xw_parts[0]
+    for _part in ps1_xw_parts[1:]:
+        ps1_xw = ps1_xw.unionByName(_part, allowMissingColumns=True)
+    _join_keys = [c for c in ["DEVICE_KEY", "transit_day", "COMPONENT_SERIAL_NBR"] if c in ps1_xw.columns]
+    cross = cross.join(ps1_xw, on=_join_keys, how="left")
 
 # ---- city-level KPI counts (diagram: total devices, serials, OOS, chargeable) -
 day_kpis = cross.groupBy("transit_day", "mars_device_category").agg(

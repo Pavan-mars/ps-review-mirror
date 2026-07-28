@@ -285,7 +285,7 @@ Include all columns listed in sections 3–10 above (107+ PS1 features optional 
 | PS | S3 prefix | Written by | RDS loader |
 |---|---|---|---|
 | Gold spine | `chicago/gold/device_ps1_daily/` | Databricks export | Future PS1 loader |
-| PS1 cross-wire | `chicago/gold/device_ps1_cross_wired_daily/` | SageMaker PS1 CELL 24 | **To build** |
+| PS1 cross-wire | `chicago/device_ps1_cross_wired_daily/{gate\|tvm\|validator}/` on artifacts bucket | SageMaker PS1 CELL 24 (per device notebook) | **To build** |
 | PS1 scored | `chicago/ps1/scored/asof=<date>/` | SageMaker / batch | **To build** |
 | PS2 | `chicago/gold/device_ps2_chains/` | Databricks gold | `phase1_ps2_ps5_backfill.sql` pattern |
 | PS3 | `chicago/ps3/scored/` (proposed) | Databricks / notebook | `03_phase1b_ps3_severity.sql` |
@@ -301,7 +301,7 @@ Include all columns listed in sections 3–10 above (107+ PS1 features optional 
 2. **Read** silver: `dim_device` (is_current), `hw_config_current`, `dim_stop_point`, `device_outage`.
 3. **Build spine:** `(DEVICE_ID, DEVICE_KEY, transit_day)` for `transit_day = asof_date - lag`.
 4. **Expand serials:** LEFT JOIN `hw_config_current` → component rows.
-5. **Attach PS1 scores** from latest `device_ps1_cross_wired_daily` or inference partition.
+5. **Attach PS1 scores** from latest `device_ps1_cross_wired_daily/{gate|tvm|validator}/` or inference partition.
 6. **Roll PS4 hourly → daily** per device (`SUM(ensemble_anomaly_flag)`, `MAX(anomaly_score)`).
 7. **Attach latest PS5** device + serial scores for `asof_date`.
 8. **Compute KPI counts** (total devices, total serials, OOS count, chargeable count).

@@ -160,6 +160,37 @@ CREATE TABLE IF NOT EXISTS ps3_leakage_scan (
 --    kept in a JSONB blob so the loader never breaks when the feature set
 --    changes between runs (the rds-push Lambda adds real columns on demand).
 -- ---------------------------------------------------------------------
+-- SELF-HEAL (added 2026-07-26): drop a legacy-shaped ps3_incident_predictions.
+--
+-- CREATE TABLE IF NOT EXISTS is a silent no-op when a table of that name already
+-- exists with a DIFFERENT shape. The 26-Jul inspect found this table carrying the
+-- superseded rds/04 bundle schema -- 10 columns, no city_id -- while the CREATE
+-- below declares 18 columns with city_id. Every migrate had been "succeeding"
+-- against it while doing nothing, which is why this file's three city_id indexes
+-- and all four statements in sql/19 failed.
+--
+-- The condition is deliberately narrow: it fires ONLY when the table exists AND
+-- has no city_id column, i.e. exactly the broken signature. A correctly-shaped
+-- table is never touched, and re-running this is a no-op.
+-- ---------------------------------------------------------------------
+DO $heal$
+BEGIN
+  IF to_regclass('public.ps3_incident_predictions') IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name   = 'ps3_incident_predictions'
+         AND column_name  = 'city_id')
+  THEN
+    RAISE NOTICE 'ps3_incident_predictions has no city_id (legacy rds/04 shape) -- dropping so the CREATE below can rebuild it';
+    DROP TABLE public.ps3_incident_predictions CASCADE;
+  ELSE
+    RAISE NOTICE 'ps3_incident_predictions schema OK or absent -- no action';
+  END IF;
+END
+$heal$;
+
+-- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS ps3_incident_predictions (
   city_id                city_code    NOT NULL REFERENCES cities(id),
   run_id                 VARCHAR(48)  NOT NULL,

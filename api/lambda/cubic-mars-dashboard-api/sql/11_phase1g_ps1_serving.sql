@@ -75,28 +75,11 @@ CREATE TABLE IF NOT EXISTS ps1_station_summary (
 -- seed: model-performance + feature-importance from run 20260713_0905 (real).
 -- predictions/risk-trend/station-summary stay empty until the scoring notebook runs.
 DELETE FROM ps1_model_performance WHERE city_id='CHI' AND computed_date=DATE '2026-07-13';
-INSERT INTO ps1_model_performance (city_id,device_category,model_name,algorithm,train_auc,train_ap,train_f1,val_auc,val_ap,val_f1,test_auc,test_ap,test_f1,test_prec,test_rec,decision_threshold,mlflow_version,endpoint_name,n_features,quality_gate,promoted,computed_date) VALUES
- ('CHI','TVM','LightGBM (Optuna)','lightgbm',0.79,0.46,0.47,0.77,0.44,0.46,0.7642,0.4389,0.4593,0.3440,0.6910,0.113,'v9','chicago-ps1-3d-tvm-failure-v1',114,'FAIL',FALSE,DATE '2026-07-13'),
- ('CHI','GATE','LightGBM (Optuna)','lightgbm',1.00,1.00,1.00,1.00,1.00,0.99,0.9038,0.4046,0.4481,0.5467,0.3796,0.243,'None','chicago-ps1-3d-gate-failure-v1',96,'FAIL',FALSE,DATE '2026-07-13')
-ON CONFLICT (city_id,device_category,computed_date) DO NOTHING;
+-- [seed INSERT INTO ps1_model_performance moved 2026-07-26 to manual/seed_from_11_phase1g_ps1_serving.sql -- migrate() runs on every deploy, so leaving
+--  hardcoded 13-Jul metric rows here silently undid every purge.]
 DELETE FROM ps1_feature_importance WHERE city_id='CHI' AND computed_date=DATE '2026-07-13';
-INSERT INTO ps1_feature_importance (city_id,device_category,feature_name,avg_importance,avg_shap,feat_rank,computed_date) VALUES
- ('CHI','TVM','device_fail_rate_30d',0.80040,0.80040,1,DATE '2026-07-13'),
- ('CHI','TVM','sales_7d_avg',0.12870,0.12870,2,DATE '2026-07-13'),
- ('CHI','TVM','total_outage_min',0.07584,0.07584,3,DATE '2026-07-13'),
- ('CHI','TVM','scrst_events',0.07548,0.07548,4,DATE '2026-07-13'),
- ('CHI','TVM','oos_lifetime_count',0.06891,0.06891,5,DATE '2026-07-13'),
- ('CHI','TVM','availability_pct_7d',0.06402,0.06402,6,DATE '2026-07-13'),
- ('CHI','TVM','device_age_days',0.06318,0.06318,7,DATE '2026-07-13'),
- ('CHI','TVM','events_30d',0.04784,0.04784,8,DATE '2026-07-13'),
- ('CHI','GATE','device_fail_rate_30d',0.44900,0.44900,1,DATE '2026-07-13'),
- ('CHI','GATE','quarter',0.11200,0.11200,2,DATE '2026-07-13'),
- ('CHI','GATE','month',0.06800,0.06800,3,DATE '2026-07-13'),
- ('CHI','GATE','events_30d',0.05100,0.05100,4,DATE '2026-07-13'),
- ('CHI','GATE','availability_pct_7d',0.04300,0.04300,5,DATE '2026-07-13'),
- ('CHI','GATE','total_outage_min',0.03900,0.03900,6,DATE '2026-07-13')
-ON CONFLICT (city_id,device_category,feature_name,computed_date) DO NOTHING;
-
+-- [seed INSERT INTO ps1_feature_importance moved 2026-07-26 to manual/seed_from_11_phase1g_ps1_serving.sql -- migrate() runs on every deploy, so leaving
+--  hardcoded 13-Jul metric rows here silently undid every purge.]
 CREATE TABLE IF NOT EXISTS ps1_risk_bands (
   city_id city_code NOT NULL REFERENCES cities(id),
   device_category VARCHAR(12) NOT NULL, band VARCHAR(10) NOT NULL,

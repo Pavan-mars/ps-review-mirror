@@ -84,8 +84,10 @@ MIN_MATCH = float(os.environ.get("MIN_MATCH", "0.5"))
 # it cannot place.
 ALIASES = {
     "ps2_network_centrality_subsystem": "ps2_network_centrality",
-    "ps2_ignition_termination_subsystem": "ps2_ignition_termination",
-    "ps2_facility_contagion_facility": "ps2_facility_contagion_summary",
+    # 01-Aug-2026: alias removed. ignition_count is not ignition_days.
+    # Loads to ps2_ignition_termination_subsystem (sql/42) under its own name.
+    # 01-Aug-2026: alias removed. Per-facility detail is not the one-row rollup.
+    # Loads to ps2_facility_contagion_facility (sql/42) under its own name.
     "ps2_association_rules_device": "ps2_subsystem_associations",
     "ps2_business_impact_device": "ps2_business_impact",
     "ps2_hmm_regimes_device": "ps2_hmm_regimes",

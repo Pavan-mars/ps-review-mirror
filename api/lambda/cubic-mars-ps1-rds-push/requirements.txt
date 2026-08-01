@@ -1,0 +1,6 @@
+pg8000>=1.31,<2
+# pyarrow comes from the AWS SDK for pandas managed layer (see deploy.sh) - do NOT
+# bundle it; the wheel is ~90MB and blows the 50MB direct-upload limit.
+# dev/test only:
+pyarrow>=14
+boto3>=1.34

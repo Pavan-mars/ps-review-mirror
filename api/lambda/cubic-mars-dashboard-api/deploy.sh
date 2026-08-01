@@ -51,12 +51,12 @@ ENVVARS="Variables={SECRET_ARN=$SECRET_ARN,RDS_HOST=$RDS_HOST,DB_NAME=$DB_NAME}"
 if aws lambda get-function --function-name "$FN" >/dev/null 2>&1; then
   aws lambda update-function-code --function-name "$FN" --zip-file fileb://fn.zip >/dev/null
   aws lambda wait function-updated --function-name "$FN"
-  aws lambda update-function-configuration --function-name "$FN" --timeout 120 --memory-size 256 \
+  aws lambda update-function-configuration --function-name "$FN" --timeout 300 --memory-size 256 \
     --vpc-config "SubnetIds=$SUBNET_CSV,SecurityGroupIds=$SG" --environment "$ENVVARS" >/dev/null
 else
   sleep 12   # allow new role to become assumable
   aws lambda create-function --function-name "$FN" --runtime python3.12 --handler handler.lambda_handler \
-    --role "$ROLE_ARN" --zip-file fileb://fn.zip --timeout 120 --memory-size 256 \
+    --role "$ROLE_ARN" --zip-file fileb://fn.zip --timeout 300 --memory-size 256 \
     --vpc-config "SubnetIds=$SUBNET_CSV,SecurityGroupIds=$SG" --environment "$ENVVARS" >/dev/null
 fi
 aws lambda wait function-active --function-name "$FN"
@@ -64,7 +64,7 @@ aws lambda wait function-updated --function-name "$FN" 2>/dev/null || true
 echo "   Lambda active."
 
 echo ">> [5/6] run DB migration (schema 01-10: Phase-1e (07) + Phase-1f rich DDL (09) + optional notebook backfills (08,10)) via the Lambda (in-VPC)"
-aws lambda invoke --function-name "$FN" --cli-binary-format raw-in-base64-out --payload '{"action":"migrate"}' migrate_out.json >/dev/null
+aws lambda invoke --function-name "$FN" --cli-binary-format raw-in-base64-out --cli-read-timeout 0 --payload '{"action":"migrate"}' migrate_out.json >/dev/null
 echo "   --- migrate result ---"; cat migrate_out.json; echo
 
 echo ">> [6/6] HTTP API Gateway"

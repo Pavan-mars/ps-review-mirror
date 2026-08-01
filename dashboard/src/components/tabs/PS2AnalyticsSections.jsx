@@ -4,17 +4,14 @@
 // Impact. Drop into the Cascading-Failure tab with ONE import + ONE line:
 //     import PS2AnalyticsSections from './PS2AnalyticsSections';
 //     <PS2AnalyticsSections city={city} />
-// Self-contained: local useLiveData (instant mock render, then live swap) and
-// the api fetchers with mock fallback, so it renders whether or not the live
-// API is wired. CUBIC MARS white-bg + pastel/navy identity (inline styles).
+// Self-contained: local useLiveData (instant empty render, then live swap).
+// 2026-07-26 -- live-only: the api fetchers throw ApiError on failure (no mock
+// fallback); this file's own useLiveData just leaves data at its initial empty
+// array/shape rather than showing fabricated numbers. CUBIC MARS white-bg +
+// pastel/navy identity (inline styles).
 // ============================================================================
 import React, { useState, useEffect, useMemo } from 'react';
 import { apiPS2Paths, apiPS2Ignition, apiPS2Impact } from '../../data/api';
-import {
-  getPS2CascadePaths,
-  getPS2IgnitionTermination,
-  getPS2BusinessImpact,
-} from '../../data/mockData';
 import AnalyseButton from '../shared/AnalyseButton';
 import { useFilters } from '../../context/FilterContext';
 import { applyPS2Filters, isAnyPS2FilterActive } from '../../utils/ps2Filters';
@@ -59,9 +56,9 @@ function Bar({ value, max, color }) {
 export default function PS2AnalyticsSections({ city = 'CHI', onAnalyse }) {
   const filters = useFilters();
   const filtersActive = isAnyPS2FilterActive(filters);
-  const pathsRaw = useLiveData(getPS2CascadePaths(), () => apiPS2Paths(city), [city]);
-  const ignRaw = useLiveData(getPS2IgnitionTermination(), () => apiPS2Ignition(city), [city]);
-  const impactRaw = useLiveData(getPS2BusinessImpact(), () => apiPS2Impact(city), [city]);
+  const pathsRaw = useLiveData([], () => apiPS2Paths(city), [city]);
+  const ignRaw = useLiveData([], () => apiPS2Ignition(city), [city]);
+  const impactRaw = useLiveData([], () => apiPS2Impact(city), [city]);
 
   // Cascade paths carry first_subsystem/last_subsystem (not sub_a/sub_b), so
   // map them onto the shared matcher's expected field names before filtering.

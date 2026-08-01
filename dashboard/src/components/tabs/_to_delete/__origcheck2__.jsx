@@ -19,14 +19,14 @@
 // ============================================================================
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  apiPS2Phi, apiPS2Markov, apiPS2Conditional, apiPS2ErrorCodes, apiPS2HMMRegimes,
+  apiPS2Phi, apiPS2Markov, apiPS2Conditional, apiPS2ErrorCodes,
   apiPS2Devices, apiPS2DeviceCascades,
   apiPS2SerialMetric, apiPS2ServiceNowStatus, apiPS2ServiceNowCreateIncident,
   useSerialDeviceMap,
 } from '../../data/api';
-// 2026-07-26 -- live-only: PS2 fetchers above now throw ApiError on failure
-// instead of falling back to mock (see data/api.js); this file's own
-// useLiveData just leaves each panel's data at an honest empty shape.
+import {
+  getPS2Phi, getPS2Markov, getPS2Conditional, getPS2ErrorCodes, getPS2Devices,
+} from '../../data/mockData';
 import PS2CascadeNetwork from './PS2CascadeNetwork';
 import AnalyseButton from '../shared/AnalyseButton';
 import { useFilters } from '../../context/FilterContext';
@@ -82,7 +82,7 @@ function CorrelationHeatmap({ city, serialRoster, serialDeviceMap, onAnalyse }) 
   const [serialId, setSerialId] = useState(null);
   useEffect(() => { if (!serialId && serialOptions.length) setSerialId(serialOptions[0]); }, [serialOptions, serialId]);
 
-  const deviceRows = useLiveData([], () => apiPS2Phi(city), [city]);
+  const deviceRows = useLiveData(getPS2Phi(), () => apiPS2Phi(city), [city]);
   const [serialRows, setSerialRows] = useState([]);
   useEffect(() => {
     if (grain !== 'serial' || !serialId) return;
@@ -145,7 +145,7 @@ function ConditionalProbGrid({ city, serialRoster, serialDeviceMap, onAnalyse })
   const [serialId, setSerialId] = useState(null);
   useEffect(() => { if (!serialId && serialOptions.length) setSerialId(serialOptions[0]); }, [serialOptions, serialId]);
 
-  const deviceRows = useLiveData([], () => apiPS2Conditional(city), [city]);
+  const deviceRows = useLiveData(getPS2Conditional(), () => apiPS2Conditional(city), [city]);
   const [serialRows, setSerialRows] = useState([]);
   useEffect(() => {
     if (grain !== 'serial' || !serialId) return;
@@ -196,7 +196,7 @@ function ConditionalProbGrid({ city, serialRoster, serialDeviceMap, onAnalyse })
 function MarkovView({ city, serialRoster, serialDeviceMap, onAnalyse }) {
   const [grain, setGrain] = useState('device');
   const filters = useFilters();
-  const rowsRaw = useLiveData([], () => apiPS2Markov(city), [city]);
+  const rowsRaw = useLiveData(getPS2Markov(), () => apiPS2Markov(city), [city]);
   const rows = useMemo(() => applyPS2Filters(rowsRaw, filters), [rowsRaw, filters]);
   const filteredSerialRoster = useMemo(() => applyPS2Filters(serialRoster, filters), [serialRoster, filters]);
   const max = Math.max(0.01, ...rows.map((r) => r.prob || 0));
@@ -249,12 +249,18 @@ function MarkovView({ city, serialRoster, serialDeviceMap, onAnalyse }) {
 }
 
 // ---- 4. HMM regimes --------------------------------------------------------
+const HMM_FALLBACK = [
+  { regime:'Minor',    pct:21.0, dwell_days_min:2.1, dwell_days_max:4.2 },
+  { regime:'Moderate', pct:76.4, dwell_days_min:3.8, dwell_days_max:6.3 },
+  { regime:'Critical', pct:2.6,  dwell_days_min:1.5, dwell_days_max:2.4 },
+];
 function HMMRegimePanel({ city, serialDeviceMap, onAnalyse }) {
   const [grain, setGrain] = useState('device');
-  // 2026-07-26 -- was its own raw fetch('/ps2/hmm') with a silent fallback to
-  // a hardcoded HMM_FALLBACK array on any failure; now shares the live-only
-  // apiPS2HMMRegimes fetcher (throws ApiError, no fabricated regime %s shown).
-  const rows = useLiveData([], () => apiPS2HMMRegimes(city), [city]);
+  const rows = useLiveData(HMM_FALLBACK, async () => {
+    try { const b = (import.meta?.env?.VITE_API_BASE_URL) || ''; if (!b) return HMM_FALLBACK;
+      const r = await fetch(`${b}/ps2/hmm?city=${city || 'CHI'}`); const j = await r.json();
+      return (Array.isArray(j) && j.length) ? j : HMM_FALLBACK; } catch { return HMM_FALLBACK; }
+  }, [city]);
   const col = { Minor:P.green, Moderate:P.amber, Critical:P.red };
 
   const [serialRows, setSerialRows] = useState([]);
@@ -314,7 +320,7 @@ function HMMRegimePanel({ city, serialDeviceMap, onAnalyse }) {
 // ---- 5. Error-code panel ---------------------------------------------------
 function ErrorCodePanel({ city }) {
   const filters = useFilters();
-  const data = useLiveData({ codes: [], transitions: [] }, () => apiPS2ErrorCodes(city), [city]);
+  const data = useLiveData(getPS2ErrorCodes(), () => apiPS2ErrorCodes(city), [city]);
   const codesRaw = data.codes || [];
   const codes = useMemo(() => applyPS2Filters(codesRaw, filters), [codesRaw, filters]);
   const max = Math.max(1, ...codes.map((c) => c.occurrences || 0));
@@ -424,7 +430,7 @@ export function PS2ServiceNowButton({ city = 'CHI', deviceId, serialId, window: 
 // ---- 7. Device catalog + drilldown (+ ServiceNow) --------------------------
 function DeviceCatalog({ city, onAnalyse }) {
   const filters = useFilters();
-  const devicesRaw = useLiveData([], () => apiPS2Devices(city), [city]);
+  const devicesRaw = useLiveData(getPS2Devices(), () => apiPS2Devices(city), [city]);
   const devices = useMemo(() => applyPS2Filters(devicesRaw, filters), [devicesRaw, filters]);
   const [sel, setSel] = useState(null);
   const [cascades, setCascades] = useState([]);

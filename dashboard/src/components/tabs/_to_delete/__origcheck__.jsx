@@ -3,7 +3,8 @@ import {
   BarChart, Bar, Cell,
   PieChart, Pie,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, LabelList } from 'recharts';
+  ResponsiveContainer,
+} from 'recharts';
 import {
   CITIES,
   getPS2CascadeWindowDistribution,
@@ -25,17 +26,6 @@ import Device360Modal from './Device360Modal';
 import AnalyseButton from '../shared/AnalyseButton';
 import { useFilters } from '../../context/FilterContext';
 import { applyPS2Filters, isAnyPS2FilterActive, DEVICE_CATEGORY_LABEL } from '../../utils/ps2Filters';
-// 2026-07-26: direct value labels on every mark. Discrete marks (bars, pie
-// slices) get one label each; continuous series (lines, areas) get an END
-// label only -- a number on every point of a long series goes unread.
-// Label text uses the muted text token, never the series colour.
-import { VLAB, fmtV, endOnlyLabel, FleetBaselineBand } from '../shared/DashboardKit';
-
-// This tab normally fetches through src/data/api.js, which reads
-// VITE_API_BASE_URL. FleetBaselineBand takes an explicit base, so the same
-// env var is resolved here rather than introducing a second source of truth.
-const MAIN_API = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
-
 
 // PS2's own component (subsystem) and failure-type (error code) vocabularies,
 // registered into the dashboard-wide FilterContext while this tab is mounted
@@ -161,14 +151,6 @@ export default function PS2CascadingFailureTab({ city }) {
 
   const devs = topDevices || [];
   const chartDevs = devs.slice(0, 14);
-  // 27-Jul-2026. The live /ps2/topdevices feed has no per-device time-window
-  // split -- the PS2 export never produced one. The seeded mock still carries
-  // w0_5..w60plus, so the panel decides from the data in hand rather than from
-  // a build-time assumption: window columns when they exist, business-impact
-  // columns when they do not. Testing for null (not falsy) matters -- a device
-  // with a genuine zero in w60plus must still count as "we have the split".
-  const hasWindowSplit = devs.some((d) => d.w60plus !== null && d.w60plus !== undefined);
-  const hasImpact = devs.some((d) => d.total_impact !== null && d.total_impact !== undefined);
   const devsRawCount = (topDevicesRaw || []).length;
   const rulesRawCount = (rulesRaw || []).length;
 
@@ -221,11 +203,6 @@ export default function PS2CascadingFailureTab({ city }) {
   return (
     <div>
       {analyseDevice && <Device360Modal deviceId={analyseDevice} onClose={() => setAnalyseDevice(null)} />}
-
-      {/* Programme-level base statistic. Same component and same route on
-          PS1/PS2/PS3/PS5, so the headline OOS and chargeable counts are
-          stated once and cannot drift between tabs. */}
-      <FleetBaselineBand apiBase={MAIN_API} city={city} />
       {/* KPI cards — always visible */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
         <div className="card">
@@ -269,10 +246,7 @@ export default function PS2CascadingFailureTab({ city }) {
                 <Tooltip formatter={(v, n, p) => [`${v.toLocaleString()} days (${p.payload.pct}%)`, 'Cascade-days']} />
                 <Bar dataKey="days" radius={[4, 4, 0, 0]}>
                   {windowDist.windows.map((_, i) => <Cell key={i} fill={WINDOW_COLORS[i]} />)}
-                
-            <LabelList dataKey="days" position="top" formatter={fmtV} style={VLAB} />
-          </Bar>
-              <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -308,10 +282,7 @@ export default function PS2CascadingFailureTab({ city }) {
                   <Tooltip formatter={(v, n, p) => [`${v}% • dwell ${p.payload.dwell_days_min}-${p.payload.dwell_days_max}d`, 'Share']} />
                   <Bar dataKey="pct" radius={[0, 4, 4, 0]}>
                     {regimes.map((r, i) => <Cell key={i} fill={REGIME_COLORS[r.regime]} />)}
-                  
-            <LabelList dataKey="pct" position="right" formatter={fmtV} style={VLAB} />
-          </Bar>
-                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -338,9 +309,7 @@ export default function PS2CascadingFailureTab({ city }) {
                       label={({ category, percent }) => `${category} ${(percent * 100).toFixed(0)}%`}
                     >
                       {deviceTypeBreakdown.map((d, i) => <Cell key={i} fill={CAT_COLOR[d.category] || '#94a3b8'} />)}
-                    
-            <LabelList dataKey="cascade_days" position="outside" formatter={fmtV} style={VLAB} />
-          </Pie>
+                    </Pie>
                     <Tooltip formatter={(v, n, p) => [`${Number(v).toLocaleString()} cascade-days`, p.payload.category]} />
                     <Legend />
                   </PieChart>
@@ -362,10 +331,7 @@ export default function PS2CascadingFailureTab({ city }) {
                     <Bar dataKey="rule_count" radius={[0, 4, 4, 0]} cursor="pointer"
                       onClick={(d) => d && d.subsystem && focusSubsystemOnly(d.subsystem)}>
                       {subsystemInvolvement.map((_, i) => <Cell key={i} fill={WINDOW_COLORS[i % WINDOW_COLORS.length]} />)}
-                    
-            <LabelList dataKey="rule_count" position="right" formatter={fmtV} style={VLAB} />
-          </Bar>
-                  <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               )}
@@ -405,15 +371,8 @@ export default function PS2CascadingFailureTab({ city }) {
       {tab === 'devices' && (
         <div>
           <div className="card" style={{ marginBottom: 24 }}>
-            <div className="card-header">
-              Top {chartDevs.length} Cascade-Active Devices — {hasWindowSplit
-                ? 'window breakdown (cascade-days)'
-                : 'total business impact'}
-            </div>
-            <p style={{ fontSize: 11, opacity: 0.6, padding: '0 16px 4px' }}>
-              Click any bar to drill into that device's cross-PS Device 360 view.
-              {!hasWindowSplit && ' Ranked by total business impact; the PS2 run produces no per-device time-window split, so that breakdown is not shown rather than shown empty.'}
-            </p>
+            <div className="card-header">Top {chartDevs.length} Cascade-Active Devices — window breakdown (cascade-days)</div>
+            <p style={{ fontSize: 11, opacity: 0.6, padding: '0 16px 4px' }}>Click any bar to drill into that device's cross-PS Device 360 view.</p>
             <FilterHint shown={devs.length} total={devsRawCount} />
             {devs.length === 0 && devsRawCount > 0 ? <NoFilterMatches /> : (
             <ResponsiveContainer width="100%" height={360}>
@@ -422,100 +381,39 @@ export default function PS2CascadingFailureTab({ city }) {
                 <XAxis dataKey="device_id" angle={-40} textAnchor="end" interval={0} height={70} tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 11 }} />
                 <Tooltip formatter={(v, n) => [Number(v).toLocaleString(), n]} />
-                {hasWindowSplit && <Legend />}
-                {hasWindowSplit ? WKEYS.map((w) => (
+                <Legend />
+                {WKEYS.map((w) => (
                   <Bar key={w.key} dataKey={w.key} name={w.label} stackId="win" fill={w.color} cursor="pointer"
-                    onClick={(data) => data && data.device_id && setAnalyseDevice(data.device_id)}>
-            <LabelList dataKey={w.key} position="top" formatter={fmtV} style={VLAB} />
-          </Bar>
-                )) : (
-                  // One measure, so one bar and no legend -- the header names it.
-                  // Colour carries CATEGORY, which is a second variable, so the
-                  // swatch row below the chart decodes it; identity is never
-                  // left to colour alone.
-                  <Bar dataKey={hasImpact ? 'total_impact' : 'cascade_days'}
-                       name={hasImpact ? 'Total business impact' : 'Cascade-days'}
-                       cursor="pointer" radius={[4, 4, 0, 0]}
-                       onClick={(data) => data && data.device_id && setAnalyseDevice(data.device_id)}>
-                    {chartDevs.map((d) => (
-                      <Cell key={d.device_id} fill={CAT_COLOR[d.category] || '#94a3b8'} />
-                    ))}
-                    <LabelList dataKey={hasImpact ? 'total_impact' : 'cascade_days'}
-                               position="top" formatter={fmtV} style={VLAB} />
-                  </Bar>
-                )}
+                    onClick={(data) => data && data.device_id && setAnalyseDevice(data.device_id)} />
+                ))}
               </BarChart>
             </ResponsiveContainer>
-            )}
-            {!hasWindowSplit && devs.length > 0 && (
-              <div style={{ display: 'flex', gap: 16, padding: '0 16px 12px', fontSize: 11, color: 'var(--text-secondary)' }}>
-                {Object.entries(CAT_COLOR).map(([cat, col]) => (
-                  <span key={cat} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ width: 10, height: 10, borderRadius: 2, background: col, display: 'inline-block' }} />
-                    {cat}
-                  </span>
-                ))}
-              </div>
             )}
           </div>
 
           <div className="card" style={{ overflowX: 'auto' }}>
-            <div className="card-header">
-              Device Cascade Leaderboard — {cityName}
-              {hasWindowSplit ? ' (top 20 by total cascade-days)'
-                             : ` (${devs.length.toLocaleString()} devices, ranked by business impact)`}
-            </div>
+            <div className="card-header">Device Cascade Leaderboard — {cityName} (top 20 by total cascade-days)</div>
             <FilterHint shown={devs.length} total={devsRawCount} />
             {devs.length === 0 && devsRawCount > 0 ? <NoFilterMatches /> : (
             <table className="data-table">
               <thead>
                 <tr>
                   <th>#</th><th>Device</th><th>Category</th><th>Cascade-days</th>
-                  {hasWindowSplit ? (
-                    <>
-                      <th>0-5m</th><th>5-15m</th><th>15-30m</th><th>30-60m</th><th>60m+</th><th>Slow %</th>
-                    </>
-                  ) : (
-                    <>
-                      <th>Total impact</th><th>Avg impact</th><th>Rank in category</th><th>Chronic</th>
-                    </>
-                  )}
-                  <th></th>
+                  <th>0-5m</th><th>5-15m</th><th>15-30m</th><th>30-60m</th><th>60m+</th><th>Slow %</th><th></th>
                 </tr>
               </thead>
               <tbody>
                 {devs.map((d) => {
-                  const slowPct = (hasWindowSplit && d.cascade_days)
-                    ? Math.round((d.w60plus / d.cascade_days) * 100) : 0;
+                  const slowPct = d.cascade_days ? Math.round((d.w60plus / d.cascade_days) * 100) : 0;
                   return (
                     <tr key={d.device_id}>
                       <td style={{ opacity: 0.6 }}>{d.dev_rank}</td>
                       <td style={{ fontFamily: 'monospace', fontWeight: 600 }}>{d.device_id}</td>
                       <td><span style={{ color: CAT_COLOR[d.category] || '#94a3b8', fontWeight: 600 }}>{d.category}</span></td>
                       <td style={{ fontWeight: 700 }}>{nfmt(d.cascade_days)}</td>
-                      {hasWindowSplit ? (
-                        <>
-                          <td>{nfmt(d.w0_5)}</td><td>{nfmt(d.w5_15)}</td><td>{nfmt(d.w15_30)}</td><td>{nfmt(d.w30_60)}</td>
-                          <td style={{ color: '#ef4444', fontWeight: 600 }}>{nfmt(d.w60plus)}</td>
-                          <td><span style={{ color: slowPct >= 70 ? '#ef4444' : '#f59e0b', fontWeight: 700 }}>{slowPct}%</span></td>
-                        </>
-                      ) : (
-                        <>
-                          <td style={{ fontWeight: 700 }}>{nfmt(d.total_impact)}</td>
-                          <td>{d.avg_impact === null || d.avg_impact === undefined ? '—' : d.avg_impact.toFixed(1)}</td>
-                          <td style={{ opacity: 0.75 }}>
-                            {d.impact_rank_in_category === null || d.impact_rank_in_category === undefined
-                              ? '—' : `#${d.impact_rank_in_category} of ${d.category}`}
-                          </td>
-                          {/* chronic comes from ps2_recurrence via a LEFT JOIN, so
-                              a device with no recurrence row is unknown, not false. */}
-                          <td>{d.recurrence_cascade_days === null || d.recurrence_cascade_days === undefined
-                            ? <span style={{ opacity: 0.4 }}>—</span>
-                            : d.chronic
-                              ? <span style={{ color: '#ef4444', fontWeight: 700 }}>Chronic</span>
-                              : <span style={{ opacity: 0.6 }}>No</span>}</td>
-                        </>
-                      )}
+                      <td>{nfmt(d.w0_5)}</td><td>{nfmt(d.w5_15)}</td><td>{nfmt(d.w15_30)}</td><td>{nfmt(d.w30_60)}</td>
+                      <td style={{ color: '#ef4444', fontWeight: 600 }}>{nfmt(d.w60plus)}</td>
+                      <td><span style={{ color: slowPct >= 70 ? '#ef4444' : '#f59e0b', fontWeight: 700 }}>{slowPct}%</span></td>
                       <td><AnalyseButton onClick={() => setAnalyseDevice(d.device_id)} /></td>
                     </tr>
                   );
@@ -541,10 +439,7 @@ export default function PS2CascadingFailureTab({ city }) {
                   <Tooltip formatter={(v) => Number(v).toFixed(3)} />
                   <Bar dataKey="chain_len_mean" name="Mean chain length" radius={[4, 4, 0, 0]}>
                     {(windowDetail || []).map((_, i) => <Cell key={i} fill={WINDOW_COLORS[i]} />)}
-                  
-            <LabelList dataKey="chain_len_mean" position="top" formatter={fmtV} style={VLAB} />
-          </Bar>
-                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -558,10 +453,7 @@ export default function PS2CascadingFailureTab({ city }) {
                   <Tooltip formatter={(v) => `${Number(v).toFixed(1)} min`} />
                   <Bar dataKey="span_min_mean" name="Mean span (min)" radius={[4, 4, 0, 0]}>
                     {(windowDetail || []).map((_, i) => <Cell key={i} fill={WINDOW_COLORS[i]} />)}
-                  
-            <LabelList dataKey="span_min_mean" position="top" formatter={fmtV} style={VLAB} />
-          </Bar>
-                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </div>

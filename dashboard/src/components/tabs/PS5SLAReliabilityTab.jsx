@@ -1,15 +1,27 @@
 import React, { useState, useMemo, useEffect, useContext, useCallback } from 'react';
 import {
   BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, PieChart, Pie,
-} from 'recharts';
+  ResponsiveContainer, PieChart, Pie, LabelList } from 'recharts';
 import FilterContext from '../../context/FilterContext';
+// 2026-07-26: direct value labels on every mark. Discrete marks (bars, pie
+// slices) get one label each; continuous series (lines, areas) get an END
+// label only -- a number on every point of a long series goes unread.
+// Label text uses the muted text token, never the series colour.
+import { VLAB, fmtV, endOnlyLabel, FleetBaselineBand } from '../shared/DashboardKit';
+// 27-Jul-2026. PS5's own device panel is reliability-only. This adds the route
+// into the shared cross-PS view so a device flagged for RUL can be checked
+// against its PS2 cascade history and PS3 attributed subsystem in one click.
+import AnalyseButton from '../shared/AnalyseButton';
+import Device360Modal from './Device360Modal';
 
 // PS5 live data comes straight from the Aurora-backed ps5-api (its own API
 // Gateway) and is fetched inline here, so this tab needs NO change to the shared
 // src/data/api.js — which the PS1 & PS3 work streams also evolve. /ps5/devices
 // and /ps5/serials are only served by this gateway (not the main dashboard-api).
 // Override the base with VITE_PS5_API_BASE_URL if the gateway ever changes.
+// /fleet/baseline is served by the MAIN dashboard-api, not by the PS5
+// gateway above -- the two are different API Gateway stages.
+const MAIN_API = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const PS5_BASE = (import.meta.env.VITE_PS5_API_BASE_URL
   || 'https://b1s4xxlddb.execute-api.us-east-1.amazonaws.com').replace(/\/$/, '');
 async function ps5Get(path, city) {
@@ -193,6 +205,10 @@ function TypeRiskSankey({ matrix, typeCounts, riskCounts, total, onFlow }) {
 // ---- device drill-down modal (light, matches .card design) ------------------
 function DeviceModal({ device, serials, meta, onClose }) {
   const [showPayload, setShowPayload] = useState(false);
+  // Cross-PS view for this device, opened from the header. Rendered inside this
+  // modal rather than the tab root so it stacks above and closing it returns
+  // here rather than dumping the user back to the device list.
+  const [crossPS, setCrossPS] = useState(null);
   const comps = useMemo(
     () => serials.filter((s) => s.device_id === device.device_id).sort((a, b) => (b.risk_score || 0) - (a.risk_score || 0)),
     [serials, device.device_id],
@@ -229,6 +245,9 @@ function DeviceModal({ device, serials, meta, onClose }) {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <RiskBadge band={device.risk_band} />
             {device.is_overdue && <span className="badge badge-critical">OVERDUE</span>}
+            <AnalyseButton onClick={() => setCrossPS(device.device_id)}
+              label="Analyse across PS1–PS5"
+              title="Open Device 360 — PS1 risk, PS2 cascade history, PS3 attributed subsystem, PS4 anomalies" />
             <button onClick={onClose} className="filter-btn" style={{ fontSize: 16, lineHeight: 1, padding: '4px 10px' }}>✕</button>
           </div>
         </div>
@@ -296,6 +315,9 @@ function DeviceModal({ device, serials, meta, onClose }) {
           )}
         </div>
       </div>
+      {crossPS && (
+        <Device360Modal deviceId={crossPS} onClose={() => setCrossPS(null)} />
+      )}
     </div>
   );
 }
@@ -533,6 +555,12 @@ export default function PS5SLAReliabilityTab({ city, selectedDevices }) {
 
   return (
     <div>
+
+      {/* Programme-level base statistic. Same component and same route on
+          PS1/PS2/PS3/PS5, so the headline OOS and chargeable counts are
+          stated once and cannot drift between tabs. */}
+      <FleetBaselineBand apiBase={MAIN_API} city={city} />
+
       {/* provenance band */}
       <div className="card" style={{ marginBottom: 16, padding: 14, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, borderLeft: '4px solid var(--primary)' }}>
         <span style={{ padding: '4px 10px', borderRadius: 6, background: hexA('#6366f1', 0.12), color: '#4f46e5', fontSize: 12, fontWeight: 700 }}>
@@ -624,7 +652,9 @@ export default function PS5SLAReliabilityTab({ city, selectedDevices }) {
               <Legend />
               {RISK_ORDER.map((r) => (
                 <Bar key={r} dataKey={r} name={r} stackId="a" fill={RISK[r]} cursor="pointer"
-                  onClick={() => setRiskSel([r])} radius={r === 'LOW' ? [4, 4, 0, 0] : undefined} />
+                  onClick={() => setRiskSel([r])} radius={r === 'LOW' ? [4, 4, 0, 0] : undefined}>
+            <LabelList dataKey={r} position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
               ))}
             </BarChart>
           </ResponsiveContainer>
@@ -639,7 +669,10 @@ export default function PS5SLAReliabilityTab({ city, selectedDevices }) {
               <Tooltip />
               <Bar dataKey="count" name="Devices" radius={[4, 4, 0, 0]}>
                 {rulHist.map((b, i) => <Cell key={i} fill={b.color} />)}
-              </Bar>
+              
+            <LabelList dataKey="count" position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
+            <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -661,7 +694,9 @@ export default function PS5SLAReliabilityTab({ city, selectedDevices }) {
               <Tooltip />
               <Legend />
               {RISK_ORDER.map((r) => (
-                <Bar key={r} dataKey={r} name={r} stackId="f" fill={RISK[r]} cursor="pointer" onClick={(d) => d && setFacility(d.facility)} />
+                <Bar key={r} dataKey={r} name={r} stackId="f" fill={RISK[r]} cursor="pointer" onClick={(d) => d && setFacility(d.facility)}>
+            <LabelList dataKey={r} position="right" formatter={fmtV} style={VLAB} />
+          </Bar>
               ))}
             </BarChart>
           </ResponsiveContainer>
@@ -714,7 +749,9 @@ export default function PS5SLAReliabilityTab({ city, selectedDevices }) {
                 <YAxis type="category" dataKey="comp" width={96} tick={{ fontSize: 10 }} />
                 <Tooltip />
                 <Legend />
-                {RISK_ORDER.map((r) => <Bar key={r} dataKey={r} name={r} stackId="c" fill={RISK[r]} />)}
+                {RISK_ORDER.map((r) => <Bar key={r} dataKey={r} name={r} stackId="c" fill={RISK[r]}>
+            <LabelList dataKey={r} position="right" formatter={fmtV} style={VLAB} />
+          </Bar>)}
               </BarChart>
             </ResponsiveContainer>
           ) : <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-secondary)', fontSize: 13 }}>No component-serial rows in the current selection.</div>}

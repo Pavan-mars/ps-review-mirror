@@ -3,8 +3,7 @@ import {
   BarChart, PieChart, LineChart, ComposedChart,
   Bar, Pie, Cell, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, ReferenceLine,
-} from 'recharts';
+  ResponsiveContainer, ReferenceLine, LabelList } from 'recharts';
 import {
   CITIES, DEVICES, DEVICE_COLORS,
   getPredictionSummary,
@@ -16,6 +15,11 @@ import {
   getRootCauseFactors,
   getAccuracyTrend,
 } from '../../data/mockData';
+// 2026-07-26: direct value labels on every mark. Discrete marks (bars, pie
+// slices) get one label each; continuous series (lines, areas) get an END
+// label only -- a number on every point of a long series goes unread.
+// Label text uses the muted text token, never the series colour.
+import { VLAB, fmtV, endOnlyLabel } from '../shared/DashboardKit';
 
 const SEVERITY_COLORS = { Critical: '#ef4444', High: '#f97316', Medium: '#f59e0b', Low: '#3b82f6', Info: '#6b7280' };
 
@@ -133,7 +137,10 @@ export default function CityOverviewTab({ city, selectedDevices }) {
               <YAxis domain={[85, 100]} tick={{ fontSize: 11 }} />
               <Tooltip />
               <ReferenceLine y={90} stroke="#ef4444" strokeDasharray="5 5" label={{ value: '90% Target', position: 'right', fill: '#ef4444', fontSize: 10 }} />
-              <Line type="monotone" dataKey="accuracy" stroke="#6366f1" strokeWidth={2} dot={false} name="Accuracy" />
+              <Line type="monotone" dataKey="accuracy" stroke="#6366f1" strokeWidth={2} dot={false} name="Accuracy">
+            <LabelList dataKey="accuracy" content={endOnlyLabel(cityAccuracyTrend)} />
+          </Line>
+            <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -143,7 +150,9 @@ export default function CityOverviewTab({ city, selectedDevices }) {
             <PieChart>
               <Pie data={alertSeverityData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} label>
                 {alertSeverityData.map((entry, i) => <Cell key={i} fill={SEVERITY_COLORS[entry.name] || '#6b7280'} />)}
-              </Pie>
+              
+            <LabelList dataKey="value" position="outside" formatter={fmtV} style={VLAB} />
+          </Pie>
               <Tooltip />
               <Legend />
             </PieChart>
@@ -163,7 +172,10 @@ export default function CityOverviewTab({ city, selectedDevices }) {
               <Tooltip />
               <Bar dataKey="count" name="Anomalies" radius={[4, 4, 0, 0]}>
                 {errorsByDevice.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
-              </Bar>
+              
+            <LabelList dataKey="count" position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
+            <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -175,7 +187,10 @@ export default function CityOverviewTab({ city, selectedDevices }) {
               <XAxis type="number" tick={{ fontSize: 11 }} />
               <YAxis dataKey="mode" type="category" width={110} tick={{ fontSize: 10 }} />
               <Tooltip />
-              <Bar dataKey="count" fill="#6366f1" radius={[0, 4, 4, 0]} />
+              <Bar dataKey="count" fill="#6366f1" radius={[0, 4, 4, 0]}>
+            <LabelList dataKey="count" position="right" formatter={fmtV} style={VLAB} />
+          </Bar>
+            <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
             </BarChart>
           </ResponsiveContainer>
         </div>

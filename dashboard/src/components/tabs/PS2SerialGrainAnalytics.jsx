@@ -24,12 +24,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell,
-  Sankey, Rectangle,
-} from 'recharts';
+  Sankey, Rectangle, LabelList } from 'recharts';
 import { apiPS2SerialMetric, useSerialDeviceMap } from '../../data/api';
 import AnalyseButton from '../shared/AnalyseButton';
 import { useFilters } from '../../context/FilterContext';
 import { applyPS2Filters, isAnyPS2FilterActive } from '../../utils/ps2Filters';
+// 2026-07-26: direct value labels on every mark. Discrete marks (bars, pie
+// slices) get one label each; continuous series (lines, areas) get an END
+// label only -- a number on every point of a long series goes unread.
+// Label text uses the muted text token, never the series colour.
+import { VLAB, fmtV, endOnlyLabel } from '../shared/DashboardKit';
 
 const NAVY = '#1E3A5F', INK = '#5A6B7D', LINE = '#E1E9F1';
 const P = { blue:'#9DC3E6', green:'#A9D18E', amber:'#F4CE7A', red:'#F1A9A0', purple:'#C9A9DA', teal:'#8FCFC9' };
@@ -479,8 +483,12 @@ function IgnitionTerminationSubsystemPanel({ city }) {
               <YAxis tick={{ fontSize: 11 }} />
               <Tooltip />
               <Legend />
-              <Bar dataKey="ignition" name="Ignition count" fill={P.red} />
-              <Bar dataKey="termination" name="Termination count" fill={P.blue} />
+              <Bar dataKey="ignition" name="Ignition count" fill={P.red}>
+            <LabelList dataKey="ignition" position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
+              <Bar dataKey="termination" name="Termination count" fill={P.blue}>
+            <LabelList dataKey="termination" position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>

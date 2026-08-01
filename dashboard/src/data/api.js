@@ -291,8 +291,22 @@ export async function apiPS2TopDevices(city) {
     const rows = await apiGet('/ps2/topdevices', city);
     if (rows === undefined) return getPS2TopDevices(city);
     if (!Array.isArray(rows) || rows.length === 0) return null;
+    // 27-Jul-2026. /ps2/topdevices was repointed from ps2_top_devices -- one
+    // stale seed row that the pipeline never loaded -- to v_ps2_device_cascade,
+    // built from the 4,673 devices the 27-Jul S3 load actually put in Aurora.
+    //
+    // w0_5..w60plus stay mapped but are NOT defaulted to zero. The PS2 export
+    // carries no per-device time-window split; the only velocity breakdown in
+    // the run is fleet-level. N(undefined) is null here, so the panel can ask
+    // "do I have this?" and say so, rather than drawing five empty bars that
+    // would read as "this device never cascaded quickly".
     return rows.map((r) => ({
       device_id: r.device_id, category: r.category, cascade_days: N(r.cascade_days),
+      total_impact: N(r.total_impact), avg_impact: N(r.avg_impact),
+      recurrence_cascade_days: N(r.recurrence_cascade_days),
+      chronic: r.chronic === true || r.chronic === 'true' || r.chronic === 'True',
+      impact_rank: N(r.impact_rank),
+      impact_rank_in_category: N(r.impact_rank_in_category),
       w0_5: N(r.w0_5), w5_15: N(r.w5_15), w15_30: N(r.w15_30), w30_60: N(r.w30_60), w60plus: N(r.w60plus),
       dev_rank: N(r.dev_rank),
     }));
@@ -476,26 +490,6 @@ export async function apiPS1Features(city) {
 // the notebook" is more honest here than inventing numbers (same choice the
 // PS2 serial-grain additions made).
 // ============================================================================
-export async function apiPS3DeepdiveMetric(city, metric, params = {}) {
-  if (!BASE) return [];
-  try {
-    const qs = new URLSearchParams({ city, ...params }).toString();
-    const res = await fetch(`${BASE}/ps3/deepdive/${encodeURIComponent(metric)}?${qs}`);
-    if (!res.ok) return [];
-    const rows = await res.json();
-    return Array.isArray(rows) ? rows : [];
-  } catch { return []; }
-}
-
-export async function apiPS3Device360Deepdive(city, deviceId) {
-  if (!BASE || !deviceId) return null;
-  try {
-    const res = await fetch(`${BASE}/ps3/device-360-deepdive?city=${encodeURIComponent(city)}&device_id=${encodeURIComponent(deviceId)}`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch { return null; }
-}
-
 export async function apiPS3Infer(city, instances) {
   if (!BASE) return { status: 'api_not_configured', predictions: [] };
   try {
@@ -509,45 +503,6 @@ export async function apiPS3Infer(city, instances) {
   } catch (e) { return { status: 'error', error: String(e), predictions: [] }; }
 }
 
-export async function apiPS3ServiceNowStatus(city, correlationId) {
-  if (!BASE || !correlationId) return { status: 'unknown' };
-  try {
-    const res = await fetch(`${BASE}/ps3/servicenow/status?city=${encodeURIComponent(city)}&correlation_id=${encodeURIComponent(correlationId)}`);
-    if (!res.ok) return { status: 'unknown' };
-    return await res.json();
-  } catch { return { status: 'unknown' }; }
-}
-
-export async function apiPS3ServiceNowCreateIncident(city, { deviceId, serialId, window: win }) {
-  if (!BASE) return { status: 'api_not_configured' };
-  try {
-    const res = await fetch(`${BASE}/ps3/servicenow/create-incident?city=${encodeURIComponent(city)}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device_id: deviceId, serial_id: serialId, window: win }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) return { status: 'error', httpStatus: res.status, error: body.error || 'request failed' };
-    return { status: body.status || 'created', inc_number: body.inc_number };
-  } catch (e) { return { status: 'error', error: String(e) }; }
-}
-
-// ============================================================================
-// PS2 SERIAL-GRAIN + NEW-FAMILY fetchers (22-Jul-2026) -- generic route over
-// /ps2/serial/:metric on cubic-mars-dashboard-api, backed by the 16-entry
-// allow-list (phi, markov, hmm, condprob, assoc, impact, velocity, chronic,
-// leadlag, recurrence, suppression, crossps, sankey, network, ignition,
-// facility) the RDS-push Lambda populates from the PS2 serial-grain notebook.
-// Same honest-empty-on-no-data contract as the PS3 deep-dive fetchers -- these
-// are brand-new tables, so "no data yet" beats inventing numbers.
-//
-// Also: the REAL PS2 ServiceNow dispatcher (create_incident against the live
-// ctsdev2cubic incwowot API, resolved via ps2_device_cmdb_map, audited in
-// servicenow_incidents) -- distinct from the older /ps1/servicenow-stage
-// flow Device360Modal uses, which only stages a payload and never calls
-// ServiceNow. Verified end-to-end 22-Jul-2026 (real 401 back from ctsdev2cubic
-// against the current placeholder credentials -- full plumbing proven, only
-// the client's real Basic Auth creds are outstanding).
-// ============================================================================
 export async function apiPS2SerialMetric(city, metric, params = {}) {
   if (!BASE) return [];
   try {
@@ -647,3 +602,9 @@ export function useSerialDeviceMap(city) {
   }, [city]);
   return map;
 }
+
+// 2026-07-26 -- removed: apiPS3DeepdiveMetric, apiPS3Device360Deepdive, apiPS3ServiceNowStatus, apiPS3ServiceNowCreateIncident.
+// Each called a /ps3/... route with no server handler, so every invocation
+// 404'd. Nothing referenced them. PS3 ServiceNow staging is now a real
+// route (/ps3/servicenow-stage) and is called from DashboardKit's
+// ServiceNowButton, which both PS1 and PS3 use.

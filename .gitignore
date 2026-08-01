@@ -70,3 +70,6 @@ _find_cells.py
 
 # Station reference dimension consumed by the dashboard-api migrate step (not bulk data)
 !api/lambda/cubic-mars-dashboard-api/sql/*.csv
+
+# scratch/staging folders - never commit
+_to_delete/

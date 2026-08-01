@@ -14,6 +14,12 @@ function DashboardLayout({ children }) {
     <div className="app-layout">
       <Sidebar />
       <div className="main-content">
+        {/* RESTORED 29-Jul-2026. Removing this was wrong. FilterBar is not just
+            chrome: the tables reconcile their rows against the selections it
+            owns, so with it unmounted every PS1 and PS2 table filtered to zero
+            and reported "No rows in the current selection" while the API was
+            returning 500 rows. Tidying the top of the screen is not worth a
+            dashboard that shows nothing. */}
         <FilterBar />
         <div className="page-content">
           {children}

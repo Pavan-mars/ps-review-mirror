@@ -1,0 +1,8 @@
+node_modules
+dist
+.vite
+.env
+.env.*
+_to_delete
+_to_delete_v51verify
+*.log

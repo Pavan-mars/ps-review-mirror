@@ -2,8 +2,10 @@
 -- gold.device_ps1_daily
 -- PS1 -- Predictive Failure: daily feature table for TVM / GATE
 -- Grain: (device_id, transit_day)
--- Target: will_fail_3d -- 1 if device has a chargeable SLA failure within next 3 days
---         (VALIDATOR excluded: zero ServiceNow incidents in incident_root_cause)
+-- Target: will_fail_3d -- 1 if device has ANY hardware-OOS event within next 3 days
+--         (R7-1, 2026-07-24: redefined from chargeable-only to any-hardware-OOS for
+--         TVM/GATE -- see sql/diagnostics/oos_chargeable_mapping_device_serial.sql.
+--         VALIDATOR already used any-hardware-OOS via R6-1; all 3 categories now aligned.)
 -- Training window: transit_day >= 2023-07-01 (moved from 2024-01-01 on 2026-07-20 --
 --   edw_device_event confirmed to have real data back to 2023-07-01 after bronze rerun)
 --
@@ -66,6 +68,17 @@
 --         Diagnosis: TVM 29.58% positive rate at 7d (too high); VALIDATOR 0% (no ServiceNow data).
 --         3-day window targets: TVM ~10-15%, GATE ~3-5%.
 --         failure_level IN (2,3,4,5) confirmed — levels 1 and 16 absent from data.
+--
+-- Michael R7 additions (2026-07-24 -- OOS/chargeable mapping audit):
+--   R7-1: Quantified via sql/diagnostics/oos_chargeable_mapping_device_serial.sql: is_chargeable
+--   is a NARROW subset of is_hardware_oos_event for TVM/GATE (chargeable_pct commonly
+--   5-30% of a device's real hardware-OOS events -- see per-device mapping views
+--   mars_dev.audit.oos_chargeable_mapping_device / _serial). The chargeable-only gate in
+--   R3-2 was silently dropping 70-95% of real hardware failures from will_fail_3d/7d/14d
+--   for TVM/GATE. REDEFINED: TVM/GATE labels now use is_hardware_oos (duration_min > 0,
+--   any failure_level/is_chargeable), matching VALIDATOR's existing R6-1 any-OOS approach.
+--   Old chargeable-gated positive-rate expectations below (R3-2, R4-2) are SUPERSEDED --
+--   expect materially higher positive rates now; re-baseline after rebuild.
 --
 -- Scope notes (confirmed Michael W 16 Jul 2026 — Impact doc):
 --   AVM (431 devices): legacy CTA vending, NOT Ventra. Excluded by mars_device_category='OTHER'
@@ -295,9 +308,9 @@ use_revenue AS (
 --   derived and not operationally validated; 701 fix (QR-2, 2026-07-17) also changed the signal.
 --   Coverage: 3,290 BMV devices with OOS events in device_event_enriched (vs 0% ServiceNow).
 --   validator_tap_baseline / validator_tap_anomaly CTEs removed.
--- R3-2 (2026-06-27): will_fail_3d — 3-day lookahead
---   TVM+GATE: is_chargeable=TRUE AND failure_level IN (2,3,4,5); expected ~0.6-15%
---   VALIDATOR (R5-1 2026-07-16): tap rejection 2σ spike; expected ~2-8%
+-- R3-2 (2026-06-27, SUPERSEDED by R7-1 2026-07-24): will_fail_3d — 3-day lookahead
+--   TVM+GATE: R7-1 now uses any hardware OOS (chargeable gating removed, see above)
+--   VALIDATOR: R6-1 (2026-07-17) any hardware-OOS Set event via device_failures
 outage_label_days AS (
     SELECT DISTINCT
         do2.DEVICE_ID,
@@ -307,9 +320,9 @@ outage_label_days AS (
         SELECT 1 AS n UNION ALL SELECT 2 UNION ALL SELECT 3
     ) seq
     WHERE do2.duration_min > 0
-      AND do2.is_chargeable = TRUE
-      AND do2.failure_level IN (2,3,4,5)
       AND do2.mars_device_category IN ('TVM','GATE')
+      -- R7-1 (2026-07-24): chargeable/failure_level gating REMOVED -- any hardware OOS
+      -- with real downtime now counts (was silently dropping 70-95% of TVM/GATE failures)
     UNION ALL
     -- R6-1: VALIDATOR labels from device_failures (OOS Set events via device_event_enriched)
     SELECT DISTINCT
@@ -320,7 +333,7 @@ outage_label_days AS (
     WHERE df.device_category = 'VALIDATOR'
 ),
 -- R4-2 (2026-07-07): will_fail_7d — 7-day lookahead
---   TVM+GATE: same chargeable definition; VALIDATOR: same tap-spike definition
+--   TVM+GATE: R7-1 (2026-07-24) any hardware OOS (chargeable gating removed); VALIDATOR: R6-1 any-OOS via device_failures
 outage_label_days_7d AS (
     SELECT DISTINCT
         do2.DEVICE_ID,
@@ -331,9 +344,9 @@ outage_label_days_7d AS (
         SELECT 4         UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7
     ) seq
     WHERE do2.duration_min > 0
-      AND do2.is_chargeable = TRUE
-      AND do2.failure_level IN (2,3,4,5)
       AND do2.mars_device_category IN ('TVM','GATE')
+      -- R7-1 (2026-07-24): chargeable/failure_level gating REMOVED -- any hardware OOS
+      -- with real downtime now counts (was silently dropping 70-95% of TVM/GATE failures)
     UNION ALL
     -- R6-1: VALIDATOR labels from device_failures
     SELECT DISTINCT
@@ -347,7 +360,7 @@ outage_label_days_7d AS (
     WHERE df.device_category = 'VALIDATOR'
 ),
 -- R4-2 (2026-07-07): will_fail_14d — 14-day lookahead
---   TVM+GATE: same chargeable definition; VALIDATOR: same tap-spike definition
+--   TVM+GATE: R7-1 (2026-07-24) any hardware OOS (chargeable gating removed); VALIDATOR: R6-1 any-OOS via device_failures
 outage_label_days_14d AS (
     SELECT DISTINCT
         do2.DEVICE_ID,
@@ -360,9 +373,9 @@ outage_label_days_14d AS (
         SELECT 12         UNION ALL SELECT 13 UNION ALL SELECT 14
     ) seq
     WHERE do2.duration_min > 0
-      AND do2.is_chargeable = TRUE
-      AND do2.failure_level IN (2,3,4,5)
       AND do2.mars_device_category IN ('TVM','GATE')
+      -- R7-1 (2026-07-24): chargeable/failure_level gating REMOVED -- any hardware OOS
+      -- with real downtime now counts (was silently dropping 70-95% of TVM/GATE failures)
     UNION ALL
     -- R6-1: VALIDATOR labels from device_failures
     SELECT DISTINCT
@@ -553,16 +566,18 @@ SELECT
     COALESCE(inc24.distinct_event_codes_30d,  0) AS distinct_event_codes_30d,
     inc24.days_since_last_incident,
     inc24.incident_rate_trend,
-    -- TARGET: 1 if device has a chargeable SLA failure within next 3 days
-    -- Definition (R3-2 2026-06-27): is_chargeable=TRUE AND failure_level IN (2,3,4,5)
-    --   AND mars_device_category IN ('TVM','GATE') — VALIDATOR excluded (no ServiceNow data)
-    --   Expected positive rate: TVM ~10-15%, GATE ~3-5%
+    -- TARGET: 1 if device has ANY hardware-OOS event within next 3 days
+    -- Definition (R7-1 2026-07-24): duration_min > 0 AND mars_device_category IN ('TVM','GATE')
+    --   -- chargeable/failure_level gating REMOVED (see oos_chargeable_mapping_device_serial.sql);
+    --   VALIDATOR uses R6-1 any-OOS via device_failures. Expected positive rate: materially
+    --   higher than the old chargeable-gated rate (TVM ~10-15%, GATE ~3-5%) -- re-baseline after rebuild.
     -- History: V08 severity=CRITICAL/WARN = 17 positives (broken)
     --          2026-06-25 duration_min > 0, 7-day, all categories (TVM 29.58% — too high)
     --          2026-06-26 chargeable + failure_level IN (1,2,3,4,5,16) (still 7-day)
     --          2026-06-27 3-day window + TVM/GATE only + failure_level IN (2,3,4,5)
+    --          2026-07-24 (R7-1) chargeable gating removed -- any hardware OOS, TVM/GATE
     CASE WHEN old.DEVICE_ID   IS NOT NULL THEN 1 ELSE 0 END AS will_fail_3d,
-    -- R4-2 (2026-07-07): extended label windows — same chargeable definition as will_fail_3d
+    -- R4-2 (2026-07-07): extended label windows — same any-hardware-OOS definition as will_fail_3d (R7-1)
     CASE WHEN old7.DEVICE_ID  IS NOT NULL THEN 1 ELSE 0 END AS will_fail_7d,
     CASE WHEN old14.DEVICE_ID IS NOT NULL THEN 1 ELSE 0 END AS will_fail_14d
 
@@ -659,7 +674,9 @@ LEFT JOIN outage_label_days_14d old14  ON old14.DEVICE_ID  = sp.DEVICE_ID AND ol
 --        ROUND(SUM(will_fail_3d)*100.0/COUNT(*),2) AS positive_rate_pct
 -- FROM mars_dev.gold.device_ps1_daily
 -- GROUP BY mars_device_category;
--- Expected: TVM ~10-15%, GATE ~3-5%  (VALIDATOR excluded from label)
+-- Expected (R7-1, any-hardware-OOS): materially higher than the old chargeable-gated
+-- ~10-15%/~3-5% -- re-baseline after rebuild. VALIDATOR has its own label via
+-- device_failures (R6-1), not this table's outage_label_days CTEs.
 
 -- Polarity check — confirm failure_level breakdown (TVM+GATE only):
 -- SELECT mars_device_category, failure_level, is_chargeable,

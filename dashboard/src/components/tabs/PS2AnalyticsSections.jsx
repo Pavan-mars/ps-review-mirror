@@ -4,17 +4,17 @@
 // Impact. Drop into the Cascading-Failure tab with ONE import + ONE line:
 //     import PS2AnalyticsSections from './PS2AnalyticsSections';
 //     <PS2AnalyticsSections city={city} />
-// Self-contained: local useLiveData (instant mock render, then live swap) and
-// the api fetchers with mock fallback, so it renders whether or not the live
-// API is wired. CUBIC MARS white-bg + pastel/navy identity (inline styles).
+// Self-contained: local useLiveData (instant empty render, then live swap).
+// 2026-07-26 -- live-only: the api fetchers throw ApiError on failure (no mock
+// fallback); this file's own useLiveData just leaves data at its initial empty
+// array/shape rather than showing fabricated numbers. CUBIC MARS white-bg +
+// pastel/navy identity (inline styles).
 // ============================================================================
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { apiPS2Paths, apiPS2Ignition, apiPS2Impact } from '../../data/api';
-import {
-  getPS2CascadePaths,
-  getPS2IgnitionTermination,
-  getPS2BusinessImpact,
-} from '../../data/mockData';
+import AnalyseButton from '../shared/AnalyseButton';
+import { useFilters } from '../../context/FilterContext';
+import { applyPS2Filters, isAnyPS2FilterActive } from '../../utils/ps2Filters';
 
 const NAVY = '#1E3A5F', INK = '#5A6B7D', LINE = '#E1E9F1';
 const PASTEL = {
@@ -53,16 +53,32 @@ function Bar({ value, max, color }) {
   );
 }
 
-export default function PS2AnalyticsSections({ city = 'CHI' }) {
-  const paths = useLiveData(getPS2CascadePaths(), () => apiPS2Paths(city), [city]);
-  const ign = useLiveData(getPS2IgnitionTermination(), () => apiPS2Ignition(city), [city]);
-  const impact = useLiveData(getPS2BusinessImpact(), () => apiPS2Impact(city), [city]);
+export default function PS2AnalyticsSections({ city = 'CHI', onAnalyse }) {
+  const filters = useFilters();
+  const filtersActive = isAnyPS2FilterActive(filters);
+  const pathsRaw = useLiveData([], () => apiPS2Paths(city), [city]);
+  const ignRaw = useLiveData([], () => apiPS2Ignition(city), [city]);
+  const impactRaw = useLiveData([], () => apiPS2Impact(city), [city]);
+
+  // Cascade paths carry first_subsystem/last_subsystem (not sub_a/sub_b), so
+  // map them onto the shared matcher's expected field names before filtering.
+  const paths = useMemo(() => applyPS2Filters(
+    pathsRaw.map((p) => ({ ...p, sub_a: p.first_subsystem, sub_b: p.last_subsystem })),
+    filters,
+  ), [pathsRaw, filters]);
+  const ign = useMemo(() => applyPS2Filters(ignRaw, filters), [ignRaw, filters]);
+  const impact = useMemo(() => applyPS2Filters(impactRaw, filters), [impactRaw, filters]);
 
   const maxOcc = Math.max(...paths.map((p) => p.occurrences || 0), 1);
   const maxDays = Math.max(...impact.map((d) => d.cascade_days || 0), 1);
   const ignitors = ign.filter((s) => s.net_role === 'Ignitor');
   const terminators = ign.filter((s) => s.net_role === 'Terminator');
   const relays = ign.filter((s) => s.net_role === 'Relay');
+  const FilterHint = ({ shown, total }) => (
+    !filtersActive || shown === total ? null : (
+      <p style={{ margin: '0 0 8px', fontSize: 11, color: '#B08A2E', fontWeight: 600 }}>Showing {shown} of {total} — narrowed by the active filters.</p>
+    )
+  );
 
   return (
     <div>
@@ -73,6 +89,7 @@ export default function PS2AnalyticsSections({ city = 'CHI' }) {
           Most frequent subsystem-to-subsystem cascade sequences (Markov). Occurrences and share are
           grounded in the real Gold run; longer paths refresh from the PS2 notebook export.
         </p>
+        <FilterHint shown={paths.length} total={pathsRaw.length} />
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead><tr><th style={th}>#</th><th style={th}>Cascade path</th>
             <th style={th}>Occurrences</th><th style={{ ...th, width: '32%' }}>Share of chains</th></tr></thead>
@@ -103,6 +120,7 @@ export default function PS2AnalyticsSections({ city = 'CHI' }) {
           Where cascades start (ignitors) versus where they settle (terminators / sinks). Per-subsystem
           day counts populate on the next PS2 notebook run; roles are from the locked association structure.
         </p>
+        <FilterHint shown={ign.length} total={ignRaw.length} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 16, alignItems: 'center' }}>
           <div>
             <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, color: INK, marginBottom: 6 }}>Ignitors (start)</div>
@@ -143,9 +161,10 @@ export default function PS2AnalyticsSections({ city = 'CHI' }) {
           Cascade-day burden ranking (real). Impact score = chain length &times; fault-type weight,
           populated by the PS2 notebook run.
         </p>
+        <FilterHint shown={impact.length} total={impactRaw.length} />
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead><tr><th style={th}>#</th><th style={th}>Device</th><th style={th}>Type</th>
-            <th style={{ ...th, width: '38%' }}>Cascade days</th><th style={th}>Impact score</th></tr></thead>
+            <th style={{ ...th, width: '38%' }}>Cascade days</th><th style={th}>Impact score</th><th style={th}></th></tr></thead>
           <tbody>
             {impact.map((d) => (
               <tr key={d.device_id}>
@@ -162,6 +181,7 @@ export default function PS2AnalyticsSections({ city = 'CHI' }) {
                   </div>
                 </td>
                 <td style={td}>{d.total_impact == null ? <span style={{ color: '#B08A2E' }}>run-pending</span> : fmt(d.total_impact)}</td>
+                <td style={td}>{onAnalyse && <AnalyseButton onClick={() => onAnalyse(d.device_id)} compact />}</td>
               </tr>
             ))}
           </tbody>

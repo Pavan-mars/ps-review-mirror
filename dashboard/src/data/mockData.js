@@ -706,11 +706,11 @@ export function getPS2CascadeWindowDistribution(city = 'CHI') {
   return {
     total_cascade_days: TOTAL_CASCADE_DAYS,
     windows: [
-      { window: '0-5 min', days: 377865, pct: 17.2 },
-      { window: '5-15 min', days: 136893, pct: 6.2 },
-      { window: '15-30 min', days: 97218, pct: 4.4 },
-      { window: '30-60 min', days: 47479, pct: 2.2 },
-      { window: '60+ min', days: 1539093, pct: 70.0 },
+      { window: '0-5min', days: 377865, pct: 17.2 },
+      { window: '5-15min', days: 136893, pct: 6.2 },
+      { window: '15-30min', days: 97218, pct: 4.4 },
+      { window: '30-60min', days: 47479, pct: 2.2 },
+      { window: '60min+', days: 1539093, pct: 70.0 },
     ],
     slow_vs_fast_fault_multiplier: 9.4, // 60+min cascades carry 9.4x more faults
     slow_vs_fast_duration_multiplier: 1881, // and span 1,881x longer
@@ -994,14 +994,14 @@ export function getPS2Markov() {
 // Conditional probability P(B|A,T) — real top pairs.
 export function getPS2Conditional() {
   return [
-    { sub_a: 'ALARM', sub_b: 'SYSTEM',     window_bucket: '5-15 min',  p_b_given_a: 0.998 },
-    { sub_a: 'CHU',   sub_b: 'SYSTEM',     window_bucket: '5-15 min',  p_b_given_a: 0.997 },
-    { sub_a: 'SCRST', sub_b: 'CSC_READER', window_bucket: '0-5 min',   p_b_given_a: 0.996 },
-    { sub_a: 'SCRST', sub_b: 'CSC_READER', window_bucket: '15-30 min', p_b_given_a: 0.996 },
-    { sub_a: 'CHU',   sub_b: 'SYSTEM',     window_bucket: '15-30 min', p_b_given_a: 0.9955 },
-    { sub_a: 'CHU',   sub_b: 'SYSTEM',     window_bucket: '60+ min',   p_b_given_a: 0.992 },
-    { sub_a: 'SCRST', sub_b: 'CSC_READER', window_bucket: '60+ min',   p_b_given_a: 0.991 },
-    { sub_a: 'SCRST', sub_b: 'SYSTEM',     window_bucket: '0-5 min',   p_b_given_a: 0.986 },
+    { sub_a: 'ALARM', sub_b: 'SYSTEM',     window_bucket: '5-15min',  p_b_given_a: 0.998 },
+    { sub_a: 'CHU',   sub_b: 'SYSTEM',     window_bucket: '5-15min',  p_b_given_a: 0.997 },
+    { sub_a: 'SCRST', sub_b: 'CSC_READER', window_bucket: '0-5min',   p_b_given_a: 0.996 },
+    { sub_a: 'SCRST', sub_b: 'CSC_READER', window_bucket: '15-30min', p_b_given_a: 0.996 },
+    { sub_a: 'CHU',   sub_b: 'SYSTEM',     window_bucket: '15-30min', p_b_given_a: 0.9955 },
+    { sub_a: 'CHU',   sub_b: 'SYSTEM',     window_bucket: '60min+',   p_b_given_a: 0.992 },
+    { sub_a: 'SCRST', sub_b: 'CSC_READER', window_bucket: '60min+',   p_b_given_a: 0.991 },
+    { sub_a: 'SCRST', sub_b: 'SYSTEM',     window_bucket: '0-5min',   p_b_given_a: 0.986 },
   ];
 }
 

@@ -8,7 +8,6 @@
 // ============================================================================
 import React, { useState, useEffect, useRef } from 'react';
 import { apiPS2Network, apiPS2Markov } from '../../data/api';
-import { getPS2Network, getPS2Markov } from '../../data/mockData';
 
 const NAVY = '#1E3A5F', INK = '#5A6B7D', LINE = '#E1E9F1';
 const card = { background:'#fff', border:`1px solid ${LINE}`, borderRadius:12, padding:'18px 20px', margin:'16px 0', boxShadow:'0 4px 14px rgba(30,58,95,.05)' };
@@ -22,14 +21,17 @@ function roleColor(btw) {
 export default function PS2CascadeNetwork({ city = 'CHI' }) {
   const [FG, setFG] = useState(null);
   const [mode, setMode] = useState('loading'); // loading | graph | table
-  const [net, setNet] = useState(getPS2Network());
-  const [mk, setMk] = useState(getPS2Markov());
+  // 2026-07-26 -- live-only: apiPS2Network/apiPS2Markov now throw ApiError on
+  // failure instead of falling back to mock; start empty and stay empty (no
+  // fabricated numbers) until the live fetch below succeeds.
+  const [net, setNet] = useState([]);
+  const [mk, setMk] = useState([]);
   const wrapRef = useRef(null);
   const [width, setWidth] = useState(720);
 
   useEffect(() => {
     let live = true;
-    // load data (live -> mock fallback inside the api fns)
+    // load data (live-only; throws on failure, net/mk simply stay at [])
     Promise.all([apiPS2Network(city), apiPS2Markov(city)]).then(([n, m]) => {
       if (!live) return; if (n && n.length) setNet(n); if (m && m.length) setMk(m);
     }).catch(() => {});

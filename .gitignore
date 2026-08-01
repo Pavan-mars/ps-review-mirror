@@ -46,16 +46,16 @@ credentials
 .DS_Store
 Thumbs.db
 
-# local context file — kept local, never shared in the repo
+# local context file â€” kept local, never shared in the repo
 local-notes.md
 .localnotes/
 
-# Local skill files — kept local, never shared in the repo
+# Local skill files â€” kept local, never shared in the repo
 skill/
 !dashboard/src/data/
 !dashboard/src/data/**
 
-# Local validation docs (Michael audits, etc.) — never commit
+# Local validation docs (Michael audits, etc.) â€” never commit
 validation_docs/
 
 # build artifacts / local env (never commit these)
@@ -68,6 +68,12 @@ _v*.txt
 _validator_extract.txt
 _audit_*.py
 _find_cells.py
+
+# Station reference dimension consumed by the dashboard-api migrate step (not bulk data)
+!api/lambda/cubic-mars-dashboard-api/sql/*.csv
+
+# scratch/staging folders - never commit
+_to_delete/
 **/_extract/
 
 # Notebook local run outputs (figures, logs, checkpoints, MLflow local store)
@@ -77,7 +83,7 @@ console.log
 mlruns/
 *.joblib
 
-# Notebook OUT_DIR folders (PS1–PS5 SageMaker / local runs)
+# Notebook OUT_DIR folders (PS1â€“PS5 SageMaker / local runs)
 ps1_*_outputs/
 ps4_outputs/
 ps4_pyspark_outputs/

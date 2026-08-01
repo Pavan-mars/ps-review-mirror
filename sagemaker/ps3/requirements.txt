@@ -1,0 +1,9 @@
+# PS3 serving deps -- pin numpy<2 (project canon: numpy 2.x breaks joblib-pickled sklearn/xgb bundles)
+numpy<2
+pandas==2.2.2
+scikit-learn==1.5.2
+lightgbm==4.5.0
+xgboost==2.1.1
+joblib==1.4.2
+flask==3.0.3
+gunicorn==22.0.0

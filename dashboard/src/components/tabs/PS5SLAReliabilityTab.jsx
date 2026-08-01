@@ -1,552 +1,880 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useContext, useCallback } from 'react';
 import {
-  LineChart, BarChart, PieChart, ComposedChart, RadialBarChart,
-  Line, Bar, Pie, Cell, RadialBar,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, ReferenceLine,
-} from 'recharts';
-import {
-  CITIES, DEVICES, DEVICE_COLORS,
-  getSLAMetrics,
-  getUptimeTrend,
-  getDowntimeByDevice,
-  getDowntimeByCause,
-  getMTBFTrend,
-  getSLABreaches,
-  getComplianceScorecard,
-  getPS5ReliabilityStatus,
-} from '../../data/mockData';
-import { apiPS5Status, apiPS5Reliability, apiPS5DeviceRUL, apiPS5SerialHealth, useLiveData } from '../../data/api';
-import { getPS5ReliabilityDetail, getPS5DeviceRUL, getPS5SerialHealth } from '../../data/ps5ReliabilityMock';
+  BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, PieChart, Pie, LabelList } from 'recharts';
+import FilterContext from '../../context/FilterContext';
+// 2026-07-26: direct value labels on every mark. Discrete marks (bars, pie
+// slices) get one label each; continuous series (lines, areas) get an END
+// label only -- a number on every point of a long series goes unread.
+// Label text uses the muted text token, never the series colour.
+import { VLAB, fmtV, endOnlyLabel, FleetBaselineBand } from '../shared/DashboardKit';
+// 27-Jul-2026. PS5's own device panel is reliability-only. This adds the route
+// into the shared cross-PS view so a device flagged for RUL can be checked
+// against its PS2 cascade history and PS3 attributed subsystem in one click.
+import AnalyseButton from '../shared/AnalyseButton';
+import Device360Modal from './Device360Modal';
 
-const CITY_COLOR_MAP = {};
-CITIES.forEach((c) => { CITY_COLOR_MAP[c.id] = c.color; });
+// PS5 live data comes straight from the Aurora-backed ps5-api (its own API
+// Gateway) and is fetched inline here, so this tab needs NO change to the shared
+// src/data/api.js — which the PS1 & PS3 work streams also evolve. /ps5/devices
+// and /ps5/serials are only served by this gateway (not the main dashboard-api).
+// Override the base with VITE_PS5_API_BASE_URL if the gateway ever changes.
+// /fleet/baseline is served by the MAIN dashboard-api, not by the PS5
+// gateway above -- the two are different API Gateway stages.
+const MAIN_API = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const PS5_BASE = (import.meta.env.VITE_PS5_API_BASE_URL
+  || 'https://b1s4xxlddb.execute-api.us-east-1.amazonaws.com').replace(/\/$/, '');
+async function ps5Get(path, city) {
+  const res = await fetch(`${PS5_BASE}${path}?city=${encodeURIComponent(city)}`);
+  if (res.status === 404) return null; // no PS5 run for this city (CHI-only pilot)
+  if (!res.ok) throw new Error(`PS5 API ${path} -> ${res.status}`);
+  return res.json();
+}
+async function apiPS5DeviceRUL(city) {
+  const d = await ps5Get('/ps5/devices', city);
+  return (d && Array.isArray(d.devices) && d.devices.length) ? d : null;
+}
+async function apiPS5SerialHealth(city) {
+  const d = await ps5Get('/ps5/serials', city);
+  return (d && Array.isArray(d.serials) && d.serials.length) ? d : null;
+}
 
-const SUB_TABS = [
-  { key: 'overview', label: 'SLA Overview' },
-  { key: 'downtime', label: 'Downtime Analysis' },
-  { key: 'failure', label: 'Failure Metrics' },
-  { key: 'breaches', label: 'Breach Tracking' },
-  { key: 'compliance', label: 'Compliance Reporting' },
-  { key: 'reliability', label: 'Reliability Metrics' },
-  { key: 'devicerul', label: 'Device RUL' },
-  { key: 'serial', label: 'Serial Health' },
+// ============================================================================
+// PS5 · Reliability / RUL — native real-data analytics view.
+// Replaces the six legacy mock SLA sub-tabs (SLA Overview / Downtime / Failure
+// Metrics / Breach / Compliance / Reliability Metrics) with a single, live view
+// driven entirely by the Aurora-backed ps5-api (/ps5/devices + /ps5/serials).
+// No sample/mock data: it shows fresh RDS rows or a clean loading/empty/error
+// state. Styling reuses the dashboard design tokens (index.css .card/.badge/
+// .data-table/.filter-btn) and the severity colour scale so it reads native.
+// ============================================================================
+
+// Risk palette == index.css severity scale (--severity-critical/high/medium/low)
+const RISK = { CRITICAL: '#ef4444', HIGH: '#f97316', MEDIUM: '#eab308', LOW: '#3b82f6' };
+const RISK_ORDER = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+const RISK_BADGE = { CRITICAL: 'badge-critical', HIGH: 'badge-high', MEDIUM: 'badge-medium', LOW: 'badge-low' };
+// Device-type accents — deliberately outside the severity reds/ambers so type
+// and risk never collide visually (primary indigo / sky / violet).
+const TCOL = { TVM: '#6366f1', GATE: '#0ea5e9', VALIDATOR: '#8b5cf6' };
+const TYPE_ORDER = ['TVM', 'GATE', 'VALIDATOR'];
+const TYPE_LABEL = { TVM: 'TVMs', GATE: 'Gates', VALIDATOR: 'Validators' };
+// map the global FilterBar device labels -> ps5-api mars_device_category
+const DEVLABEL_TO_CAT = { TVMs: 'TVM', Gates: 'GATE', Validators: 'VALIDATOR' };
+const COMP_LABEL = {
+  tvmsbc: 'TVM SBC', cbxid: 'CBX ID', billacceptor: 'Bill Acceptor',
+  coinacceptor: 'Coin Acceptor', AV2_SAM: 'AV2 SAM', SIM_ICCID: 'SIM ICCID',
+  mpos: 'mPOS', None: 'Unclassified', null: 'Unclassified', '': 'Unclassified',
+};
+
+const num = (v, d = 1) => (v === null || v === undefined || Number.isNaN(v) ? '—' : Number(v).toFixed(d));
+const intf = (v) => (v === null || v === undefined ? '—' : Number(v).toLocaleString());
+const facLabel = (f) => (f === null || f === undefined || f === '' ? '—' : String(f).replace(/\.0$/, ''));
+const compLabel = (c) => COMP_LABEL[c] ?? (c || 'Unclassified');
+const hexA = (hex, a) => {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${a})`;
+};
+const median = (arr) => {
+  const a = arr.filter((x) => x !== null && x !== undefined && !Number.isNaN(x)).sort((x, y) => x - y);
+  if (!a.length) return null;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+};
+// RUL health colour (matches the CityOverview health scale)
+const rulColor = (d) => (d == null ? '#64748b' : d <= 7 ? '#ef4444' : d <= 30 ? '#f97316' : d <= 90 ? '#eab308' : '#10b981');
+
+const RUL_BINS = [
+  { key: '0–7d', lo: 0, hi: 7, color: '#ef4444' },
+  { key: '7–30d', lo: 7, hi: 30, color: '#f97316' },
+  { key: '30–90d', lo: 30, hi: 90, color: '#eab308' },
+  { key: '90–365d', lo: 90, hi: 365, color: '#3b82f6' },
+  { key: '365d+', lo: 365, hi: Infinity, color: '#10b981' },
 ];
 
-const DOWNTIME_INCIDENTS = [
-  { device_id: 'TVM-CHI-042', city: 'CHI', duration: '14h 23m', cause: 'Power supply failure', impact: '2,340 transactions lost' },
-  { device_id: 'GTE-BOS-018', city: 'BOS', duration: '11h 45m', cause: 'Motor burnout', impact: '1,890 passengers delayed' },
-  { device_id: 'RDR-LAX-031', city: 'LAX', duration: '9h 12m', cause: 'NFC module fault', impact: '1,456 tap failures' },
-  { device_id: 'VLD-TOC-055', city: 'TOC', duration: '8h 38m', cause: 'Firmware crash', impact: '1,205 validation errors' },
-  { device_id: 'TVM-BOS-009', city: 'BOS', duration: '7h 54m', cause: 'Display panel failure', impact: '980 transactions lost' },
-];
+const PAGE = 25;
 
-const MTTR_DISTRIBUTION = [{ bin: '0-1hr', count: 42 }, { bin: '1-2hr', count: 28 }, { bin: '2-4hr', count: 18 }, { bin: '4-8hr', count: 9 }, { bin: '8+hr', count: 3 }];
+// ---- small presentational helpers ------------------------------------------
+function Chip({ active, color, onClick, children, title }) {
+  return (
+    <button
+      className={`filter-btn${active ? ' active' : ''}`}
+      onClick={onClick}
+      title={title}
+      style={active && color ? { background: color, borderColor: color, color: '#fff' } : undefined}
+    >
+      {children}
+    </button>
+  );
+}
 
-const ERROR_RATE_TREND = Array.from({ length: 30 }, (_, i) => {
-  const d = new Date(); d.setDate(d.getDate() - 29 + i);
-  return { date: d.toISOString().split('T')[0].slice(5), errors: Math.round((3.2 + Math.sin(i / 5) * 1.5 + Math.cos(i / 3) * 0.4) * 10) / 10 };
-});
+function RiskBadge({ band }) {
+  if (!band) return <span className="badge badge-info">—</span>;
+  return <span className={`badge ${RISK_BADGE[band] || 'badge-info'}`}>{band}</span>;
+}
 
-const BREACH_TREND_30D = Array.from({ length: 30 }, (_, i) => {
-  const d = new Date(); d.setDate(d.getDate() - 29 + i);
-  return { date: d.toISOString().split('T')[0].slice(5), critical: Math.floor(Math.abs(Math.sin(i * 0.7)) * 3), high: Math.floor(Math.abs(Math.cos(i * 0.5)) * 4), medium: Math.floor(Math.abs(Math.sin(i * 0.3)) * 5 + 1), low: Math.floor(Math.abs(Math.cos(i * 0.2)) * 3 + 1) };
-});
+function SortTh({ label, col, sort, setSort, align }) {
+  const active = sort.key === col;
+  return (
+    <th
+      onClick={() => setSort((s) => ({ key: col, dir: s.key === col && s.dir === 'asc' ? 'desc' : 'asc' }))}
+      style={{ cursor: 'pointer', whiteSpace: 'nowrap', textAlign: align || 'left', userSelect: 'none' }}
+      title="Click to sort"
+    >
+      {label}{active ? (sort.dir === 'asc' ? ' ▲' : ' ▼') : ''}
+    </th>
+  );
+}
 
-const BREACH_DURATION_DIST = [{ bin: '0-2hr', count: 34 }, { bin: '2-4hr', count: 22 }, { bin: '4-8hr', count: 12 }, { bin: '8+hr', count: 5 }];
+function Pager({ page, pages, total, setPage, label }) {
+  if (total === 0) return null;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, fontSize: 12, color: 'var(--text-secondary)' }}>
+      <span>{total.toLocaleString()} {label} · page {page + 1} of {pages}</span>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button className="filter-btn" disabled={page === 0} onClick={() => setPage(0)} style={{ opacity: page === 0 ? 0.4 : 1 }}>« First</button>
+        <button className="filter-btn" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))} style={{ opacity: page === 0 ? 0.4 : 1 }}>‹ Prev</button>
+        <button className="filter-btn" disabled={page >= pages - 1} onClick={() => setPage((p) => Math.min(pages - 1, p + 1))} style={{ opacity: page >= pages - 1 ? 0.4 : 1 }}>Next ›</button>
+        <button className="filter-btn" disabled={page >= pages - 1} onClick={() => setPage(pages - 1)} style={{ opacity: page >= pages - 1 ? 0.4 : 1 }}>Last »</button>
+      </div>
+    </div>
+  );
+}
 
-const REMEDIATION_ACTIONS = [
-  { action: 'Deploy firmware v3.4.2 hotfix for TVM fleet', owner: 'Engineering', due: '2026-05-01', status: 'In Progress', priority: 'critical' },
-  { action: 'Replace aging gate motors in BOS stations', owner: 'Field Ops', due: '2026-05-15', status: 'Planned', priority: 'high' },
-  { action: 'Upgrade NFC modules in LAX readers', owner: 'Hardware Team', due: '2026-05-10', status: 'In Progress', priority: 'high' },
-  { action: 'Install UPS backup for TOC validators', owner: 'Infrastructure', due: '2026-05-20', status: 'Planned', priority: 'medium' },
-  { action: 'Retrain ML models with updated thresholds', owner: 'Data Science', due: '2026-04-30', status: 'Complete', priority: 'low' },
-];
-
-function uptimeColor(val) { if (val >= 99.5) return '#22c55e'; if (val >= 99) return '#f59e0b'; return '#ef4444'; }
-function formatTimestamp(iso) { try { const d = new Date(iso); return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return iso; } }
-
-export default function PS5SLAReliabilityTab({ city, selectedDevices }) {
-  const selectedCities = useMemo(() => [city], [city]);
-  const [activeTab, setActiveTab] = useState('overview');
-
-  const slaMetrics = useMemo(() => getSLAMetrics(selectedCities, selectedDevices), [selectedCities, selectedDevices]);
-  const uptimeTrend = useMemo(() => getUptimeTrend(selectedCities, selectedDevices), [selectedCities, selectedDevices]);
-  const downtimeByDevice = useMemo(() => getDowntimeByDevice(selectedCities, selectedDevices), [selectedCities, selectedDevices]);
-  const downtimeByCause = useMemo(() => getDowntimeByCause(selectedCities, selectedDevices), [selectedCities, selectedDevices]);
-  const mtbfTrend = useMemo(() => getMTBFTrend(selectedCities, selectedDevices), [selectedCities, selectedDevices]);
-  const slaBreaches = useMemo(() => getSLABreaches(selectedCities, selectedDevices), [selectedCities, selectedDevices]);
-  const complianceScorecard = useMemo(() => getComplianceScorecard(selectedCities, selectedDevices), [selectedCities, selectedDevices]);
-  // Reliability Metrics sub-tab: live from cubic-mars-dashboard-api; mock fallback.
-  const ps5Status = useLiveData(getPS5ReliabilityStatus(city), () => apiPS5Status(city), [city]);
-  const ps5Detail = useLiveData(getPS5ReliabilityDetail(city), () => apiPS5Reliability(city), [city]);
-  // v5.1 device-grain RUL + serial-grain health (hardware-OOS-Set); live from /ps5/devices , /ps5/serials.
-  const ps5Devices = useLiveData(getPS5DeviceRUL(city), () => apiPS5DeviceRUL(city), [city]);
-  const ps5Serials = useLiveData(getPS5SerialHealth(city), () => apiPS5SerialHealth(city), [city]);
-  const [devSort, setDevSort] = useState({ key: 'rul_days', dir: 'asc' });
-  const [serSort, setSerSort] = useState({ key: 'risk_score', dir: 'desc' });
-
-  const cityName = CITIES.find(c => c.id === city)?.name || city;
-
-  // SLA derived data
-  const downtimeCausePie = useMemo(() => downtimeByCause.map((d) => ({ name: d.cause, value: d.hours })), [downtimeByCause]);
-  const devicesExceedingThreshold = useMemo(() => {
-    const devices = [];
-    selectedDevices.forEach((device, i) => {
-      const errorRate = 2.5 + Math.sin((city.length + i) * 1.3) * 3;
-      if (errorRate > 4) devices.push({ city, device, error_rate: Math.round(errorRate * 100) / 100, threshold: 5.0, pct_of_threshold: Math.round((errorRate / 5) * 100) });
-    });
-    return devices.sort((a, b) => b.error_rate - a.error_rate);
-  }, [city, selectedDevices]);
-
-  const overallCompliance = useMemo(() => {
-    if (!complianceScorecard.length) return 0;
-    return Math.round((complianceScorecard.filter((c) => c.status === 'Pass').length / complianceScorecard.length) * 100);
-  }, [complianceScorecard]);
-  const gaugeData = useMemo(() => [{ name: 'Compliance', value: overallCompliance, fill: overallCompliance >= 80 ? '#22c55e' : overallCompliance >= 60 ? '#f59e0b' : '#ef4444' }], [overallCompliance]);
-
-  const breachByCause = useMemo(() => {
-    const counts = {};
-    slaBreaches.forEach((b) => { const cause = b.cause || 'Unknown'; counts[cause] = (counts[cause] || 0) + 1; });
-    return Object.entries(counts).map(([cause, count]) => ({ cause, count })).sort((a, b) => b.count - a.count);
-  }, [slaBreaches]);
-
-  const breachBySeverity = useMemo(() => {
-    const SEVERITY_COLORS = { Critical: '#ef4444', High: '#f59e0b', Medium: '#3b82f6', Low: '#22c55e' };
-    const counts = {};
-    slaBreaches.forEach((b) => { const sev = b.severity || 'Medium'; counts[sev] = (counts[sev] || 0) + 1; });
-    return ['Critical', 'High', 'Medium', 'Low'].filter((sev) => counts[sev]).map((sev) => ({ severity: sev, count: counts[sev], fill: SEVERITY_COLORS[sev] }));
-  }, [slaBreaches]);
-
-  const uptimeByDeviceType = useMemo(() => {
-    const colors = { Readers: '#6366f1', TVMs: '#f59e0b', Gates: '#ef4444', Validators: '#10b981' };
-    return selectedDevices.map((device) => {
-      const seed = device.length * 7 + device.charCodeAt(0);
-      return { device, uptime: Math.round(Math.min(99.0 + (seed % 100) / 100, 100) * 100) / 100, fill: colors[device] || '#8884d8' };
-    });
-  }, [selectedDevices]);
-
-  // PS5 concordance-index color helper (0.5 = coin flip, everything here is currently weak)
-  function ciColor(ci) { if (ci >= 0.7) return '#22c55e'; if (ci >= 0.6) return '#f59e0b'; return '#ef4444'; }
-  function sortRows(rows, s) {
-    const out = [...(rows || [])];
-    out.sort((a, b) => {
-      const av = a[s.key], bv = b[s.key];
-      const c = (typeof av === 'number' && typeof bv === 'number') ? av - bv : String(av).localeCompare(String(bv));
-      return s.dir === 'asc' ? c : -c;
-    });
-    return out;
+// ---- lightweight, dependency-free Sankey (device type -> risk band) ---------
+function TypeRiskSankey({ matrix, typeCounts, riskCounts, total, onFlow }) {
+  const W = 720, H = 300, PAD = 18, COLW = 150, x1 = COLW, x2 = W - COLW;
+  const types = TYPE_ORDER.filter((t) => typeCounts[t] > 0);
+  const risks = RISK_ORDER.filter((r) => riskCounts[r] > 0);
+  if (!total || !types.length || !risks.length) {
+    return <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-secondary)', fontSize: 13 }}>No rows in the current selection.</div>;
   }
-  const toggleSort = (setter, cur, key) => setter(cur.key === key ? { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' });
-  const bandBadge = (b) => `badge badge-${b === 'CRITICAL' ? 'critical' : b === 'HIGH' ? 'high' : b === 'MEDIUM' ? 'medium' : 'success'}`;
+  const gap = 10;
+  const availL = H - 2 * PAD - gap * Math.max(0, types.length - 1);
+  const availR = H - 2 * PAD - gap * Math.max(0, risks.length - 1);
+  const scaleL = availL / total, scaleR = availR / total;
+  // left nodes
+  const lNodes = {}; let ly = PAD;
+  types.forEach((t) => { const h = typeCounts[t] * scaleL; lNodes[t] = { y: ly, h, off: 0 }; ly += h + gap; });
+  // right nodes
+  const rNodes = {}; let ry = PAD;
+  risks.forEach((r) => { const h = riskCounts[r] * scaleR; rNodes[r] = { y: ry, h, off: 0 }; ry += h + gap; });
+  const ribbons = [];
+  types.forEach((t) => {
+    risks.forEach((r) => {
+      const c = (matrix[t] && matrix[t][r]) || 0;
+      if (!c) return;
+      const wl = c * scaleL, wr = c * scaleR;
+      const y1 = lNodes[t].y + lNodes[t].off; lNodes[t].off += wl;
+      const y2 = rNodes[r].y + rNodes[r].off; rNodes[r].off += wr;
+      const xm = (x1 + x2) / 2;
+      const d = `M ${x1} ${y1} C ${xm} ${y1}, ${xm} ${y2}, ${x2} ${y2} `
+              + `L ${x2} ${y2 + wr} C ${xm} ${y2 + wr}, ${xm} ${y1 + wl}, ${x1} ${y1 + wl} Z`;
+      ribbons.push({ d, t, r, c });
+    });
+  });
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} style={{ maxWidth: '100%' }} role="img" aria-label="Device type to risk band flow">
+      {ribbons.map((rb, i) => (
+        <path key={i} d={rb.d} fill={hexA(RISK[rb.r], 0.45)} stroke="none"
+          style={{ cursor: onFlow ? 'pointer' : 'default' }}
+          onClick={onFlow ? () => onFlow(rb.t, rb.r) : undefined}>
+          <title>{`${TYPE_LABEL[rb.t]} → ${rb.r}: ${rb.c.toLocaleString()} devices`}</title>
+        </path>
+      ))}
+      {types.map((t) => (
+        <g key={t}>
+          <rect x={x1 - 10} y={lNodes[t].y} width={10} height={Math.max(1, lNodes[t].h)} rx={2} fill={TCOL[t]} />
+          <text x={x1 - 16} y={lNodes[t].y + lNodes[t].h / 2} textAnchor="end" dominantBaseline="middle" fontSize={12} fontWeight={600} fill="#1e293b">
+            {TYPE_LABEL[t]} ({typeCounts[t].toLocaleString()})
+          </text>
+        </g>
+      ))}
+      {risks.map((r) => (
+        <g key={r}>
+          <rect x={x2} y={rNodes[r].y} width={10} height={Math.max(1, rNodes[r].h)} rx={2} fill={RISK[r]} />
+          <text x={x2 + 16} y={rNodes[r].y + rNodes[r].h / 2} textAnchor="start" dominantBaseline="middle" fontSize={12} fontWeight={600} fill="#1e293b">
+            {r} ({riskCounts[r].toLocaleString()})
+          </text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+// ---- device drill-down modal (light, matches .card design) ------------------
+function DeviceModal({ device, serials, meta, onClose }) {
+  const [showPayload, setShowPayload] = useState(false);
+  // Cross-PS view for this device, opened from the header. Rendered inside this
+  // modal rather than the tab root so it stacks above and closing it returns
+  // here rather than dumping the user back to the device list.
+  const [crossPS, setCrossPS] = useState(null);
+  const comps = useMemo(
+    () => serials.filter((s) => s.device_id === device.device_id).sort((a, b) => (b.risk_score || 0) - (a.risk_score || 0)),
+    [serials, device.device_id],
+  );
+  const payload = useMemo(() => ({
+    source: 'CUBIC MARS PS5 · Reliability/RUL',
+    event_def_version: meta?.event_def_version,
+    as_of_date: meta?.as_of_date,
+    device_id: device.device_id,
+    device_category: device.mars_device_category,
+    facility_id: facLabel(device.facility_id),
+    risk_band: device.risk_band,
+    rul_standard_days: device.rul_standard_days,
+    rul_p10_days: device.rul_p10_days,
+    rul_p90_days: device.rul_p90_days,
+    hazard_score: device.hazard_score,
+    is_overdue: device.is_overdue,
+    short_description: `[PS5] ${device.risk_band} reliability risk on ${device.mars_device_category} ${device.device_id}`
+      + ` — RUL ${num(device.rul_standard_days)}d${device.is_overdue ? ' (OVERDUE)' : ''}`,
+    high_risk_components: comps.filter((c) => c.risk_tier === 'CRITICAL' || c.risk_tier === 'HIGH')
+      .slice(0, 20).map((c) => ({ serial: c.component_serial_nbr, type: c.component_type, tier: c.risk_tier, expected_rul_days: c.expected_component_rul_days })),
+  }), [device, comps, meta]);
 
   return (
-    <div>
-      <div className="tab-container">
-        {SUB_TABS.map((t) => <button key={t.key} className={`tab ${activeTab === t.key ? 'active' : ''}`} onClick={() => setActiveTab(t.key)}>{t.label}</button>)}
-      </div>
-
-      {/* SLA Overview */}
-      {activeTab === 'overview' && (
-        <div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 24 }}>
-            <div className="card"><div className="card-header">Current Uptime</div><div className="kpi-value" style={{ color: uptimeColor(slaMetrics.uptime_pct) }}>{slaMetrics.uptime_pct}%</div><div className="kpi-label">Fleet-wide</div><div className="kpi-trend" style={{ color: slaMetrics.uptime_pct >= 99.5 ? '#22c55e' : '#f59e0b' }}>Target: 99.9%</div></div>
-            <div className="card"><div className="card-header">Monthly Downtime</div><div className="kpi-value">{slaMetrics.downtime_hours}h</div><div className="kpi-label">Total hours</div></div>
-            <div className="card"><div className="card-header">MTBF</div><div className="kpi-value">{slaMetrics.mtbf_days}d</div><div className="kpi-label">Mean time between failures</div></div>
-            <div className="card"><div className="card-header">MTTR</div><div className="kpi-value">{slaMetrics.mttr_hours}h</div><div className="kpi-label">Mean time to recovery</div><div className="kpi-trend" style={{ color: slaMetrics.mttr_hours <= 4 ? '#22c55e' : '#ef4444' }}>Target: &lt;4h</div></div>
-            <div className="card"><div className="card-header">Error Rate</div><div className="kpi-value">{slaMetrics.error_rate_per_device}</div><div className="kpi-label">Per device per day</div></div>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowY: 'auto', padding: '4vh 2vw' }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: 'min(960px, 96vw)', padding: 22, boxShadow: '0 20px 60px rgba(15,23,42,0.35)' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 800, fontFamily: 'monospace', color: 'var(--text)' }}>{device.device_id}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3 }}>
+              {TYPE_LABEL[device.mars_device_category] || device.mars_device_category} · Facility {facLabel(device.facility_id)} · PS5 device 360
+            </div>
           </div>
-
-          <div className="card" style={{ marginBottom: 24 }}>
-            <div className="card-header">Uptime Trend — {cityName} (30 Days)</div>
-            <ResponsiveContainer width="100%" height={320}>
-              <LineChart data={uptimeTrend}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="date" tick={{ fontSize: 10 }} interval={4} /><YAxis domain={[98, 100]} tick={{ fontSize: 11 }} /><Tooltip /><Legend />
-                <ReferenceLine y={99.9} stroke="#ef4444" strokeDasharray="5 5" label={{ value: '99.9% SLA', position: 'right', fontSize: 10, fill: '#ef4444' }} />
-                <Line type="monotone" dataKey={city} stroke={CITY_COLOR_MAP[city] || '#8884d8'} strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-
-          <div className="card" style={{ marginTop: 24 }}>
-            <div className="card-header">Uptime by Device Type</div>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={uptimeByDeviceType}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="device" tick={{ fontSize: 12 }} /><YAxis domain={[98, 100]} tick={{ fontSize: 11 }} /><Tooltip formatter={(value) => `${value}%`} />
-                <ReferenceLine y={99.9} stroke="#ef4444" strokeDasharray="5 5" label={{ value: '99.9%', position: 'right', fontSize: 10, fill: '#ef4444' }} />
-                <Bar dataKey="uptime" name="Uptime %" radius={[4, 4, 0, 0]}>{uptimeByDeviceType.map((entry, i) => <Cell key={i} fill={entry.fill} />)}</Bar>
-              </BarChart>
-            </ResponsiveContainer>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <RiskBadge band={device.risk_band} />
+            {device.is_overdue && <span className="badge badge-critical">OVERDUE</span>}
+            <AnalyseButton onClick={() => setCrossPS(device.device_id)}
+              label="Analyse across PS1–PS5"
+              title="Open Device 360 — PS1 risk, PS2 cascade history, PS3 attributed subsystem, PS4 anomalies" />
+            <button onClick={onClose} className="filter-btn" style={{ fontSize: 16, lineHeight: 1, padding: '4px 10px' }}>✕</button>
           </div>
         </div>
-      )}
 
-      {/* Downtime Analysis */}
-      {activeTab === 'downtime' && (
-        <div>
-          <div className="card" style={{ marginBottom: 24 }}>
-            <div className="card-header">Downtime by Device Type (Planned vs Unplanned)</div>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={downtimeByDevice}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="device_type" tick={{ fontSize: 12 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip /><Legend />
-                <Bar dataKey="planned_hours" name="Planned" stackId="a" fill="#3b82f6" /><Bar dataKey="unplanned_hours" name="Unplanned" stackId="a" fill="#ef4444" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+          <div className="card" style={{ padding: 14 }}>
+            <div className="card-header" style={{ marginBottom: 6 }}>RUL (standard)</div>
+            <div className="kpi-value" style={{ fontSize: 24, color: rulColor(device.rul_standard_days) }}>{num(device.rul_standard_days)}<span style={{ fontSize: 13, color: 'var(--text-secondary)' }}> d</span></div>
+            <div className="kpi-label">P10–P90 {num(device.rul_p10_days)}–{num(device.rul_p90_days)}d</div>
           </div>
-          <div className="grid-2">
-            <div className="card">
-              <div className="card-header">Downtime by Cause</div>
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart><Pie data={downtimeCausePie} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={95} label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}>
-                  {downtimeCausePie.map((_, i) => { const colors = ['#ef4444', '#f97316', '#f59e0b', '#3b82f6', '#6366f1', '#10b981', '#ec4899']; return <Cell key={i} fill={colors[i % colors.length]} />; })}
-                </Pie><Tooltip /></PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="card" style={{ overflowX: 'auto' }}>
-              <div className="card-header">Longest Downtime Incidents</div>
+          <div className="card" style={{ padding: 14 }}>
+            <div className="card-header" style={{ marginBottom: 6 }}>Hazard score</div>
+            <div className="kpi-value" style={{ fontSize: 24 }}>{num(device.hazard_score, 3)}</div>
+            <div className="kpi-label">C-index {num(device.concordance_index, 3)}</div>
+          </div>
+          <div className="card" style={{ padding: 14 }}>
+            <div className="card-header" style={{ marginBottom: 6 }}>Since HW-OOS</div>
+            <div className="kpi-value" style={{ fontSize: 24 }}>{num(device.days_since_hw_oos, 0)}<span style={{ fontSize: 13, color: 'var(--text-secondary)' }}> d</span></div>
+            <div className="kpi-label">Fails / 30d: {intf(device.roll_fail_30d)}</div>
+          </div>
+          <div className="card" style={{ padding: 14 }}>
+            <div className="card-header" style={{ marginBottom: 6 }}>Data-quality gate</div>
+            <div style={{ marginTop: 4 }}><span className={`badge ${device.data_quality_gate_passed ? 'badge-success' : 'badge-critical'}`}>{device.data_quality_gate_passed ? 'Gate pass' : 'Below floor'}</span></div>
+            <div className="kpi-label" style={{ marginTop: 8 }}>Healthy age {num(device.current_healthy_age_days, 0)}d</div>
+          </div>
+        </div>
+
+        <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+          <div className="card-header">Components on this device ({comps.length})</div>
+          {comps.length ? (
+            <div style={{ overflowX: 'auto', maxHeight: 260, overflowY: 'auto' }}>
               <table className="data-table">
-                <thead><tr><th>Device</th><th>City</th><th>Duration</th><th>Cause</th><th>Impact</th></tr></thead>
-                <tbody>{DOWNTIME_INCIDENTS.filter(inc => inc.city === city || city === 'TOC').slice(0, 5).map((inc, i) => (
-                  <tr key={i}><td style={{ fontFamily: 'monospace', fontSize: 11 }}>{inc.device_id}</td><td>{inc.city}</td><td style={{ fontWeight: 600, color: '#ef4444' }}>{inc.duration}</td><td style={{ fontSize: 12 }}>{inc.cause}</td><td style={{ fontSize: 11, opacity: 0.8 }}>{inc.impact}</td></tr>
-                ))}</tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Failure Metrics */}
-      {activeTab === 'failure' && (
-        <div>
-          <div className="card" style={{ marginBottom: 24 }}>
-            <div className="card-header">MTBF Trend by Device Type (12 Months)</div>
-            <ResponsiveContainer width="100%" height={320}>
-              <LineChart data={mtbfTrend}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="month" tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip /><Legend />
-                <Line type="monotone" dataKey="tvms" name="TVMs" stroke={DEVICE_COLORS.TVMs} strokeWidth={2} dot={{ r: 3 }} />
-                <Line type="monotone" dataKey="gates" name="Gates" stroke={DEVICE_COLORS.Gates} strokeWidth={2} dot={{ r: 3 }} />
-                <Line type="monotone" dataKey="validators" name="Validators" stroke={DEVICE_COLORS.Validators} strokeWidth={2} dot={{ r: 3 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="grid-2">
-            <div className="card">
-              <div className="card-header">MTTR Distribution</div>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={MTTR_DISTRIBUTION}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="bin" tick={{ fontSize: 12 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>{MTTR_DISTRIBUTION.map((_, i) => { const colors = ['#22c55e', '#84cc16', '#f59e0b', '#f97316', '#ef4444']; return <Cell key={i} fill={colors[i]} />; })}</Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="card">
-              <div className="card-header">Error Rate Trend (30 Days)</div>
-              <ResponsiveContainer width="100%" height={280}>
-                <LineChart data={ERROR_RATE_TREND}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="date" tick={{ fontSize: 10 }} interval={4} /><YAxis tick={{ fontSize: 11 }} /><Tooltip />
-                  <ReferenceLine y={5} stroke="#ef4444" strokeDasharray="5 5" label={{ value: 'Threshold', position: 'right', fontSize: 10, fill: '#ef4444' }} />
-                  <Line type="monotone" dataKey="errors" stroke="#6366f1" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Breach Tracking */}
-      {activeTab === 'breaches' && (
-        <div>
-          <div className="card" style={{ marginBottom: 24, overflowX: 'auto' }}>
-            <div className="card-header">SLA Breaches — {cityName}</div>
-            <table className="data-table">
-              <thead><tr><th>ID</th><th>City</th><th>Device</th><th>Severity</th><th>Duration (hrs)</th><th>Start Time</th><th>Status</th><th>Cause</th></tr></thead>
-              <tbody>
-                {slaBreaches.map((b, i) => (
-                  <tr key={i}><td style={{ fontFamily: 'monospace', fontSize: 11 }}>{b.id}</td><td>{b.city}</td><td style={{ fontFamily: 'monospace', fontSize: 11 }}>{b.device_id}</td>
-                    <td><span className={`badge badge-${b.severity === 'Critical' ? 'critical' : b.severity === 'Major' ? 'high' : 'medium'}`}>{b.severity}</span></td>
-                    <td style={{ fontWeight: 600 }}>{b.duration_hours}h</td><td style={{ fontSize: 11, opacity: 0.8 }}>{formatTimestamp(b.start_time)}</td>
-                    <td><span className={b.status === 'Resolved' ? 'badge badge-success' : 'badge badge-critical'}>{b.status}</span></td><td style={{ fontSize: 12 }}>{b.cause}</td>
-                  </tr>
-                ))}
-                {slaBreaches.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', opacity: 0.5, padding: 24 }}>No breaches</td></tr>}
-              </tbody>
-            </table>
-          </div>
-          <div className="grid-2">
-            <div className="card">
-              <div className="card-header">Breach Count Trend (30 Days)</div>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={BREACH_TREND_30D}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="date" tick={{ fontSize: 9 }} interval={4} /><YAxis tick={{ fontSize: 11 }} /><Tooltip /><Legend />
-                  <Bar dataKey="critical" name="Critical" stackId="a" fill="#ef4444" /><Bar dataKey="high" name="High" stackId="a" fill="#f97316" /><Bar dataKey="medium" name="Medium" stackId="a" fill="#f59e0b" /><Bar dataKey="low" name="Low" stackId="a" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="card">
-              <div className="card-header">Root Cause of Breaches</div>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={breachByCause} layout="vertical" margin={{ left: 160 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis type="number" tick={{ fontSize: 11 }} /><YAxis dataKey="cause" type="category" width={150} tick={{ fontSize: 10 }} /><Tooltip />
-                  <Bar dataKey="count" fill="#ef4444" radius={[0, 4, 4, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Compliance Reporting */}
-      {activeTab === 'compliance' && (
-        <div>
-          <div className="grid-2" style={{ marginBottom: 24 }}>
-            <div className="card" style={{ overflowX: 'auto' }}>
-              <div className="card-header">SLA Compliance Scorecard</div>
-              <table className="data-table">
-                <thead><tr><th>Metric</th><th>Target</th><th>Actual</th><th>Status</th><th>Trend</th></tr></thead>
+                <thead><tr><th>Serial</th><th>Component</th><th>Age (d)</th><th>OOS fails</th><th>Risk score</th><th>Tier</th><th>Exp. RUL (d)</th></tr></thead>
                 <tbody>
-                  {complianceScorecard.map((c, i) => (
-                    <tr key={i}><td style={{ fontWeight: 500 }}>{c.metric}</td><td style={{ opacity: 0.8 }}>{c.target}</td><td style={{ fontWeight: 600 }}>{c.actual}</td>
-                      <td><span className={`badge ${c.status === 'Pass' ? 'badge-success' : c.status === 'Fail' ? 'badge-critical' : 'badge-medium'}`}>{c.status}</span></td>
-                      <td style={{ fontSize: 14 }}>{c.trend === 'improving' ? <span style={{ color: '#22c55e' }}>&#9650; Improving</span> : c.trend === 'declining' ? <span style={{ color: '#ef4444' }}>&#9660; Declining</span> : <span style={{ color: '#f59e0b' }}>&#9644; Stable</span>}</td>
+                  {comps.map((c, i) => (
+                    <tr key={i}>
+                      <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{c.component_serial_nbr}</td>
+                      <td>{compLabel(c.component_type)}</td>
+                      <td>{num(c.component_age_days, 0)}</td>
+                      <td>{intf(c.device_oos_failures_total)}</td>
+                      <td style={{ fontWeight: 600 }}>{num(c.risk_score, 1)}</td>
+                      <td><RiskBadge band={c.risk_tier} /></td>
+                      <td>{num(c.expected_component_rul_days)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <div className="card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <div className="card-header" style={{ width: '100%' }}>Monthly SLA Compliance</div>
-              <div style={{ position: 'relative', width: 250, height: 250 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <RadialBarChart cx="50%" cy="50%" innerRadius="70%" outerRadius="90%" startAngle={180} endAngle={0} data={gaugeData}>
-                    <RadialBar dataKey="value" cornerRadius={10} background={{ fill: 'rgba(255,255,255,0.05)' }} />
-                  </RadialBarChart>
-                </ResponsiveContainer>
-                <div style={{ position: 'absolute', top: '40%', left: '50%', transform: 'translate(-50%, -50%)', textAlign: 'center' }}>
-                  <div style={{ fontSize: 36, fontWeight: 700, color: overallCompliance >= 80 ? '#22c55e' : '#f59e0b' }}>{overallCompliance}%</div>
-                  <div style={{ fontSize: 12, opacity: 0.6 }}>Overall Compliance</div>
-                </div>
-              </div>
+          ) : <div style={{ fontSize: 13, color: 'var(--text-secondary)', padding: 8 }}>No component-serial rows for this device.</div>}
+        </div>
+
+        <div className="card" style={{ padding: 16, borderLeft: '3px solid var(--secondary)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <div>
+              <div className="card-header" style={{ marginBottom: 2 }}>ServiceNow · scheduled maintenance</div>
+              <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Builds an incident payload for review. No live post until the client SN API is provisioned.</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span className="badge badge-medium" title="Awaiting client ServiceNow API access">ServiceNow integration — in progress</span>
+              <button className="filter-btn" onClick={() => setShowPayload((s) => !s)}>{showPayload ? 'Hide' : 'View'} payload</button>
             </div>
           </div>
+          {showPayload && (
+            <pre style={{ marginTop: 12, background: '#0f172a', color: '#e2e8f0', padding: 12, borderRadius: 8, fontSize: 11, overflowX: 'auto', maxHeight: 260 }}>{JSON.stringify(payload, null, 2)}</pre>
+          )}
+        </div>
+      </div>
+      {crossPS && (
+        <Device360Modal deviceId={crossPS} onClose={() => setCrossPS(null)} />
+      )}
+    </div>
+  );
+}
 
-          <div className="card" style={{ marginBottom: 24 }}>
-            <div className="card-header">Breach Incidents by Severity</div>
+export default function PS5SLAReliabilityTab({ city, selectedDevices }) {
+  // Read the always-on global FilterBar without hard-coupling (harness-safe).
+  const fctx = useContext(FilterContext) || {};
+  const globalDevices = fctx.selectedDevices;         // ['TVMs','Gates','Validators'] | undefined
+  const deviceQuery = fctx.deviceQuery ?? '';
+  const setDeviceQuery = fctx.setDeviceQuery || (() => {});
+
+  // ---- live data (real RDS rows only; own loading/empty/error state) --------
+  const [dev, setDev] = useState({ state: 'loading' });
+  const [ser, setSer] = useState({ state: 'loading' });
+
+  useEffect(() => {
+    let alive = true;
+    setDev({ state: 'loading' }); setSer({ state: 'loading' });
+    apiPS5DeviceRUL(city)
+      .then((d) => { if (alive) setDev(d ? { state: 'ok', data: d } : { state: 'empty' }); })
+      .catch((e) => { if (alive) setDev({ state: 'err', err: String(e) }); });
+    apiPS5SerialHealth(city)
+      .then((d) => { if (alive) setSer(d ? { state: 'ok', data: d } : { state: 'empty' }); })
+      .catch((e) => { if (alive) setSer({ state: 'err', err: String(e) }); });
+    return () => { alive = false; };
+  }, [city]);
+
+  const meta = dev.data || {};
+  const devices = useMemo(() => (dev.state === 'ok' ? dev.data.devices : []), [dev]);
+  const serials = useMemo(() => (ser.state === 'ok' ? ser.data.serials : []), [ser]);
+
+  // ---- filter state ---------------------------------------------------------
+  const [typeSel, setTypeSel] = useState([...TYPE_ORDER]);
+  const [riskSel, setRiskSel] = useState([...RISK_ORDER]);
+  const [compSel, setCompSel] = useState(null);   // null = all (set once serials load)
+  const [facility, setFacility] = useState('');
+  const [overdueOnly, setOverdueOnly] = useState(false);
+  const [rulMax, setRulMax] = useState('');
+  const [sortDev, setSortDev] = useState({ key: 'rul_standard_days', dir: 'asc' });
+  const [sortSer, setSortSer] = useState({ key: 'risk_score', dir: 'desc' });
+  const [devPage, setDevPage] = useState(0);
+  const [serPage, setSerPage] = useState(0);
+  const [drill, setDrill] = useState(null);
+  const [showInsights, setShowInsights] = useState(false);
+  const [showBatch, setShowBatch] = useState(false);
+
+  const compTypes = useMemo(() => {
+    const s = new Set(serials.map((r) => r.component_type ?? 'None'));
+    return Array.from(s).sort((a, b) => compLabel(a).localeCompare(compLabel(b)));
+  }, [serials]);
+  useEffect(() => { if (compSel === null && compTypes.length) setCompSel([...compTypes]); }, [compTypes, compSel]);
+
+  const facilities = useMemo(() => {
+    const s = new Set(devices.map((d) => facLabel(d.facility_id)));
+    return Array.from(s).filter((x) => x !== '—').sort((a, b) => Number(a) - Number(b));
+  }, [devices]);
+
+  // global device-type gate (mapped) intersected with local chips
+  const globalCats = useMemo(() => {
+    if (!Array.isArray(globalDevices)) return null; // no provider -> allow all
+    return new Set(globalDevices.map((d) => DEVLABEL_TO_CAT[d]).filter(Boolean));
+  }, [globalDevices]);
+
+  const q = deviceQuery.trim().toLowerCase();
+  const rulCap = rulMax === '' ? Infinity : Number(rulMax);
+
+  const typePass = useCallback((cat) => typeSel.includes(cat) && (!globalCats || globalCats.has(cat)), [typeSel, globalCats]);
+
+  const fDevices = useMemo(() => devices.filter((d) => {
+    if (!typePass(d.mars_device_category)) return false;
+    if (!riskSel.includes(d.risk_band)) return false;
+    if (facility && facLabel(d.facility_id) !== facility) return false;
+    if (overdueOnly && !d.is_overdue) return false;
+    if (d.rul_standard_days != null && d.rul_standard_days > rulCap) return false;
+    if (q && !(String(d.device_id).toLowerCase().includes(q) || facLabel(d.facility_id).toLowerCase().includes(q))) return false;
+    return true;
+  }), [devices, typePass, riskSel, facility, overdueOnly, rulCap, q]);
+
+  const compPass = useCallback((c) => !compSel || compSel.includes(c ?? 'None'), [compSel]);
+  const fSerials = useMemo(() => serials.filter((s) => {
+    if (!typePass(s.mars_device_category)) return false;
+    if (!compPass(s.component_type)) return false;
+    if (riskSel.length < RISK_ORDER.length && !riskSel.includes(s.risk_tier)) return false;
+    if (overdueOnly && !s.is_overdue) return false;
+    if (q && !(String(s.device_id).toLowerCase().includes(q) || String(s.component_serial_nbr).toLowerCase().includes(q) || compLabel(s.component_type).toLowerCase().includes(q))) return false;
+    return true;
+  }), [serials, typePass, compPass, riskSel, overdueOnly, q]);
+
+  useEffect(() => { setDevPage(0); }, [typeSel, riskSel, facility, overdueOnly, rulMax, q]);
+  useEffect(() => { setSerPage(0); }, [typeSel, riskSel, compSel, overdueOnly, q]);
+
+  // ---- derived analytics ----------------------------------------------------
+  const kpi = useMemo(() => {
+    const n = fDevices.length;
+    const overdue = fDevices.filter((d) => d.is_overdue).length;
+    const critical = fDevices.filter((d) => d.risk_band === 'CRITICAL').length;
+    const gatePass = fDevices.filter((d) => d.data_quality_gate_passed).length;
+    const med = median(fDevices.map((d) => d.rul_standard_days));
+    return { n, overdue, critical, gatePass, med, overduePct: n ? Math.round((overdue / n) * 100) : 0, gatePct: n ? Math.round((gatePass / n) * 100) : 0 };
+  }, [fDevices]);
+
+  const { matrix, typeCounts, riskCounts } = useMemo(() => {
+    const m = {}; const tc = {}; const rc = {};
+    TYPE_ORDER.forEach((t) => { m[t] = {}; tc[t] = 0; RISK_ORDER.forEach((r) => { m[t][r] = 0; }); });
+    RISK_ORDER.forEach((r) => { rc[r] = 0; });
+    fDevices.forEach((d) => {
+      const t = d.mars_device_category, r = d.risk_band;
+      if (m[t] && m[t][r] !== undefined) { m[t][r] += 1; tc[t] += 1; rc[r] += 1; }
+    });
+    return { matrix: m, typeCounts: tc, riskCounts: rc };
+  }, [fDevices]);
+
+  const riskByType = useMemo(
+    () => TYPE_ORDER.filter((t) => typeCounts[t] > 0).map((t) => ({ type: TYPE_LABEL[t], cat: t, ...matrix[t] })),
+    [matrix, typeCounts],
+  );
+
+  const rulHist = useMemo(() => RUL_BINS.map((b) => ({
+    key: b.key, color: b.color,
+    count: fDevices.filter((d) => d.rul_standard_days != null && d.rul_standard_days >= b.lo && d.rul_standard_days < b.hi).length,
+  })), [fDevices]);
+
+  const facilityTop = useMemo(() => {
+    const by = {};
+    fDevices.forEach((d) => {
+      const f = facLabel(d.facility_id);
+      if (!by[f]) by[f] = { facility: f, CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, total: 0 };
+      by[f][d.risk_band] = (by[f][d.risk_band] || 0) + 1; by[f].total += 1;
+    });
+    return Object.values(by).sort((a, b) => (b.CRITICAL - a.CRITICAL) || (b.total - a.total)).slice(0, 12);
+  }, [fDevices]);
+
+  const compMix = useMemo(() => {
+    const by = {};
+    fSerials.forEach((s) => {
+      const c = compLabel(s.component_type);
+      if (!by[c]) by[c] = { comp: c, CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, total: 0 };
+      by[c][s.risk_tier] = (by[c][s.risk_tier] || 0) + 1; by[c].total += 1;
+    });
+    return Object.values(by).sort((a, b) => b.total - a.total);
+  }, [fSerials]);
+
+  const insights = useMemo(() => {
+    const crit = fDevices.filter((d) => d.risk_band === 'CRITICAL');
+    const overdueCrit = crit.filter((d) => d.is_overdue);
+    const byFac = {};
+    crit.forEach((d) => { const f = facLabel(d.facility_id); byFac[f] = (byFac[f] || 0) + 1; });
+    const topFac = Object.entries(byFac).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    const critDevIds = new Set(fDevices.filter((d) => d.risk_band === 'CRITICAL').map((d) => d.device_id));
+    const linkedComps = fSerials.filter((s) => s.risk_tier === 'CRITICAL' && critDevIds.has(s.device_id)).length;
+    return { critCount: crit.length, overdueCrit: overdueCrit.length, topFac, linkedComps };
+  }, [fDevices, fSerials]);
+
+  const batchPayload = useMemo(() => {
+    const candidates = fDevices.filter((d) => d.risk_band === 'CRITICAL' && d.is_overdue)
+      .sort((a, b) => (a.rul_standard_days ?? 1e9) - (b.rul_standard_days ?? 1e9)).slice(0, 50);
+    return {
+      source: 'CUBIC MARS PS5 · Reliability/RUL',
+      event_def_version: meta.event_def_version,
+      as_of_date: meta.as_of_date,
+      city,
+      selection_summary: { filtered_devices: fDevices.length, critical: insights.critCount, critical_overdue: insights.overdueCrit },
+      candidate_count: candidates.length,
+      candidates: candidates.map((d) => ({
+        device_id: d.device_id, device_category: d.mars_device_category, facility_id: facLabel(d.facility_id),
+        risk_band: d.risk_band, rul_standard_days: d.rul_standard_days, is_overdue: d.is_overdue,
+        short_description: `[PS5] ${d.risk_band} reliability risk on ${d.mars_device_category} ${d.device_id} — RUL ${num(d.rul_standard_days)}d (OVERDUE)`,
+      })),
+    };
+  }, [fDevices, insights, meta, city]);
+
+  // ---- sorting + pagination -------------------------------------------------
+  const sortedDev = useMemo(() => {
+    const arr = [...fDevices];
+    const { key, dir } = sortDev; const s = dir === 'asc' ? 1 : -1;
+    arr.sort((a, b) => {
+      const av = a[key], bv = b[key];
+      if (av == null) return 1; if (bv == null) return -1;
+      if (typeof av === 'string' || typeof bv === 'string') return String(av).localeCompare(String(bv)) * s;
+      return (av - bv) * s;
+    });
+    return arr;
+  }, [fDevices, sortDev]);
+  const devPages = Math.max(1, Math.ceil(sortedDev.length / PAGE));
+  const devRows = sortedDev.slice(devPage * PAGE, devPage * PAGE + PAGE);
+
+  const sortedSer = useMemo(() => {
+    const arr = [...fSerials];
+    const { key, dir } = sortSer; const s = dir === 'asc' ? 1 : -1;
+    arr.sort((a, b) => {
+      const av = a[key], bv = b[key];
+      if (av == null) return 1; if (bv == null) return -1;
+      if (typeof av === 'string' || typeof bv === 'string') return String(av).localeCompare(String(bv)) * s;
+      return (av - bv) * s;
+    });
+    return arr;
+  }, [fSerials, sortSer]);
+  const serPages = Math.max(1, Math.ceil(sortedSer.length / PAGE));
+  const serRows = sortedSer.slice(serPage * PAGE, serPage * PAGE + PAGE);
+
+  // ---- filter mutators ------------------------------------------------------
+  const toggleType = (t) => setTypeSel((p) => (p.includes(t) ? p.filter((x) => x !== t) : [...p, t]));
+  const toggleRisk = (r) => setRiskSel((p) => (p.includes(r) ? p.filter((x) => x !== r) : [...p, r]));
+  const toggleComp = (c) => setCompSel((p) => (p && p.includes(c) ? p.filter((x) => x !== c) : [...(p || []), c]));
+  const resetFilters = () => {
+    setTypeSel([...TYPE_ORDER]); setRiskSel([...RISK_ORDER]); setCompSel([...compTypes]);
+    setFacility(''); setOverdueOnly(false); setRulMax(''); setDeviceQuery('');
+  };
+
+  // ---- states: loading / empty / error --------------------------------------
+  const cityName = (fctx.selectedCities && city) || city;
+  if (dev.state === 'loading') {
+    return <div className="card" style={{ padding: 40, textAlign: 'center', color: 'var(--text-secondary)' }}>Loading PS5 reliability data for {cityName}…</div>;
+  }
+  if (dev.state === 'err') {
+    return (
+      <div className="card" style={{ padding: 28, borderLeft: '4px solid var(--danger)' }}>
+        <div className="card-header" style={{ color: 'var(--danger)' }}>PS5 API unreachable</div>
+        <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 8 }}>Could not load live reliability data: {dev.err}</p>
+      </div>
+    );
+  }
+  if (dev.state === 'empty') {
+    return (
+      <div className="card" style={{ padding: 32, textAlign: 'center' }}>
+        <div className="card-header">PS5 · Reliability / RUL</div>
+        <p style={{ color: 'var(--text-secondary)', marginTop: 12 }}>No PS5 reliability run exists for {cityName} yet. Chicago is currently the only city with a completed PS5 run.</p>
+      </div>
+    );
+  }
+
+  const allTypes = typeSel.length === TYPE_ORDER.length;
+  const allRisks = riskSel.length === RISK_ORDER.length;
+  const allComps = compSel && compTypes.length && compSel.length === compTypes.length;
+
+  return (
+    <div>
+
+      {/* Programme-level base statistic. Same component and same route on
+          PS1/PS2/PS3/PS5, so the headline OOS and chargeable counts are
+          stated once and cannot drift between tabs. */}
+      <FleetBaselineBand apiBase={MAIN_API} city={city} />
+
+      {/* provenance band */}
+      <div className="card" style={{ marginBottom: 16, padding: 14, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, borderLeft: '4px solid var(--primary)' }}>
+        <span style={{ padding: '4px 10px', borderRadius: 6, background: hexA('#6366f1', 0.12), color: '#4f46e5', fontSize: 12, fontWeight: 700 }}>
+          Failure = {(meta.event_definition || 'hardware OOS (Set)').replace(/^\s*failure\s*=\s*/i, '')}
+</span>
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>v{meta.event_def_version}</span>
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>· Window: {meta.window}</span>
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>· Promotion floor C-index ≥ {meta.floor}</span>
+        <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>· As-of {meta.as_of_date}</span>
+        <span className="badge badge-success" style={{ marginLeft: 'auto' }} title="Live from Aurora RDS">● LIVE · RDS</span>
+        <span className="badge badge-medium" title="Awaiting client ServiceNow API access">ServiceNow integration — in progress</span>
+      </div>
+
+      {/* filter bar (reuses the global .filter-* look) */}
+      <div className="filter-bar" style={{ borderRadius: 12, border: '1px solid var(--border)', marginBottom: 16 }}>
+        <div className="filter-group">
+          <label className="filter-label">Search</label>
+          <input type="text" value={deviceQuery} onChange={(e) => setDeviceQuery(e.target.value)} placeholder="Device ID / serial / facility…"
+            style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12, minWidth: 210, color: 'var(--text)', background: '#fff' }} />
+          {deviceQuery && <button className="filter-btn" onClick={() => setDeviceQuery('')} title="Clear search">×</button>}
+        </div>
+        <div className="filter-separator" />
+        <div className="filter-group">
+          <label className="filter-label">Device type</label>
+          <button className={`filter-btn${allTypes ? ' all-active' : ''}`} onClick={() => setTypeSel([...TYPE_ORDER])}>All</button>
+          {TYPE_ORDER.map((t) => <Chip key={t} active={typeSel.includes(t)} color={TCOL[t]} onClick={() => toggleType(t)}>{TYPE_LABEL[t]}</Chip>)}
+        </div>
+        <div className="filter-separator" />
+        <div className="filter-group">
+          <label className="filter-label">Risk band</label>
+          <button className={`filter-btn${allRisks ? ' all-active' : ''}`} onClick={() => setRiskSel([...RISK_ORDER])}>All</button>
+          {RISK_ORDER.map((r) => <Chip key={r} active={riskSel.includes(r)} color={RISK[r]} onClick={() => toggleRisk(r)}>{r}</Chip>)}
+        </div>
+        <div className="filter-separator" />
+        <div className="filter-group">
+          <label className="filter-label">Facility</label>
+          <select value={facility} onChange={(e) => setFacility(e.target.value)}
+            style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12, color: 'var(--text)', background: '#fff', cursor: 'pointer' }}>
+            <option value="">All ({facilities.length})</option>
+            {facilities.map((f) => <option key={f} value={f}>Facility {f}</option>)}
+          </select>
+        </div>
+        <div className="filter-group">
+          <label className="filter-label">RUL ≤ (days)</label>
+          <input type="number" min="0" value={rulMax} onChange={(e) => setRulMax(e.target.value)} placeholder="∞"
+            style={{ padding: '5px 8px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12, width: 74, color: 'var(--text)', background: '#fff' }} />
+        </div>
+        <div className="filter-group">
+          <button className={`filter-btn${overdueOnly ? ' active' : ''}`} onClick={() => setOverdueOnly((v) => !v)}
+            style={overdueOnly ? { background: 'var(--danger)', borderColor: 'var(--danger)', color: '#fff' } : undefined}>Overdue only</button>
+        </div>
+        <div className="filter-group" style={{ marginLeft: 'auto' }}>
+          <button className="filter-btn" onClick={resetFilters}>Reset</button>
+          <button className="filter-btn" onClick={() => setShowInsights(true)}
+            style={{ background: 'var(--primary)', borderColor: 'var(--primary)', color: '#fff', fontWeight: 600 }}>Analyse selection</button>
+        </div>
+      </div>
+
+      {/* component-type facet (appears once serials load) */}
+      {compTypes.length > 0 && (
+        <div className="filter-bar" style={{ borderRadius: 12, border: '1px solid var(--border)', marginBottom: 16 }}>
+          <div className="filter-group">
+            <label className="filter-label">Component type</label>
+            <button className={`filter-btn${allComps ? ' all-active' : ''}`} onClick={() => setCompSel([...compTypes])}>All</button>
+            {compTypes.map((c) => <Chip key={c} active={!!compSel && compSel.includes(c)} onClick={() => toggleComp(c)}>{compLabel(c)}</Chip>)}
+          </div>
+        </div>
+      )}
+
+      {/* KPI row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16, marginBottom: 20 }}>
+        <div className="card"><div className="card-header">Devices (in view)</div><div className="kpi-value">{kpi.n.toLocaleString()}</div><div className="kpi-label">of {devices.length.toLocaleString()} scored</div></div>
+        <div className="card"><div className="card-header">Overdue</div><div className="kpi-value" style={{ color: 'var(--danger)' }}>{kpi.overdue.toLocaleString()}</div><div className="kpi-label">{kpi.overduePct}% of view</div></div>
+        <div className="card"><div className="card-header">Critical risk</div><div className="kpi-value" style={{ color: RISK.CRITICAL }}>{kpi.critical.toLocaleString()}</div><div className="kpi-label">highest-priority band</div></div>
+        <div className="card"><div className="card-header">Median RUL</div><div className="kpi-value" style={{ color: rulColor(kpi.med) }}>{kpi.med == null ? '—' : num(kpi.med)}<span style={{ fontSize: 14, color: 'var(--text-secondary)' }}> d</span></div><div className="kpi-label">standard-window</div></div>
+        <div className="card"><div className="card-header">Data-quality gate</div><div className="kpi-value" style={{ color: kpi.gatePct >= 90 ? 'var(--success)' : 'var(--secondary)' }}>{kpi.gatePct}%</div><div className="kpi-label">{kpi.gatePass.toLocaleString()} passing</div></div>
+      </div>
+
+      {/* overview charts */}
+      <div className="grid-2" style={{ marginBottom: 20 }}>
+        <div className="card">
+          <div className="card-header">Risk band by device type — click a segment to filter</div>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={riskByType} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="type" tick={{ fontSize: 12 }} />
+              <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+              <Tooltip />
+              <Legend />
+              {RISK_ORDER.map((r) => (
+                <Bar key={r} dataKey={r} name={r} stackId="a" fill={RISK[r]} cursor="pointer"
+                  onClick={() => setRiskSel([r])} radius={r === 'LOW' ? [4, 4, 0, 0] : undefined}>
+            <LabelList dataKey={r} position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="card">
+          <div className="card-header">Remaining-useful-life distribution (days)</div>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={rulHist} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="key" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+              <Tooltip />
+              <Bar dataKey="count" name="Devices" radius={[4, 4, 0, 0]}>
+                {rulHist.map((b, i) => <Cell key={i} fill={b.color} />)}
+              
+            <LabelList dataKey="count" position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
+            <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="grid-2" style={{ marginBottom: 20 }}>
+        <div className="card">
+          <div className="card-header">Device type → risk band flow</div>
+          <TypeRiskSankey matrix={matrix} typeCounts={typeCounts} riskCounts={riskCounts} total={kpi.n}
+            onFlow={(t, r) => { setTypeSel([t]); setRiskSel([r]); }} />
+        </div>
+        <div className="card">
+          <div className="card-header">Top facilities by critical devices — click a bar to focus</div>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={facilityTop} layout="vertical" margin={{ top: 4, right: 12, bottom: 4, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
+              <YAxis type="category" dataKey="facility" width={70} tick={{ fontSize: 11 }} tickFormatter={(f) => `Fac ${f}`} />
+              <Tooltip />
+              <Legend />
+              {RISK_ORDER.map((r) => (
+                <Bar key={r} dataKey={r} name={r} stackId="f" fill={RISK[r]} cursor="pointer" onClick={(d) => d && setFacility(d.facility)}>
+            <LabelList dataKey={r} position="right" formatter={fmtV} style={VLAB} />
+          </Bar>
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* pivot + component mix */}
+      <div className="grid-2" style={{ marginBottom: 20 }}>
+        <div className="card" style={{ overflowX: 'auto' }}>
+          <div className="card-header">Pivot · device type × risk band — click a cell to drill</div>
+          <table className="data-table">
+            <thead>
+              <tr><th>Type</th>{RISK_ORDER.map((r) => <th key={r} style={{ textAlign: 'center' }}>{r}</th>)}<th style={{ textAlign: 'center' }}>Total</th></tr>
+            </thead>
+            <tbody>
+              {TYPE_ORDER.map((t) => {
+                const rowTotal = RISK_ORDER.reduce((a, r) => a + (matrix[t]?.[r] || 0), 0);
+                const mx = Math.max(1, ...RISK_ORDER.map((r) => matrix[t]?.[r] || 0));
+                return (
+                  <tr key={t}>
+                    <td style={{ fontWeight: 600 }}><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: TCOL[t], marginRight: 8 }} />{TYPE_LABEL[t]}</td>
+                    {RISK_ORDER.map((r) => {
+                      const v = matrix[t]?.[r] || 0;
+                      return (
+                        <td key={r} onClick={() => v && (setTypeSel([t]), setRiskSel([r]))}
+                          style={{ textAlign: 'center', cursor: v ? 'pointer' : 'default', fontWeight: 600, background: v ? hexA(RISK[r], 0.12 + 0.5 * (v / mx)) : undefined, color: v && (v / mx) > 0.6 ? '#fff' : 'var(--text)' }}>
+                          {v ? v.toLocaleString() : '·'}
+                        </td>
+                      );
+                    })}
+                    <td style={{ textAlign: 'center', fontWeight: 700 }}>{rowTotal.toLocaleString()}</td>
+                  </tr>
+                );
+              })}
+              <tr style={{ background: '#f8fafc' }}>
+                <td style={{ fontWeight: 700 }}>Total</td>
+                {RISK_ORDER.map((r) => <td key={r} style={{ textAlign: 'center', fontWeight: 700, color: RISK[r] }}>{(riskCounts[r] || 0).toLocaleString()}</td>)}
+                <td style={{ textAlign: 'center', fontWeight: 700 }}>{kpi.n.toLocaleString()}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="card">
+          <div className="card-header">Component risk mix by type ({fSerials.length.toLocaleString()} serials)</div>
+          {compMix.length ? (
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={breachBySeverity}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="severity" tick={{ fontSize: 12 }} /><YAxis tick={{ fontSize: 11 }} allowDecimals={false} /><Tooltip />
-                <Bar dataKey="count" name="Breaches" radius={[4, 4, 0, 0]}>{breachBySeverity.map((entry, i) => <Cell key={i} fill={entry.fill} />)}</Bar>
+              <BarChart data={compMix} layout="vertical" margin={{ top: 4, right: 12, bottom: 4, left: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
+                <YAxis type="category" dataKey="comp" width={96} tick={{ fontSize: 10 }} />
+                <Tooltip />
+                <Legend />
+                {RISK_ORDER.map((r) => <Bar key={r} dataKey={r} name={r} stackId="c" fill={RISK[r]}>
+            <LabelList dataKey={r} position="right" formatter={fmtV} style={VLAB} />
+          </Bar>)}
               </BarChart>
             </ResponsiveContainer>
-          </div>
-
-          <div className="card" style={{ overflowX: 'auto' }}>
-            <div className="card-header">Remediation Actions</div>
-            <table className="data-table">
-              <thead><tr><th>Action</th><th>Owner</th><th>Due Date</th><th>Status</th><th>Priority</th></tr></thead>
-              <tbody>
-                {REMEDIATION_ACTIONS.map((r, i) => (
-                  <tr key={i}><td style={{ fontSize: 12, maxWidth: 300 }}>{r.action}</td><td>{r.owner}</td><td style={{ fontFamily: 'monospace', fontSize: 12 }}>{r.due}</td>
-                    <td><span className={`badge ${r.status === 'Complete' ? 'badge-success' : r.status === 'In Progress' ? 'badge-info' : 'badge-medium'}`}>{r.status}</span></td>
-                    <td><span className={`badge badge-${r.priority}`}>{r.priority.charAt(0).toUpperCase() + r.priority.slice(1)}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          ) : <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-secondary)', fontSize: 13 }}>No component-serial rows in the current selection.</div>}
         </div>
-      )}
+      </div>
 
-      {/* Reliability Metrics — real PS5 model outputs (RUL / Weibull / Cox), gated */}
-      {activeTab === 'reliability' && (
-        <div>
-          {!ps5Detail ? (
-            <div className="card" style={{ padding: 32, textAlign: 'center' }}>
-              <div className="card-header">PS5 — Reliability / RUL</div>
-              <p style={{ opacity: 0.7, marginTop: 12 }}>
-                No PS5 reliability run exists for {cityName} yet. Chicago is currently the only
-                city with a completed PS5 run.
-              </p>
+      {/* devices table */}
+      <div className="card" style={{ marginBottom: 20, overflowX: 'auto' }}>
+        <div className="card-header">Devices · per-unit RUL ({sortedDev.length.toLocaleString()})</div>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <SortTh label="Device" col="device_id" sort={sortDev} setSort={setSortDev} />
+              <SortTh label="Type" col="mars_device_category" sort={sortDev} setSort={setSortDev} />
+              <SortTh label="Facility" col="facility_id" sort={sortDev} setSort={setSortDev} />
+              <SortTh label="RUL (d)" col="rul_standard_days" sort={sortDev} setSort={setSortDev} align="right" />
+              <th style={{ whiteSpace: 'nowrap' }}>P10–P90</th>
+              <SortTh label="Risk" col="risk_band" sort={sortDev} setSort={setSortDev} />
+              <SortTh label="Hazard" col="hazard_score" sort={sortDev} setSort={setSortDev} align="right" />
+              <SortTh label="Fails/30d" col="roll_fail_30d" sort={sortDev} setSort={setSortDev} align="right" />
+              <SortTh label="C-index" col="concordance_index" sort={sortDev} setSort={setSortDev} align="right" />
+              <th>Gate</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {devRows.map((d, i) => (
+              <tr key={i}>
+                <td style={{ fontFamily: 'monospace', fontSize: 12, fontWeight: 600 }}>{d.device_id}{d.is_overdue && <span className="badge badge-critical" style={{ marginLeft: 6, fontSize: 9 }}>OD</span>}</td>
+                <td><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 2, background: TCOL[d.mars_device_category], marginRight: 6 }} />{TYPE_LABEL[d.mars_device_category] || d.mars_device_category}</td>
+                <td>{facLabel(d.facility_id)}</td>
+                <td style={{ textAlign: 'right', fontWeight: 600, color: rulColor(d.rul_standard_days) }}>{num(d.rul_standard_days)}</td>
+                <td style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{num(d.rul_p10_days)}–{num(d.rul_p90_days)}</td>
+                <td><RiskBadge band={d.risk_band} /></td>
+                <td style={{ textAlign: 'right' }}>{num(d.hazard_score, 3)}</td>
+                <td style={{ textAlign: 'right' }}>{intf(d.roll_fail_30d)}</td>
+                <td style={{ textAlign: 'right' }}>{num(d.concordance_index, 3)}</td>
+                <td><span className={`badge ${d.data_quality_gate_passed ? 'badge-success' : 'badge-critical'}`}>{d.data_quality_gate_passed ? 'pass' : 'below'}</span></td>
+                <td><button className="filter-btn" style={{ background: 'var(--primary)', borderColor: 'var(--primary)', color: '#fff', fontWeight: 600 }} onClick={() => setDrill(d)}>Analyse</button></td>
+              </tr>
+            ))}
+            {devRows.length === 0 && <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: 24 }}>No devices match the current filters.</td></tr>}
+          </tbody>
+        </table>
+        <Pager page={devPage} pages={devPages} total={sortedDev.length} setPage={setDevPage} label="devices" />
+      </div>
+
+      {/* components table */}
+      <div className="card" style={{ overflowX: 'auto' }}>
+        <div className="card-header">Component serials · per-unit health ({sortedSer.length.toLocaleString()})</div>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <SortTh label="Device" col="device_id" sort={sortSer} setSort={setSortSer} />
+              <SortTh label="Serial" col="component_serial_nbr" sort={sortSer} setSort={setSortSer} />
+              <SortTh label="Component" col="component_type" sort={sortSer} setSort={setSortSer} />
+              <SortTh label="Type" col="mars_device_category" sort={sortSer} setSort={setSortSer} />
+              <SortTh label="Age (d)" col="component_age_days" sort={sortSer} setSort={setSortSer} align="right" />
+              <SortTh label="OOS fails" col="device_oos_failures_total" sort={sortSer} setSort={setSortSer} align="right" />
+              <SortTh label="Risk score" col="risk_score" sort={sortSer} setSort={setSortSer} align="right" />
+              <SortTh label="Tier" col="risk_tier" sort={sortSer} setSort={setSortSer} />
+              <SortTh label="Exp. RUL (d)" col="expected_component_rul_days" sort={sortSer} setSort={setSortSer} align="right" />
+            </tr>
+          </thead>
+          <tbody>
+            {serRows.map((s, i) => (
+              <tr key={i}>
+                <td style={{ fontFamily: 'monospace', fontSize: 12 }}>{s.device_id}</td>
+                <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{s.component_serial_nbr}</td>
+                <td>{compLabel(s.component_type)}</td>
+                <td>{TYPE_LABEL[s.mars_device_category] || s.mars_device_category}</td>
+                <td style={{ textAlign: 'right' }}>{num(s.component_age_days, 0)}</td>
+                <td style={{ textAlign: 'right' }}>{intf(s.device_oos_failures_total)}</td>
+                <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(s.risk_score, 1)}</td>
+                <td><RiskBadge band={s.risk_tier} /></td>
+                <td style={{ textAlign: 'right' }}>{num(s.expected_component_rul_days)}</td>
+              </tr>
+            ))}
+            {serRows.length === 0 && <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: 24 }}>No component serials match the current filters.</td></tr>}
+          </tbody>
+        </table>
+        <Pager page={serPage} pages={serPages} total={sortedSer.length} setPage={setSerPage} label="serials" />
+      </div>
+
+      {drill && <DeviceModal device={drill} serials={serials} meta={meta} onClose={() => setDrill(null)} />}
+
+      {/* analyse-selection insights panel */}
+      {showInsights && (
+        <div onClick={() => setShowInsights(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowY: 'auto', padding: '5vh 2vw' }}>
+          <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: 'min(820px, 96vw)', padding: 22, boxShadow: '0 20px 60px rgba(15,23,42,0.35)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <div style={{ fontSize: 18, fontWeight: 700 }}>Analyse selection · {kpi.n.toLocaleString()} devices</div>
+              <button className="filter-btn" onClick={() => setShowInsights(false)} style={{ fontSize: 16, padding: '4px 10px' }}>✕</button>
             </div>
-          ) : (
-            <div>
-              {/* v5 status — models rebuilt on the redefined hardware-OOS-Set event; still below the promotion floor */}
-              <div className="card" style={{ marginBottom: 24, padding: 16, borderLeft: '4px solid #f59e0b', background: 'rgba(245,158,11,0.06)' }}>
-                <div style={{ fontWeight: 700, color: '#f59e0b', marginBottom: 8 }}>PS5 v5 — rebuilt on redefined failure event, not yet promoted</div>
-                <p style={{ fontSize: 13, opacity: 0.85, margin: 0 }}>
-                  The survival event was redefined to <strong>any hardware OOS "Set"</strong>, and the notebook rebuilt on the
-                  telemetry-era window (2024-01-01+) with verified feature–label alignment. RUL estimates are now plausible
-                  (tens of days, not decades), superseding the earlier implausible-RUL, oversized-artifact and missing-notebook
-                  blockers. All three device types still sit below the C-index ≥ {ps5Detail.floor} promotion floor on the latest
-                  run, so RUL and survival below are a labelled <strong>SAMPLE</strong> pending the live v5 scoring run into RDS —
-                  nothing here is shown as promoted output.
-                </p>
-              </div>
-
-              {ps5Detail && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
+              <div className="card" style={{ padding: 14 }}><div className="card-header" style={{ marginBottom: 6 }}>Critical</div><div className="kpi-value" style={{ fontSize: 24, color: RISK.CRITICAL }}>{insights.critCount.toLocaleString()}</div></div>
+              <div className="card" style={{ padding: 14 }}><div className="card-header" style={{ marginBottom: 6 }}>Critical + overdue</div><div className="kpi-value" style={{ fontSize: 24, color: 'var(--danger)' }}>{insights.overdueCrit.toLocaleString()}</div></div>
+              <div className="card" style={{ padding: 14 }}><div className="card-header" style={{ marginBottom: 6 }}>Overdue (all)</div><div className="kpi-value" style={{ fontSize: 24 }}>{kpi.overdue.toLocaleString()}</div></div>
+              <div className="card" style={{ padding: 14 }}><div className="card-header" style={{ marginBottom: 6 }}>Linked critical parts</div><div className="kpi-value" style={{ fontSize: 24 }}>{insights.linkedComps.toLocaleString()}</div></div>
+            </div>
+            <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+              <div className="card-header">Top facilities by critical devices</div>
+              {insights.topFac.length ? (
+                <table className="data-table"><thead><tr><th>Facility</th><th style={{ textAlign: 'right' }}>Critical devices</th><th></th></tr></thead>
+                  <tbody>{insights.topFac.map(([f, c]) => (
+                    <tr key={f}><td>Facility {f}</td><td style={{ textAlign: 'right', fontWeight: 600, color: RISK.CRITICAL }}>{c}</td>
+                      <td><button className="filter-btn" onClick={() => { setFacility(f); setShowInsights(false); }}>Focus</button></td></tr>
+                  ))}</tbody></table>
+              ) : <div style={{ fontSize: 13, color: 'var(--text-secondary)', padding: 8 }}>No critical devices in the current selection.</div>}
+            </div>
+            <div className="card" style={{ padding: 14, borderLeft: '3px solid var(--secondary)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                 <div>
-                  {/* Event-definition chip + provenance (reads ps5_event_definition once RDS is live) */}
-                  <div className="card" style={{ marginBottom: 24, padding: 16 }}>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
-                      <span style={{ padding: '4px 10px', borderRadius: 6, background: 'rgba(99,102,241,0.15)', color: '#a5b4fc', fontSize: 12, fontWeight: 600 }}>
-                        Failure = {ps5Detail.event_definition} · v{ps5Detail.event_def_version}
-                      </span>
-                      <span style={{ fontSize: 12, opacity: 0.7 }}>Window: {ps5Detail.window}</span>
-                      <span style={{ fontSize: 12, opacity: 0.7 }}>Promotion floor: C-index ≥ {ps5Detail.floor}</span>
-                      {ps5Detail.is_sample && (
-                        <span style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 6, background: 'rgba(245,158,11,0.15)', color: '#fbbf24', fontSize: 11, fontWeight: 700, letterSpacing: 0.4 }}>
-                          SAMPLE — RUL / survival illustrative pending live v5 run
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Per-device RUL + as-of recency (days_since_fail, roll_fail_30d) on the hardware-OOS-Set event */}
-                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${ps5Detail.devices.length}, 1fr)`, gap: 16, marginBottom: 24 }}>
-                    {ps5Detail.devices.map((d) => (
-                      <div className="card" key={d.device}>
-                        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span>{d.device} — Remaining Useful Life</span>
-                          <span className={`badge ${d.gate_pass ? 'badge-success' : 'badge-critical'}`}>{d.gate_pass ? 'Gate pass' : 'Below floor'}</span>
-                        </div>
-                        <div className="kpi-value" style={{ color: ciColor(d.cv_cindex) }}>{d.rul_median_days}<span style={{ fontSize: 14, opacity: 0.6 }}> days</span></div>
-                        <div className="kpi-label">Median RUL · P10–P90 {d.rul_p10_days}–{d.rul_p90_days}d</div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 12, fontSize: 12 }}>
-                          <div><div style={{ opacity: 0.6 }}>CV C-index</div><div style={{ fontWeight: 600, color: ciColor(d.cv_cindex) }}>{d.cv_cindex.toFixed(4)}</div></div>
-                          <div><div style={{ opacity: 0.6 }}>Days since HW-OOS</div><div style={{ fontWeight: 600 }}>{d.days_since_fail}</div></div>
-                          <div><div style={{ opacity: 0.6 }}>Failures / 30d</div><div style={{ fontWeight: 600 }}>{d.roll_fail_30d}</div></div>
-                          <div><div style={{ opacity: 0.6 }}>Events (n)</div><div style={{ fontWeight: 600 }}>{d.n_events.toLocaleString()}</div></div>
-                        </div>
-                        <div style={{ marginTop: 10, fontSize: 11, opacity: 0.7 }}>{d.champion} · IBS {d.ibs.toFixed(3)}</div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Survival curves S(t) per device type — event = hardware OOS (Set) */}
-                  <div className="card" style={{ marginBottom: 24 }}>
-                    <div className="card-header">Survival Probability S(t) by Device Type — event = {ps5Detail.event_definition}</div>
-                    <ResponsiveContainer width="100%" height={320}>
-                      <LineChart margin={{ top: 8, right: 24, bottom: 16, left: 8 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" />
-                        <XAxis type="number" dataKey="day" allowDuplicatedCategory={false} tick={{ fontSize: 11 }} label={{ value: 'Days in service', position: 'insideBottom', offset: -6, fontSize: 11 }} />
-                        <YAxis domain={[0, 1]} tick={{ fontSize: 11 }} label={{ value: 'S(t)', angle: -90, position: 'insideLeft', fontSize: 11 }} />
-                        <Tooltip formatter={(v) => (typeof v === 'number' ? v.toFixed(3) : v)} labelFormatter={(l) => `Day ${l}`} />
-                        <Legend />
-                        {ps5Detail.devices.map((d) => (
-                          <Line key={d.device} type="monotone" dataKey="surv" data={d.survival} name={d.device} stroke={DEVICE_COLORS[d.device] || '#8884d8'} strokeWidth={2} dot={false} />
-                        ))}
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-
-                  <div className="card" style={{ padding: 16 }}>
-                    <div className="card-header">How to read this</div>
-                    <p style={{ fontSize: 12, opacity: 0.8, margin: 0 }}>{ps5Detail.note}</p>
-                  </div>
+                  <div className="card-header" style={{ marginBottom: 2 }}>ServiceNow · batch scheduled-maintenance</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Stages a batch payload for the {batchPayload.candidate_count} critical + overdue candidates. No live post until the client SN API is provisioned.</div>
                 </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Device RUL — per-device remaining useful life on the hardware-OOS-Set event */}
-      {activeTab === 'devicerul' && (
-        <div>
-          {!ps5Devices ? (
-            <div className="card" style={{ padding: 32, textAlign: 'center' }}>
-              <div className="card-header">PS5 — Device RUL</div>
-              <p style={{ opacity: 0.7, marginTop: 12 }}>No PS5 device-level reliability run for {cityName} yet.</p>
-            </div>
-          ) : (
-            <div>
-              <div className="card" style={{ marginBottom: 16, padding: 14 }}>
-                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
-                  <span style={{ padding: '4px 10px', borderRadius: 6, background: 'rgba(99,102,241,0.15)', color: '#a5b4fc', fontSize: 12, fontWeight: 600 }}>Failure = {ps5Devices.event_definition} · v{ps5Devices.event_def_version}</span>
-                  <span style={{ fontSize: 12, opacity: 0.7 }}>{ps5Devices.devices.length} devices · {ps5Devices.window}</span>
-                  {ps5Devices.is_sample && <span style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 6, background: 'rgba(245,158,11,0.15)', color: '#fbbf24', fontSize: 11, fontWeight: 700 }}>SAMPLE — pending live run</span>}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span className="badge badge-medium">ServiceNow integration — in progress</span>
+                  <button className="filter-btn" onClick={() => setShowBatch((s) => !s)}>{showBatch ? 'Hide' : 'View'} payload</button>
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-                {['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((b) => {
-                  const n = ps5Devices.devices.filter((d) => d.risk_band === b).length;
-                  const col = { CRITICAL: '#ef4444', HIGH: '#f59e0b', MEDIUM: '#3b82f6', LOW: '#22c55e' }[b];
-                  return (<div className="card" key={b}><div className="card-header">{b}</div><div className="kpi-value" style={{ color: col }}>{n}</div><div className="kpi-label">devices</div></div>);
-                })}
-              </div>
-              <div className="card" style={{ overflowX: 'auto' }}>
-                <div className="card-header">Device Remaining Useful Life — click a column to sort</div>
-                <table className="data-table">
-                  <thead><tr>
-                    {[['device_id', 'Device'], ['device_type', 'Type'], ['facility_id', 'Facility'], ['current_age_days', 'Age (d)'], ['rul_days', 'RUL (d)'], ['risk_band', 'Risk'], ['days_since_hw_oos', 'Days since HW-OOS'], ['roll_fail_30d', 'Fails/30d'], ['is_overdue', 'Overdue']].map(([k, l]) => (
-                      <th key={k} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => toggleSort(setDevSort, devSort, k)}>{l}{devSort.key === k ? (devSort.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>
-                    ))}
-                  </tr></thead>
-                  <tbody>
-                    {sortRows(ps5Devices.devices, devSort).map((d, i) => (
-                      <tr key={i}>
-                        <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{d.device_id}</td>
-                        <td>{d.device_type}</td>
-                        <td style={{ fontSize: 11, opacity: 0.8 }}>{d.facility_id}</td>
-                        <td>{d.current_age_days}</td>
-                        <td style={{ fontWeight: 600, color: ciColor(d.cv_cindex) }}>{d.rul_days}<span style={{ opacity: 0.5, fontSize: 10 }}> ({d.rul_p10}–{d.rul_p90})</span></td>
-                        <td><span className={bandBadge(d.risk_band)}>{d.risk_band}</span></td>
-                        <td>{d.days_since_hw_oos}</td>
-                        <td>{d.roll_fail_30d}</td>
-                        <td>{d.is_overdue ? <span style={{ color: '#ef4444', fontWeight: 600 }}>Yes</span> : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <p style={{ fontSize: 12, opacity: 0.75, marginTop: 12 }}>{ps5Devices.note}</p>
+              {showBatch && <pre style={{ marginTop: 12, background: '#0f172a', color: '#e2e8f0', padding: 12, borderRadius: 8, fontSize: 11, overflowX: 'auto', maxHeight: 300 }}>{JSON.stringify(batchPayload, null, 2)}</pre>}
             </div>
-          )}
-        </div>
-      )}
-
-      {/* Serial Health — per-component reliability on the hardware-OOS-Set event */}
-      {activeTab === 'serial' && (
-        <div>
-          {!ps5Serials ? (
-            <div className="card" style={{ padding: 32, textAlign: 'center' }}>
-              <div className="card-header">PS5 — Serial Health</div>
-              <p style={{ opacity: 0.7, marginTop: 12 }}>No PS5 serial-level reliability run for {cityName} yet.</p>
-            </div>
-          ) : (
-            <div>
-              <div className="card" style={{ marginBottom: 16, padding: 14 }}>
-                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
-                  <span style={{ padding: '4px 10px', borderRadius: 6, background: 'rgba(99,102,241,0.15)', color: '#a5b4fc', fontSize: 12, fontWeight: 600 }}>Failure = hardware OOS (Set) · v{ps5Serials.event_def_version}</span>
-                  <span style={{ fontSize: 12, opacity: 0.7 }}>{ps5Serials.serials.length} components</span>
-                  {ps5Serials.is_sample && <span style={{ marginLeft: 'auto', padding: '4px 10px', borderRadius: 6, background: 'rgba(245,158,11,0.15)', color: '#fbbf24', fontSize: 11, fontWeight: 700 }}>SAMPLE — pending live run</span>}
-                </div>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 16 }}>
-                {['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((t) => {
-                  const n = ps5Serials.serials.filter((s) => s.risk_tier === t).length;
-                  const col = { CRITICAL: '#ef4444', HIGH: '#f59e0b', MEDIUM: '#3b82f6', LOW: '#22c55e' }[t];
-                  return (<div className="card" key={t}><div className="card-header">{t}</div><div className="kpi-value" style={{ color: col }}>{n}</div><div className="kpi-label">components</div></div>);
-                })}
-              </div>
-              <div className="card" style={{ overflowX: 'auto' }}>
-                <div className="card-header">Serial / Component Reliability — click a column to sort</div>
-                <table className="data-table">
-                  <thead><tr>
-                    {[['device_id', 'Device'], ['serial', 'Serial'], ['component_type', 'Component'], ['component_age_days', 'Age (d)'], ['oos_failures', 'OOS fails'], ['risk_score', 'Risk score'], ['risk_tier', 'Tier'], ['component_rul_days', 'Comp. RUL (d)'], ['is_overdue', 'Overdue']].map(([k, l]) => (
-                      <th key={k} style={{ cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={() => toggleSort(setSerSort, serSort, k)}>{l}{serSort.key === k ? (serSort.dir === 'asc' ? ' ▲' : ' ▼') : ''}</th>
-                    ))}
-                  </tr></thead>
-                  <tbody>
-                    {sortRows(ps5Serials.serials, serSort).map((s, i) => (
-                      <tr key={i}>
-                        <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{s.device_id}</td>
-                        <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{s.serial}</td>
-                        <td style={{ fontSize: 11 }}>{s.component_type}</td>
-                        <td>{s.component_age_days}</td>
-                        <td>{s.oos_failures}</td>
-                        <td style={{ fontFamily: 'monospace', fontSize: 11 }}>{s.risk_score}</td>
-                        <td><span className={bandBadge(s.risk_tier)}>{s.risk_tier}</span></td>
-                        <td style={{ fontWeight: 600 }}>{s.component_rul_days}</td>
-                        <td>{s.is_overdue ? <span style={{ color: '#ef4444', fontWeight: 600 }}>Yes</span> : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <p style={{ fontSize: 12, opacity: 0.75, marginTop: 12 }}>{ps5Serials.note}</p>
-            </div>
-          )}
+          </div>
         </div>
       )}
     </div>

@@ -1,0 +1,1039 @@
+facility_id,station_name,operator
+90129,Austin_Lake,NM4 Rail
+90119,Pulaski_Orange,NM4 Rail
+90096,Cicero_Douglas,NM4 Rail
+90032,Addison_Red,NM4 Rail
+90122,35th Archer,NM4 Rail
+90014,Western_Brown,NM4 Rail
+90035,North/Clybourn,NM4 Rail
+90011,IrvingPark_Brwn,NM4 Rail
+90027,Berwyn,NM4 Rail
+90008,Southport_Brown,NM4 Rail
+90092,Kedzie_Douglas,NM4 Rail
+90153,Sedgwick_Brown,NM4 Rail
+90066,Division_O'Hare,NM4 Rail
+90041,SS Adams-Jacksn,NM4 Rail
+90049,Garfield_Red,NM4 Rail
+90076,Halsted_Congres,NM4 Rail
+90077,Racine_Congress,NM4 Rail
+90101,203 LaSalle,NM4 Rail
+90019,MerchandiseMart,NM4 Rail
+90054,Rosemont,NM4 Rail
+90055,Cumberland,NM4 Rail
+90060,Addison_O'Hare,NM4 Rail
+90038,Grand,NM4 Rail
+90088,18th_Douglas,NM4 Rail
+90051,Sox - 35th,NM4 Rail
+90068,DB Rand-Washing,NM4 Rail
+90083,Austin_Congress,NM4 Rail
+90045,87th Street,NM4 Rail
+90034,Fullerton,NM4 Rail
+90118,Midway,NM4 Rail
+90106,LaSalle_Van Bur,NM4 Rail
+90125,Roosevelt_Orang,NM4 Rail
+90170,Museum_Science,NM4 Rail
+90999,CTA Spares,NM4 Rail
+90178,Conservatory,NM4 Rail
+90179,Morgan_Congress,NM4 Rail
+90097,54th_Cermak,NM4 Rail
+90082,Cicero_Congress,NM4 Rail
+90063,California_O'Ha,NM4 Rail
+90186,PrenticeHospita,NM4 Rail
+90033,Belmont_Red,NM4 Rail
+90174,JEWEL_Western,NM4 Rail
+90138,Morgan_Lake,NM4 Rail
+20,Bus Facility 1,CTA Bus
+42,Chicago,CTA Bus
+7,Repair Depot Warm Rack - CTA Bus,CTA Bus
+40,Forest Glen,CTA Bus
+44,77th Street,CTA Bus
+39,103rd Street,CTA Bus
+43,74th Street,CTA Bus
+45,North Park,CTA Bus
+41,Kedzie,CTA Bus
+196,Ventra Pace Bus Test Facility,PACE Bus
+32,Westmont FS,PACE Bus
+38,West,PACE Bus
+38,West,CTA Bus
+1669,West Warm Rack,PACE Bus
+1812,Niles MV,PACE Bus
+1667,South Warm Rack,PACE Bus
+24,Fox Valley,PACE Bus
+36,South,PACE Bus
+27,McHenry FT,PACE Bus
+2079,SCR,PACE Bus
+37,North Shore,PACE Bus
+31,Northwest,PACE Bus
+30,Heritage,PACE Bus
+1656,Heritage Warm Rack,PACE Bus
+7,Repair Depot Warm Rack - CTA Bus,PACE Bus
+25,Highland Park (Muni),PACE Bus
+181,South Holland,PACE Bus
+33,Southwest,PACE Bus
+1664,North Shore Warm Rack,PACE Bus
+28,River,PACE Bus
+35,Coach USA,PACE Bus
+21,Naperville FS,PACE Bus
+1660,McHenry FT Warm Rack,PACE Bus
+194,Ventra CTA Bus Test Facility,CTA Bus
+1666,River Warm Rack,PACE Bus
+1663,North Warm Rack,PACE Bus
+26,North,PACE Bus
+1641,CTA MV Anywhere,CTA Bus
+1665,Northwest Warm Rack,PACE Bus
+1890,East Dundee River,PACE Bus
+1661,Naperville FS Warm Rack,PACE Bus
+1653,Fox Valley Warm Rack,PACE Bus
+1286,Joliet FT,PACE Bus
+1835,Glen Ellyn FT,PACE Bus
+1657,Highland Park (Muni) Warm Rack,PACE Bus
+198,Pace Bus Training Group,PACE Bus
+29,Batavia MV,PACE Bus
+1761,Romeoville MV,PACE Bus
+1649,Batavia MV Warm Rack,PACE Bus
+1668,Southwest Warm Rack,PACE Bus
+22,Niles (Muni),PACE Bus
+1441,River OnDemand,PACE Bus
+1652,Downers Grove (Muni) Warm Rack,PACE Bus
+23,Downers Grove (Muni),PACE Bus
+181,South Holland,CTA Bus
+1826,Romeoville MV Warm Rack,PACE Bus
+24,Fox Valley,CTA Bus
+1670,Westmont FS Warm Rack,PACE Bus
+1285,Grayslake FT,PACE Bus
+2081,CDT North,PACE Bus
+21,Naperville FS,CTA Bus
+35,Coach USA,CTA Bus
+2013,Batavia MV OnDemand,PACE Bus
+28,River,CTA Bus
+27,McHenry FT,CTA Bus
+1953,Kedzie Garage Bus,CTA Bus
+1899,East Dundee River Warm Rack,PACE Bus
+36,South,CTA Bus
+2023,Schaumburg (Muni) DAR,PACE Bus
+2027,Schaumburg (Muni) DAR Warm Rack,PACE Bus
+1284,Glenview FT,PACE Bus
+196,Ventra Pace Bus Test Facility,CTA Bus
+90193,BG1 Forest Glen,NM4 CTA Bus
+90194,BG2 North Park,NM4 CTA Bus
+90195,BG3 Kedzie,NM4 CTA Bus
+90999,CTA Spares,NM4 CTA Bus
+90199,BG7 103rd,NM4 CTA Bus
+90200,BG8 Chicago,NM4 CTA Bus
+90198,BG6 77th,NM4 CTA Bus
+90202,901ShopDepot,NM4 CTA Bus
+90197,BG5 74th/Wood,NM4 CTA Bus
+90180,PortableFarebox,NM4 CTA Bus
+90201,901TestDepot,NM4 CTA Bus
+95206,Heritage Division                                                               ,NM4 PACE Bus
+95214,South Holland-1                                                                 ,NM4 PACE Bus
+95201,Southwest Division                                                              ,NM4 PACE Bus
+95208,River Division                                                                  ,NM4 PACE Bus
+95204,South Division                                                                  ,NM4 PACE Bus
+95200,Northwest Division                                                              ,NM4 PACE Bus
+95209,North Division                                                                  ,NM4 PACE Bus
+95213,Contract                                                                        ,NM4 PACE Bus
+95202,North Shore Division                                                            ,NM4 PACE Bus
+95207,Fox Valley Division                                                             ,NM4 PACE Bus
+95203,West Division                                                                   ,NM4 PACE Bus
+189,CTA Back Office,CTA Rail
+189,CTA Back Office,Cubic 
+189,CTA Back Office,CTA Bus
+899,Ventra Back Office,Cubic 
+899,Ventra Back Office,CTA Rail
+899,Ventra Back Office,CTA Bus
+899,Ventra Back Office,PACE Bus
+899,Ventra Back Office,Metra Rail
+90194,BG2 North Park,NM4 Rail
+90200,BG8 Chicago,NM4 Rail
+90003,901 Test3_0613,NM4 Rail
+90013,Damen_Brown,NM4 Rail
+90098,Lake_Well,NM4 Rail
+90065,Damen_O'Hare,NM4 Rail
+90087,Polk_Douglas,NM4 Rail
+90140,35th_Tech,NM4 Rail
+90024,Granville,NM4 Rail
+90157,DB Monroe-Adams,NM4 Rail
+90047,69th Street,NM4 Rail
+90023,Loyola,NM4 Rail
+90046,79th Street,NM4 Rail
+90131,Laramie,NM4 Rail
+90121,Western_Orange,NM4 Rail
+90007,Wellington_Brwn,NM4 Rail
+90020,Howard_Red,NM4 Rail
+90036,Clark/Division,NM4 Rail
+9112,Wrigley  Field,CTA GFI
+9103,77th Garage,CTA GFI
+9102,74th Garage,CTA GFI
+9101,103rd Garage,CTA GFI
+9106,Kedzie  Garage,CTA GFI
+9110,Chicago  Garage,CTA GFI
+9109,Forest  Glen  Garage,CTA GFI
+9105,North  Park,CTA GFI
+90230,GCE_MC00011,NM4 Rail
+130,MerchandiseMart,CTA Rail
+131,Chicago_Brown,CTA Rail
+154,Bryn Mawr,CTA Rail
+158,Wilson,CTA Rail
+162,Fullerton,CTA Rail
+1281,Sox-35th,CTA Rail
+90064,Western_O'Hare,NM4 Rail
+90052,Cermak/Chinatow,NM4 Rail
+12,California_Douglas,CTA Rail
+107,Ashland_Lake,CTA Rail
+91084,Oak Park_Congrs,NM4 POS
+91105,Adams/Wabash,NM4 POS
+91116,South Boulevard,NM4 POS
+91132,Cicero_Lake,NM4 POS
+248,Northwest Food & Liquor,Retail Network
+230,Jay's Pharmacy & Liquor,Retail Network
+262,Seaway Bank - Lafayette,Retail Network
+217,Elgin Mart,Retail Network
+284,Ultra Foods-Chicago Heights,Retail Network
+260,Fairplay Foods #205,Retail Network
+253,Potash on Clark,Retail Network
+275,The Market Place Food Store,Retail Network
+208,Charlie's Supermarket,Retail Network
+282,Monster Mobile-18th,Retail Network
+231,Ka Oriental Gifts,Retail Network
+263,Fairplay Foods #207,Retail Network
+878,Cubic Installation Terminal 3,Retail Network
+411,Aby Petroleum,Retail Network
+410,Continental House Inc.,Retail Network
+314,Miska's Liquors - 63rd Street,Retail Network
+429,Red Apple Convenience,Retail Network
+326,S & D Pantry,Retail Network
+418,Stop Everyday,Retail Network
+335,Woof World,Retail Network
+493,CVS Store 4487,Retail Network
+430,CVS Store 4781,Retail Network
+496,CVS Store 8519,Retail Network
+472,CVS Store 788,Retail Network
+468,CVS Store 2935,Retail Network
+397,Jewel-Osco Store 3465,Retail Network
+399,Jewel-Osco Store 3471,Retail Network
+409,Jewel-Osco Store 3721,Retail Network
+343,Jewel-Osco 0362-3062,Retail Network
+368,Jewel-Osco 1241-3241,Retail Network
+486,CVS Store 1161,Retail Network
+500,CVS Store 1773,Retail Network
+508,CVS Store 2797,Retail Network
+519,CVS Store 2901,Retail Network
+527,CVS Store 3170,Retail Network
+555,CVS Store 5421,Retail Network
+556,CVS Store 5449,Retail Network
+557,CVS Store 5619,Retail Network
+561,CVS Store 5774,Retail Network
+573,CVS Store 5987,Retail Network
+580,CVS Store 6785,Retail Network
+585,CVS Store 7125,Retail Network
+605,CVS Store 8506,Retail Network
+606,CVS Store 8507,Retail Network
+614,CVS Store 8734,Retail Network
+622,CVS Store 8745,Retail Network
+634,CVS Store 8760,Retail Network
+687,35th & Ashland C E,Retail Network
+701,51st & Kedzie C E,Retail Network
+748,Ashland & 59th C E,Retail Network
+749,Ashland & 74th C E,Retail Network
+798,Cottage 47th C E,Retail Network
+805,Economy C E,Retail Network
+809,Garfield Dan Ryan C E,Retail Network
+827,J P Casa De Cambio 1638,Retail Network
+686,Mannheim & Touhy C E,Retail Network
+695,Milwaukee California C E,Retail Network
+717,New Archer Nash C E,Retail Network
+730,New Chicago Rush C E,Retail Network
+731,New Chicago State C E,Retail Network
+741,New Fairfield C E,Retail Network
+767,New North & Austin C E,Retail Network
+654,Stony Island C E,Retail Network
+526,CVS Store 3163,Retail Network
+474,CVS Store 3742,Retail Network
+562,CVS Store 5795,Retail Network
+570,CVS Store 833,Retail Network
+604,CVS Store 8505,Retail Network
+620,CVS Store 8742,Retail Network
+630,CVS Store 8755,Retail Network
+636,CVS Store 8910,Retail Network
+860,CVS Store 10052,Retail Network
+688,47th & Calumet C E,Retail Network
+647,Western 79th Check Cashers,Retail Network
+645,Western North C E,Retail Network
+643,Wheeling C E,Retail Network
+892,PLS Installation Test Terminal,Retail Network
+906,PLS Financial Store CC090,Retail Network
+910,PLS Financial Store CC075,Retail Network
+895,Jewel-Osco Store 3191,Retail Network
+923,"111th & Michigan Currency Exchange, Inc",Retail Network
+930,"55th & Pulaski Currency Exchange, Inc",Retail Network
+935,"81st & Cicero Currency Exchange, Inc",Retail Network
+966,"New 51st Western Currency Exchange, Inc",Retail Network
+967,"New Lincoln Foster Currency Exchange, Inc",Retail Network
+968,"Pulaski & Chicago Currency Exchange, Inc",Retail Network
+975,"Harlem & Milwaukee C E, Inc.",Retail Network
+997,Seven Star Food & Gas,Retail Network
+540,CVS Store 5481,Retail Network
+559,CVS Store 5688,Retail Network
+506,CVS Store 2790,Retail Network
+420,Mobil Gas Station - Maywood,Retail Network
+1009,Garfield Halsted C E D,Retail Network
+1014,115th & Michigan C E D,Retail Network
+1015,Granville & Broadway C E D,Retail Network
+1021,New 95th & Jeffrey C E D,Retail Network
+1027,Freedom Wireless Oakley,Retail Network
+1039,Amber Food Mart,Retail Network
+1042,Rite Price Food Mart,Retail Network
+1047,World-Wide Liquors,Retail Network
+810,Garfield Park C E,Retail Network
+1007,Jewel-Osco Store 3219,Retail Network
+1055,Walgreens Store 15065,Retail Network
+1061,Walgreens Store 3539,Retail Network
+1067,Walgreens Store 7559,Retail Network
+1068,Walgreens Store 7630,Retail Network
+1077,Walgreens Store 1101,Retail Network
+1099,Walgreens Store 2211,Retail Network
+1106,Walgreens Store 4147,Retail Network
+1107,Walgreens Store 4233,Retail Network
+1121,Walgreens Store 7359,Retail Network
+1130,Walgreens Store 194,Retail Network
+1135,Walgreens Store 258,Retail Network
+1138,Walgreens Store 400,Retail Network
+1143,Walgreens Store 1495,Retail Network
+1148,Walgreens Store 1802,Retail Network
+1182,Walgreens Store 2025,Retail Network
+1187,Walgreens Store 2558,Retail Network
+1191,Walgreens Store 2711,Retail Network
+1201,Walgreens Store 3949,Retail Network
+1202,Walgreens Store 3950,Retail Network
+1207,Walgreens Store 4807,Retail Network
+1163,Walgreens Store 5724,Retail Network
+1166,Walgreens Store 5926,Retail Network
+1168,Walgreens Store 6270,Retail Network
+1151,Walgreens Store 10424,Retail Network
+1087,Walgreens Store 11492,Retail Network
+864,Cubic Test 1,Retail Network
+1235,Solo Beauty Supply,Retail Network
+1240,ABC Choice - 79th & Halsted,Retail Network
+1253,Lawrence Ashland Currency Exchange,Retail Network
+1222,Order Express 002,Retail Network
+911,PLS Financial Store CC002,Retail Network
+653,Thatcher Woods C E Inc,Retail Network
+796,Clearing  C E,Retail Network
+792,Clark Diversey C E,Retail Network
+814,Halsted & 69th C E,Retail Network
+843,Kimball Lawrence C E,Retail Network
+842,Kimball & North C E,Retail Network
+1293,New Alsip Currency Exchange,Retail Network
+1300,M&M Quick Food,Retail Network
+1314,BP Station/Subway - Cermak/Damen,Retail Network
+1326,92 Cents,Retail Network
+1332,Vite Mart,Retail Network
+1334,Loyola Food Mart,Retail Network
+1342,Homewood BP,Retail Network
+1358,Community Gas/BP,Retail Network
+1360,Dolton BP Inc,Retail Network
+1458,Tony's Finer Foods - #867,Retail Network
+1425,Walmart Store #1737,Retail Network
+1431,Walmart Store #3039,Retail Network
+1435,Walmart Store #5485,Retail Network
+1440,Walmart Store #5965,Retail Network
+1482,Fat Daddy Food,Retail Network
+1497,Shah Jalal Grocery,Retail Network
+1510,Van - Lov Inc.,Retail Network
+1527,Matt Man's,Retail Network
+1538,BP North Aurora,Retail Network
+1539,Godings Marathon,Retail Network
+1548,Adrians Food Market,Retail Network
+1549,Robles Wireless,Retail Network
+1551,One Stop Shop Food Mart,Retail Network
+1562,Busy Bee Supermarket,Retail Network
+1583,Elgin Food & Fuel Marathon,Retail Network
+1598,Laramie Shell,Retail Network
+1611,LendNation 3370,Retail Network
+1613,LendNation 3374,Retail Network
+1617,Self Reliance Ukranian American Federal Credit Union,Retail Network
+1636,Ashland Jewelers,Retail Network
+1671,"N&B Dollar Store Plus, Inc.",Retail Network
+1683,Maria's Salon & Spa,Retail Network
+1690,79th & Jeffrey CE,Retail Network
+1709,Citgo LaGrange,Retail Network
+1714,Gary Comer Youth Center Inc.,Retail Network
+1724,Woodfield Mall Newstand,Retail Network
+1734,Walgreens Store 15667,Retail Network
+1742,Multi-Servicios Latino Inc.,Retail Network
+1758,Walgreens Store 16085,Retail Network
+1760,City Mart Express,Retail Network
+1768,Order Express 08,Retail Network
+1799,111th Street CE,Retail Network
+1801,Gutierrez Professional Services,Retail Network
+1817,Carlos Food Inc.,Retail Network
+1820,Ashland & Archer CE,Retail Network
+1838,"Talking Wireless, Inc. 2",Retail Network
+1843,F P S Express Inc,Retail Network
+1853,Boost Mobile-30th St,Retail Network
+1854,West Side Food Market Inc.,Retail Network
+1868,Mobile World,Retail Network
+1873,63rd & Cottage CEInc,Retail Network
+1879,67th & Stony Chk Csh,Retail Network
+1889,Rapido Envios Exp #3,Retail Network
+1892,Morse El C E,Retail Network
+1902,New Libertyville C E,Retail Network
+1904,Solex College,Retail Network
+1920,US Mobile & More Inc,Retail Network
+1928,Cell Phone Authority,Retail Network
+1929,Jewel-Osco 0185-3185,Retail Network
+1930,Axel Express Service - Fullerton,Retail Network
+1931,"Uniendo America, Inc",Retail Network
+1962,Bloomingdale C E,Retail Network
+1971,Naperville C E,Retail Network
+1974,Villa Oaks C E,Retail Network
+1986,NewHopes Serv Inc,Retail Network
+1989,Dollar Store Plus More,Retail Network
+2002,Kedzie 52 Titulos YP,Retail Network
+2005,Convenient Food Mart,Retail Network
+2017,Kime Express LLC,Retail Network
+2030,Tony's Finer Foods - #1867,Retail Network
+751,Ashland & 79th C E,Retail Network
+2033,Jewel-Osco Store 3198,Retail Network
+2035,"DHN Enterprises, LTD",Retail Network
+1995,Via Express US III,Retail Network
+2039,Tony's Finer Foods - #1967,Retail Network
+2042,Cicero and 95th C E,Retail Network
+2043,Evanston 1 C E Inc,Retail Network
+2026,Indio Import dba Envios Xpress & Services 01,Retail Network
+2061,79th & Ashland C E,Retail Network
+1259,Gage Park Services Corp - 1813,Retail Network
+2094,Envios De Dinero Kronox Express Inc 1,Retail Network
+2097,Envios De Dinero Kronox Express Inc 4,Retail Network
+2098,Envios De Dinero Kronox Express Inc 5,Retail Network
+2103,New Richton Park Currency Exchange,Retail Network
+188,XYZ Carlsbad,Retail Network
+859,CVS Store 590 Test,Retail Network
+134,Diversey_Brown,CTA Rail
+141,Damen_Brown,CTA Rail
+145,Kedzie_Brown,CTA Rail
+147,Howard_Red,CTA Rail
+159,Sheridan,CTA Rail
+160,Addison_Red,CTA Rail
+161,Belmont_Red,CTA Rail
+164,Clark/Division,CTA Rail
+165,Chicago_Red,CTA Rail
+172,SS Madison-Monroe,CTA Rail
+169,SS Jackson-VanBuren,CTA Rail
+167,Roosevelt-Red,CTA Rail
+1280,Garfield_Red,CTA Rail
+1276,79th_Street,CTA Rail
+1274,95th_Street,CTA Rail
+80,O'Hare,CTA Rail
+81,Rosemont,CTA Rail
+47,Cumberland_O'Hare,CTA Rail
+86,JeffersonPark,CTA Rail
+84,Montrose_O'Hare,CTA Rail
+77,Addison_O'Hare,CTA Rail
+78,Belmont_O'Hare,CTA Rail
+63,California_O'Hare,CTA Rail
+1573,Bogus Gates,CTA Rail
+65,Damen_O'Hare,CTA Rail
+66,Division_O'Hare,CTA Rail
+68,Grand_O'Hare,CTA Rail
+5,Thompson Center,CTA Rail
+6,203 LaSalle,CTA Rail
+70,DB Randolph-Washington,CTA Rail
+75,DB Jackson-VanBuren,CTA Rail
+56,Kedzie_Congress,CTA Rail
+51,ForestPark_Congress,CTA Rail
+8,Polk_Douglas,CTA Rail
+11,Western_Douglas,CTA Rail
+14,CentralPark_Douglas,CTA Rail
+127,Main_Purple,CTA Rail
+87,Roosevelt_Orange,CTA Rail
+89,Ashland/Archer,CTA Rail
+91,Western_Orange,CTA Rail
+94,Midway,CTA Rail
+101,Laramie,CTA Rail
+105,Kedzie_Lake,CTA Rail
+108,Morgan_Lake,CTA Rail
+2,Clinton_Lake,CTA Rail
+95,35th_Tech,CTA Rail
+114,51st_Green,CTA Rail
+4,Washington/Wells,CTA Rail
+179,Quincy/Wells,CTA Rail
+174,Randolph/Wabash,CTA Rail
+3,State/Lake,CTA Rail
+1932,Washington/Wabash,CTA Rail
+2075,Damen_Lake,CTA Rail
+199,Tech Lab,CTA Rail
+1996,CTA Rail Test D,CTA Rail
+133,Armitage_Brown,CTA Rail
+136,Southport_Brown,CTA Rail
+153,Thorndale_Red,CTA Rail
+168,Harrison-Red,CTA Rail
+60,Racine_Congress,CTA Rail
+122,Linden_Purple,CTA Rail
+121,Oakton,CTA Rail
+116,King_Green,CTA Rail
+119,Ashland_Green,CTA Rail
+177,VanBuren/State,CTA Rail
+90126,Harlem_Lake,NM4 Rail
+90112,Foster_Purple,NM4 Rail
+90017,Kedzie_Brown,NM4 Rail
+90095,Kostner_Douglas,NM4 Rail
+90123,Ashland/Archer,NM4 Rail
+90009,Paulina_Brown,NM4 Rail
+90089,Damen_Douglas,NM4 Rail
+90085,Harlem_Congress,NM4 Rail
+90084,Oak Park_Congrs,NM4 Rail
+90086,ForestPark_Cong,NM4 Rail
+90142,43rd_Green,NM4 Rail
+90166,CurEx_NWMem,NM4 Rail
+90177,57th_Metra,NM4 Rail
+90039,SS Lake-Randolp,NM4 Rail
+90010,Addison_Brown,NM4 Rail
+90061,Belmont-O'Hare,NM4 Rail
+90031,Sheridan,NM4 Rail
+90102,State/Lake,NM4 Rail
+90053,O'Hare,NM4 Rail
+90048,63rd Street,NM4 Rail
+90026,Bryn Mawr,NM4 Rail
+90147,Cottage_Green,NM4 Rail
+90139,Clinton_Lake,NM4 Rail
+90148,VanBuren/State,NM4 Rail
+90155,SS Jackson-VanB,NM4 Rail
+90156,DB Wash-Madison,NM4 Rail
+90044,95th Street,NM4 Rail
+90107,Quincy/Wells,NM4 Rail
+90080,Kedzie_Congress,NM4 Rail
+90037,Chicago_Red,NM4 Rail
+90158,DB Jackson-VanB,NM4 Rail
+90012,Montrose_Brown,NM4 Rail
+90001,901 Test1_0613,NM4 Rail
+90005,Armitage_Brown,NM4 Rail
+90016,Francisco_Brown,NM4 Rail
+90040,SS Madison-Monr,NM4 Rail
+90103,Randolph/Wabash,NM4 Rail
+90100,Thompson_Center,NM4 Rail
+90120,Kedzie_Orange,NM4 Rail
+90133,Pulaski_Lake,NM4 Rail
+90059,IrvingPark_O'H,NM4 Rail
+139,IrvingPark_Brown,CTA Rail
+140,Montrose_Brown,CTA Rail
+143,Rockwell_Brown,CTA Rail
+151,Loyola,CTA Rail
+156,Argyle,CTA Rail
+163,North/Clybourn,CTA Rail
+170,SS Adams-Jackson,CTA Rail
+1279,47th_Street_Red,CTA Rail
+83,Harlem_O'Hare,CTA Rail
+85,IrvingPark_O'Hare,CTA Rail
+73,DB Monroe-Adams,CTA Rail
+74,DB Adams-Jackson,CTA Rail
+58,Medical Center_Congress,CTA Rail
+16,Kostner_Douglas,CTA Rail
+88,Halsted_Orange,CTA Rail
+96,Harlem_Lake,CTA Rail
+102,Cicero_Lake,CTA Rail
+104,Conservatory,CTA Rail
+115,Garfield_Green,CTA Rail
+118,Halsted_Green,CTA Rail
+1827,Route_59_Metra_Station_TVM,CTA Rail
+191,River Walk,CTA Rail
+90094,Pulaski_Douglas,NM4 Rail
+90136,California_Lake,NM4 Rail
+90163,Damen_Congress,NM4 Rail
+90015,Rockwell_Brown,NM4 Rail
+90006,Diversey_Brown,NM4 Rail
+90145,Garfield_Green,NM4 Rail
+90105,Adams/Wabash,NM4 Rail
+90091,California_Doug,NM4 Rail
+90093,CentralParkDoug,NM4 Rail
+90025,Thorndale_Red,NM4 Rail
+90079,Western_Congres,NM4 Rail
+90058,Montrose_O'Hare,NM4 Rail
+90050,47th Street_Red,NM4 Rail
+90143,47th_Green,NM4 Rail
+90167,Grand_O'Hare,NM4 Rail
+90152,Chicago_Brown,NM4 Rail
+197,CTA Bus Training Group,CTA Bus
+1630,Pace Retired,PACE Bus
+31,Northwest,CTA Bus
+1615,CTA Orphan Buses,CTA Bus
+32,Westmont FS,CTA Bus
+45,North Park,PACE Bus
+7,Repair Depot Warm Rack - CTA Bus,CTA Rail
+193,Test ATT Bus Facility,CTA Bus
+22,Niles (Muni),CTA Bus
+95210,Highland Park                                                                   ,NM4 PACE Bus
+94999,PACE Spares,NM4 PACE Bus
+90198,BG6 77th,NM4 Rail
+90135,Kedzie_Lake,NM4 Rail
+90159,SS Rand-Washing,NM4 Rail
+90078,Medical Center,NM4 Rail
+90113,Davis_Purple,NM4 Rail
+9111,901  Special  Events,CTA GFI
+90229,GCE_MC00001,NM4 Rail
+90231,GCE_MC00012,NM4 Rail
+91088,18th_Douglas,NM4 POS
+91146,King_Green,NM4 POS
+91118,Midway,NM4 POS
+91123,Ashland/Archer,NM4 POS
+91136,California_Lake,NM4 POS
+222,Grocery Basket,Retail Network
+251,Pepe's #2 Food & Liquor,Retail Network
+256,Seaway Bank - 87th Street,Retail Network
+241,Main Mobil,Retail Network
+298,EZ Food & Liquor,Retail Network
+289,Ultra Foods-Lansing,Retail Network
+227,Imperial Towers Market,Retail Network
+273,Wireless R Us-Devon,Retail Network
+200,3600 Commissary,Retail Network
+258,Fairplay Foods #199,Retail Network
+303,DM News Stand,Retail Network
+886,Fair Share Fine Foods - Roosevelt,Retail Network
+308,John's Hardware,Retail Network
+312,Martin's Mini-Market,Retail Network
+332,The Collection,Retail Network
+491,CVS Store 8508,Retail Network
+457,CVS Store 8693,Retail Network
+467,CVS Store 2934,Retail Network
+463,CVS Store 8736,Retail Network
+482,CVS Store 4793,Retail Network
+389,Jewel-Osco Store 3429,Retail Network
+401,Jewel-Osco Store 3477,Retail Network
+405,Jewel-Osco 0901-3501,Retail Network
+337,Jewel-Osco 4013-3013,Retail Network
+341,Jewel-Osco Store 3051,Retail Network
+352,Jewel-Osco 0224-3124,Retail Network
+373,Jewel-Osco 1282-3282,Retail Network
+499,CVS Store 1768,Retail Network
+502,CVS Store 2664,Retail Network
+510,CVS Store 2809,Retail Network
+542,CVS Store 4269,Retail Network
+554,CVS Store 5394,Retail Network
+563,CVS Store 5797,Retail Network
+579,CVS Store 6748,Retail Network
+584,CVS Store 8502,Retail Network
+629,CVS Store 8753,Retail Network
+694,47th & King Drive C E,Retail Network
+794,63rd & Morgan C E,Retail Network
+706,71st & Jeffery C E,Retail Network
+795,95th & Cicero C E,Retail Network
+760,Aurora New York Street C E,Retail Network
+769,Bellwood C E,Retail Network
+787,Chicago Heights Check Cashers,Retail Network
+804,East Side C E,Retail Network
+812,Great Lakes C E,Retail Network
+825,Irving Elston C E,Retail Network
+835,J P Casa De Cambio 5049,Retail Network
+836,J P Casa De Cambio 7060,Retail Network
+844,Lake Bluff C E,Retail Network
+736,Dempster Landings,Retail Network
+743,New Fullerton Central C E,Retail Network
+745,New Fullerton Kimball C E,Retail Network
+753,New Hawthorne C E,Retail Network
+754,New Hillcrest C E,Retail Network
+770,New Olympia Plaza C E,Retail Network
+788,Oak Park & Belmont C E,Retail Network
+501,CVS Store 1965,Retail Network
+514,CVS Store 2846,Retail Network
+545,CVS Store 4778,Retail Network
+595,CVS Store 7199,Retail Network
+674,147th & Pulaski C E,Retail Network
+902,PLS Financial Store CC063,Retail Network
+903,PLS Financial Store CC006,Retail Network
+904,PLS Financial Store CC001,Retail Network
+925,"26th & Austin Currency Exchange, Inc",Retail Network
+929,"55th & California Currency Exchange, Inc",Retail Network
+931,"62nd & Western Currency Exchange, Inc",Retail Network
+932,"63rd & Ashland Currency Exchange, Inc",Retail Network
+934,"67th & Pulaski Currency Exchange, Inc",Retail Network
+943,"California & 63rd Currency Exchange, Inc",Retail Network
+945,"Central & Milwaukee Currency Exchange, Inc",Retail Network
+956,"Devon Clark Currency Exchange, Inc",Retail Network
+970,"Sawyer & 47th Currency Exchange, Inc",Retail Network
+979,Better Business Planning,Retail Network
+1022,New South Chicago C E D,Retail Network
+1024,ABC Data Entry Systems,Retail Network
+1034,Safeway Food Market,Retail Network
+1041,International News #147,Retail Network
+718,79th & Cottage C E 10104,Retail Network
+823,Illinois Center C E,Retail Network
+1054,Walgreens Store 211,Retail Network
+1060,Walgreens Store 2742,Retail Network
+1063,Walgreens Store 4494,Retail Network
+1069,Walgreens Store 9001,Retail Network
+1073,Walgreens Store 15004,Retail Network
+1103,Walgreens Store 3395,Retail Network
+1104,Walgreens Store 3698,Retail Network
+1113,Walgreens Store 5123,Retail Network
+1114,Walgreens Store 5192,Retail Network
+1115,Walgreens Store 5234,Retail Network
+1116,Walgreens Store 5825,Retail Network
+1129,Walgreens Store 163,Retail Network
+1131,Walgreens Store 215,Retail Network
+1133,Walgreens Store 230,Retail Network
+1189,Walgreens Store 2684,Retail Network
+1196,Walgreens Store 3076,Retail Network
+1197,Walgreens Store 3321,Retail Network
+1206,Walgreens Store 4752,Retail Network
+1216,Walgreens Store 5103,Retail Network
+1178,Walgreens Store 5140,Retail Network
+1165,Walgreens Store 5868,Retail Network
+1170,Walgreens Store 6332,Retail Network
+1172,Walgreens Store 6629,Retail Network
+1158,Walgreens Store 7515,Retail Network
+1090,Walgreens Store 12304,Retail Network
+1093,Walgreens Store 13798,Retail Network
+1241,ABC Choice - 74th & Halsted,Retail Network
+681,18th & Ashland C E,Retail Network
+650,Vincennes & 79th C E,Retail Network
+781,Broadway Irving Park C E,Retail Network
+1404,Osama Foods,Retail Network
+1220,69th & Ashland C E D,Retail Network
+1294,New 111th & Western CX,Retail Network
+1298,First Ave Citgo,Retail Network
+1320,Diversey/Austin Food & Liquor,Retail Network
+254,Randee's Food Store,Retail Network
+1348,Army Trail Swift Gasoline (BP),Retail Network
+1353,PJ Multiservices,Retail Network
+1050,Citgo Fuel and Minimart-Kedzie,Retail Network
+1359,South Ashland BP,Retail Network
+1445,Archer Nagle Shell,Retail Network
+1452,Tony's Finer Foods - #667,Retail Network
+1418,CAWC 2147 W North Ave,Retail Network
+1394,Super Nick Food & Liquor,Retail Network
+1469,Supermercados Granados Supermarket,Retail Network
+1474,Long Wood Food,Retail Network
+1283,Belmont Cicero C E,Retail Network
+1428,Walmart Store #1938,Retail Network
+1429,Walmart Store #2430,Retail Network
+1492,Market Citgo,Retail Network
+1507,Touchdown Food Mart,Retail Network
+1515,North Shell,Retail Network
+1523,Kwik Mart,Retail Network
+1475,"Central States SER, Jobs for Progress - W26th",Retail Network
+1535,Brookfield Shell,Retail Network
+1541,Broadway Citgo,Retail Network
+1545,D + S Food & Liquor Inc.,Retail Network
+1546,BP Amoco,Retail Network
+1557,Urban Express,Retail Network
+1588,Chicago St. Shell,Retail Network
+1600,Quick Shop,Retail Network
+1604,The Salvation Army,Retail Network
+1614,LendNation 3376,Retail Network
+1621,Lawrence Hall Youth Services,Retail Network
+1618,Asian Human Services Chicago,Retail Network
+1687,Garfield Ashland CE,Retail Network
+1708,Loop II Currency Exchange,Retail Network
+1715,Illinois Caucus For Adolescent Health,Retail Network
+1722,M & S Gas and Food Inc.,Retail Network
+1725,Golf and Dee Citgo,Retail Network
+1729,Arts Food + Beverage,Retail Network
+1730,Willowbrook C E 2,Retail Network
+1736,"Ogden Kedzie Currency Exchange, Inc.",Retail Network
+1785,J P Casa De Cambio-7060,Retail Network
+1798,75th & Vincennes CE,Retail Network
+1831,Housing Forward,Retail Network
+1848,Pollux LLC,Retail Network
+1878,75th & Exchange ChkC,Retail Network
+1891,Tony's Fresh Market - #1667,Retail Network
+1903,Jewel-Osco Store 3061,Retail Network
+1906,Axel Express Service - Diversey,Retail Network
+1876,Western Lake Chk Csh,Retail Network
+1086,Walgreens Store 11410,Retail Network
+1933,Via Express US II,Retail Network
+1942,Easy Go Services Inc II,Retail Network
+1959,Neca's Mini Mart,Retail Network
+1967,Grand Plaza C E,Retail Network
+1985,"Growing Home, Inc.",Retail Network
+2008,AK Food Mart & Wireless Inc,Retail Network
+2040,JP Financial Services Inc JP019,Retail Network
+2065,Rapido One Stop Service Center LLC,Retail Network
+2078,Aurora New York #1 CE,Retail Network
+2083,The Jewels of Chicago,Retail Network
+2096,Envios De Dinero Kronox Express Inc 3,Retail Network
+2102,Broadway Granville Currency Exchange,Retail Network
+2104,Vernon Hills #1 Currency Exchange Inc,Retail Network
+2105,Elmhurst - Villa Park Currency Exchange,Retail Network
+142,Western_Brown,CTA Rail
+148,Jarvis_Red,CTA Rail
+155,Berwyn,CTA Rail
+166,Grand_Red,CTA Rail
+173,SS Randolph-Washington,CTA Rail
+1278,63rd_Street,CTA Rail
+1277,69th_Street,CTA Rail
+61,Halsted_Congress,CTA Rail
+55,Pulaski_Congress,CTA Rail
+15,Pulaski_Douglas,CTA Rail
+18,54th_Cermak_Douglas,CTA Rail
+129,South Boulevard,CTA Rail
+93,Pulaski_Orange,CTA Rail
+99,Austin_Lake,CTA Rail
+103,Pulaski_Lake,CTA Rail
+106,California_Lake,CTA Rail
+175,Madison/Wabash,CTA Rail
+192,Lake Shore Drive,CTA Rail
+135,Wellington_Brown,CTA Rail
+90002,Fiber_Test1,NM4 Rail
+90090,Western_Douglas,NM4 Rail
+90130,Central_Lake,NM4 Rail
+90175,DMNK_71st/Jeff,NM4 Rail
+90018,Kimball_Brown,NM4 Rail
+90151,Ashland_Green,NM4 Rail
+90030,Wilson,NM4 Rail
+90144,51st_Green,NM4 Rail
+90128,Ridgeland,NM4 Rail
+90116,South Boulevard,NM4 Rail
+90110,Central_Purple,NM4 Rail
+90067,Chicago_O'Hare,NM4 Rail
+90154,SS Monroe-Adams,NM4 Rail
+90070,DB Adams-Jacksn,NM4 Rail
+90104,Madison/Wabash,NM4 Rail
+90188,Oakton,NM4 Rail
+90069,DB Madison-Monr,NM4 Rail
+90124,Halsted_Orange,NM4 Rail
+90022,Morse,NM4 Rail
+171,SS Monroe-Adams,CTA Rail
+1275,87th_Street,CTA Rail
+54,Cicero_Congress,CTA Rail
+53,OakPark_Congress,CTA Rail
+13,Kedzie_Douglas,CTA Rail
+92,Kedzie_Orange,CTA Rail
+97,OakPark_Lake,CTA Rail
+111,Indiana_Green,CTA Rail
+1702,NavyPier,CTA Rail
+1764,Cermak_Green,CTA Rail
+1888,Union_Station_Bus_Stop_TVMs,CTA Rail
+90150,Halsted_Green,NM4 Rail
+90042,Harrison,NM4 Rail
+90029,Lawrence,NM4 Rail
+90132,Cicero_Lake,NM4 Rail
+90117,Skokie,NM4 Rail
+90056,Harlem_O'Hare,NM4 Rail
+90057,JeffersonPark,NM4 Rail
+90111,Noyes_Purple,NM4 Rail
+40,Forest Glen,PACE Bus
+1287,Carol Stream MV,PACE Bus
+20,Bus Facility 1,PACE Bus
+1822,DuPage FT,PACE Bus
+2089,CDT South,PACE Bus
+2055,Via,PACE Bus
+90237,901 COS2_061996,NM4 Rail
+90146,King_Green,NM4 Rail
+90074,LaSalle_Congres,NM4 Rail
+90137,Ashland_Lake,NM4 Rail
+137,Paulina_Brown,CTA Rail
+1282,Cermak/Chinatown,CTA Rail
+79,Logan_Square,CTA Rail
+46,Austin_Congress,CTA Rail
+90227,HSE_MC00003,NM4 Rail
+90226,HSE_MC00002,NM4 Rail
+91093,CentralParkDoug,NM4 POS
+91095,Kostner_Douglas,NM4 POS
+91096,Cicero_Douglas,NM4 POS
+91104,Madison/Wabash,NM4 POS
+185,EntityOne - Poway,Retail Network
+186,EntityTwo - Poway,Retail Network
+267,South Shore Food & Liquor,Retail Network
+235,Kostner Food Basket,Retail Network
+202,Baltimore Food & Liquors,Retail Network
+283,Ultra Foods-Chicago,Retail Network
+286,Ultra Foods-Downers Grove,Retail Network
+274,Wireless R Us-Kedzie,Retail Network
+211,Clark Gas Station -Damen/Diversey,Retail Network
+237,La Primera,Retail Network
+239,Leamington Foods,Retail Network
+234,KMP Sales,Retail Network
+232,Ken Tone's Drive-In,Retail Network
+246,Mobil Pulaski,Retail Network
+423,Delobian Foods,Retail Network
+888,Pacific Global Bank - Main Office,Retail Network
+322,Paired Wine,Retail Network
+327,S.S Food & Liquors,Retail Network
+328,Sahar Food & Liquors,Retail Network
+330,Sip and Savor,Retail Network
+464,CVS Store 8699,Retail Network
+466,CVS Store 2810,Retail Network
+453,CVS Store 5768,Retail Network
+390,Jewel-Osco Store 3441,Retail Network
+392,Jewel-Osco Store 3443,Retail Network
+400,Jewel-Osco Store 3473,Retail Network
+426,Supermercado La Victoria,Retail Network
+365,Jewel-Osco Store 3224,Retail Network
+366,Jewel-Osco 4228-3228,Retail Network
+374,Jewel-Osco 0283-3283,Retail Network
+375,Jewel-Osco 0288-3288,Retail Network
+504,CVS Store 2786,Retail Network
+583,CVS Store 7123,Retail Network
+574,CVS Store 8500,Retail Network
+611,CVS Store 8698,Retail Network
+612,CVS Store 8732,Retail Network
+619,CVS Store 8741,Retail Network
+732,95th & State C E,Retail Network
+870,Cubic Test 7,Retail Network
+873,Cubic Test 10,Retail Network
+763,Azteca #3 New 39th & Kedzie C E,Retail Network
+776,Bridgeview C E,Retail Network
+779,Broadway Foster C E,Retail Network
+784,Cermak & Laramie C E,Retail Network
+785,Cermak Wabash,Retail Network
+801,Damen Chicago C E,Retail Network
+824,Irving Cicero C E,Retail Network
+830,J P Casa De Cambio 6728,Retail Network
+831,J P Casa De Cambio 1700,Retail Network
+847,Lawrence Cumberland C E,Retail Network
+853,Madison & Pulaski C E,Retail Network
+690,Melrose Village C E,Retail Network
+693,New Milwaukee Ballard C E,Retail Network
+705,New 18th & Blue Island C E,Retail Network
+708,New 35th & Indiana C E,Retail Network
+713,New 75th & Exchange C E,Retail Network
+728,New Calumet City C E,Retail Network
+660,Roosevelt Western C E,Retail Network
+659,Rt 53 & Boughton C E,Retail Network
+652,Van Buren & Ashland C E 10682,Retail Network
+511,CVS Store 2827,Retail Network
+531,CVS Store 3674,Retail Network
+535,CVS Store 3901,Retail Network
+598,CVS Store 7327,Retail Network
+617,CVS Store 8738,Retail Network
+639,CVS Store 8949,Retail Network
+646,Western Elston C E,Retail Network
+671,147th & Cicero C E,Retail Network
+907,PLS Financial Store CC071,Retail Network
+908,PLS Financial Store CC005,Retail Network
+897,Jewel-Osco 2313-3313,Retail Network
+926,"31st & Pulaski Currency Exchange, Inc",Retail Network
+927,"43rd & Ashland Currency Exchange, Inc",Retail Network
+933,"63rd & Pulaski Currency Exchange, Inc",Retail Network
+936,"87th & Kedzie Currency Exchange, Inc",Retail Network
+947,"Cermak & Central Currency Exchange, Inc",Retail Network
+949,"Cermak-Cicero Currency Exchange, Inc",Retail Network
+959,"Howard Paulina Currency Exchange, Inc",Retail Network
+961,"Kedzie Elston Currency Exchange, Inc",Retail Network
+962,"Laramie Diversey Currency Exchange, Inc",Retail Network
+963,"Madison & 17th Currency Exchange, Inc",Retail Network
+964,"Madison & 5th Currency Exchange, Inc",Retail Network
+965,"Montrose Central Currency Exchange, Inc",Retail Network
+972,"Western & 71st Currency Exchange, Inc",Retail Network
+984,Daily Pantry,Retail Network
+990,Frank Food Mart,Retail Network
+1017,Michigan & 103rd C E 10125,Retail Network
+1036,Park Tower Market,Retail Network
+1026,It's Major #2,Retail Network
+1072,Walgreens Store 10558,Retail Network
+1074,Walgreens Store 162,Retail Network
+1102,Walgreens Store 3072,Retail Network
+1112,Walgreens Store 5034,Retail Network
+1118,Walgreens Store 7054,Retail Network
+1124,Walgreens Store 9709,Retail Network
+1186,Walgreens Store 2387,Retail Network
+1214,Walgreens Store 5057,Retail Network
+1089,Walgreens Store 12150,Retail Network
+1091,Walgreens Store 13106,Retail Network
+1096,Walgreens Store 15364,Retail Network
+1249,Fuller Citgo,Retail Network
+1270,Addison & Austin Citgo,Retail Network
+1273,Westside Food Mart #2,Retail Network
+1233,Order Express 043,Retail Network
+849,Lawrence Sheridan C E,Retail Network
+715,75th & Stony Island C E,Retail Network
+1408,Beauty World,Retail Network
+1292,Citgo Fuel - 7114 S. Vincennes,Retail Network
+1297,Chicago Ridge Currency Exchange,Retail Network
+1318,Tiny Bubbles,Retail Network
+1329,Quizhpe's Gifts & Sports,Retail Network
+1336,Monets Food Mart,Retail Network
+1344,Dos Ricco's,Retail Network
+1364,Racine Food & General Merchandise,Retail Network
+1454,Tony's Finer Foods - #367,Retail Network
+1218,Cubic Fulfillment Terminal,Retail Network
+1416,Cubic Fulfillment Terminal 4,Retail Network
+1419,"Crawford Oakton Currency Exchange, Inc.",Retail Network
+1430,Walmart Store #2816,Retail Network
+1483,J & C Finer Food,Retail Network
+1487,The Pride of Chicago-3100 S. Cicero,Retail Network
+1493,Super Food Mart (HIMA),Retail Network
+1495,Mayfair Market,Retail Network
+1513,D & D Foods & Liquors,Retail Network
+1514,A.S.O Food Market,Retail Network
+1530,Howard Food,Retail Network
+1554,Lake Street Mobil,Retail Network
+1544,Stone Park Currency Exchange Inc.,Retail Network
+1552,4 Montrose Inc.,Retail Network
+1558,Cornerstone Community Outreach,Retail Network
+1567,Pulaski Citgo,Retail Network
+1410,Jewel-Osco 4500-2500,Retail Network
+1413,J P Casa De Cambio 12255 G,Retail Network
+1574,O'Hen Pantry,Retail Network
+1587,Shell of Joliet,Retail Network
+1592,The Connection,Retail Network
+1602,Maine South High School,Retail Network
+1605,Access Living,Retail Network
+1677,Jewel-Osco 3546-2506,Retail Network
+1684,Las Americas Food and Liquor,Retail Network
+1706,Walgreens Store 15921,Retail Network
+1713,Citgo Subway,Retail Network
+1720,Strack & Van Til - Hammond,Retail Network
+1750,Mexicare Pharmacy II (Palcare Inc),Retail Network
+1752,Walgreens Store 15635,Retail Network
+1765,Order Express 02,Retail Network
+1788,21st Food Market Inc.,Retail Network
+1792,Boost Mobile - Diversey,Retail Network
+1814,JP Casa De Cambio 2455,Retail Network
+1815,Walgreens Store 15350,Retail Network
+1871,North Lawndale Employment Network,Retail Network
+1874,79th & Cottage CEInc,Retail Network
+1215,Walgreens Store 5089,Retail Network
+1894,Walgreens Store 13826,Retail Network
+1912,Antioch C E,Retail Network
+1945,Gogo Food Market Inc,Retail Network
+1966,Fox Valley C E,Retail Network
+1970,Lee Street C E,Retail Network
+1978,J And P Curr Serv,Retail Network
+2006,Gage Park Services Corp - 2748,Retail Network
+2025,Vels Inc.,Retail Network
+733,New Cottage & 87th C E,Retail Network
+2049,Cactus Food &Liquors,Retail Network
+2077,79th & Vincennes CE,Retail Network
+2091,Food Xpress LLC,Retail Network
+132,Sedgwick_Brown,CTA Rail
+157,Lawrence,CTA Rail
+59,Blue-Western_Congress,null
+117,Green-Cottage,null
+49,Blue-Clinton_Congress,null
+64,Blue-Western_O'Hare,null
+71,Blue-DB Washington-Madison,null
+72,Blue-DB Madison-Monroe,null
+150,Red-Morse,null
+152,Red-Granville,null
+112,Green-43rd,null
+113,Green-47th,null
+120,Yellow-Skokie,null
+144,Brown-Francisco,null
+146,Brown-Kimball,null
+1,Red-SS-Lake-Randolph,null
+48,Blue-Morgan_Congress,null
+52,Blue-Harlem_Congress,null
+57,Blue-Damen_Congress,null
+123,Purple-Central,null
+126,Purple-Davis,null
+9,Pink-18th_Douglas,null
+10,Pink-Damen_Douglas,null
+17,Pink-Cicero_Douglas,null
+50,Blue-LaSalle_Congress,null
+67,Blue-Chicago_O'Hare,null
+90,Orange_35th_Archer,null
+98,Green-Ridgeland_Lake,null
+100,Green-Central_Lake,null
+124,Purple-Noyes,null
+125,Purple-Foster,null
+128,Purple-Dempster,null
+138,Brown-Addison,null
+176,Loop-Adams/Wabash,null
+178,Loop-LaSalle_VanBuren,null
+1695,Offsite Pace TVM-Harvey Transit Center,null
+1704,Offsite TVM-Millenium Park Metra,null
+1289,Offsite TVM-Union Station,null
+1290,Offsite TVM-Ogilvie Transportation Center,null
+1805,Offsite Pace TVM-Schaumburg Metra,null

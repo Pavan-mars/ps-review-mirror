@@ -1,16 +1,27 @@
 import React, { useState, useMemo } from 'react';
+// 27-Jul-2026. PS4 had no Analyse route into the cross-PS view at all, so an
+// anomalous device could not be checked against PS1's risk score, PS2's cascade
+// history or PS3's attributed subsystem without leaving the tab and searching
+// for the same device by hand.
+import AnalyseButton from '../shared/AnalyseButton';
+import PS4WeeklyV3 from './PS4WeeklyV3';
+import Device360Modal from './Device360Modal';
 import {
   BarChart, PieChart, AreaChart, ComposedChart, LineChart,
   Bar, Pie, Cell, Area, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  ResponsiveContainer, ReferenceLine,
-} from 'recharts';
+  ResponsiveContainer, ReferenceLine, LabelList } from 'recharts';
 import {
   CITIES,
   getAnomalyAlerts,
   getDeviationScores,
   getAnomalyTrend,
 } from '../../data/mockData';
+// 2026-07-26: direct value labels on every mark. Discrete marks (bars, pie
+// slices) get one label each; continuous series (lines, areas) get an END
+// label only -- a number on every point of a long series goes unread.
+// Label text uses the muted text token, never the series colour.
+import { VLAB, fmtV, endOnlyLabel } from '../shared/DashboardKit';
 
 const SEVERITY_COLORS = { Critical: '#ef4444', High: '#f97316', Medium: '#f59e0b', Low: '#3b82f6' };
 
@@ -19,6 +30,7 @@ const SUB_TABS = [
   { key: 'deviation', label: 'Deviation Scoring' },
   { key: 'outliers', label: 'Outlier Analysis' },
   { key: 'trends', label: 'Trend Monitoring' },
+  { key: 'weeklyv3', label: 'Weekly Anomaly (v3)' },
 ];
 
 function timeAgo(timestamp) {
@@ -41,6 +53,8 @@ function deviationCellColor(score) {
 }
 
 export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
+  // One modal for the whole tab, same pattern as PS1/PS2/PS3.
+  const [analyseDevice, setAnalyseDevice] = useState(null);
   const selectedCities = useMemo(() => [city], [city]);
   const [activeTab, setActiveTab] = useState('alerts');
 
@@ -174,13 +188,18 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
               <div className="card">
                 <div className="card-header">Alert Distribution by Severity</div>
                 <ResponsiveContainer width="100%" height={260}>
-                  <PieChart><Pie data={alertSeverityPie} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} label>{alertSeverityPie.map((entry, i) => <Cell key={i} fill={SEVERITY_COLORS[entry.name] || '#6b7280'} />)}</Pie><Tooltip /><Legend /></PieChart>
+                  <PieChart><Pie data={alertSeverityPie} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={85} label>{alertSeverityPie.map((entry, i) => <Cell key={i} fill={SEVERITY_COLORS[entry.name] || '#6b7280'} />)}
+            <LabelList dataKey="value" position="outside" formatter={fmtV} style={VLAB} />
+          </Pie><Tooltip /><Legend /></PieChart>
                 </ResponsiveContainer>
               </div>
               <div className="card">
                 <div className="card-header">Alerts by Device Type</div>
                 <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={alertsByDevice}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="device" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip /><Bar dataKey="count" fill="#6366f1" radius={[4, 4, 0, 0]} /></BarChart>
+                  <BarChart data={alertsByDevice}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="device" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip /><Bar dataKey="count" fill="#6366f1" radius={[4, 4, 0, 0]}>
+            <LabelList dataKey="count" position="top" formatter={fmtV} style={VLAB} />
+          </Bar><Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
+                </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
@@ -191,7 +210,10 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
               <div className="card-header">Alert Response Status</div>
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={alertStatusTracker}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="status" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>{alertStatusTracker.map((entry, i) => { const colors = { Active: '#ef4444', Investigating: '#f59e0b', Acknowledged: '#3b82f6', Resolved: '#22c55e' }; return <Cell key={i} fill={colors[entry.status] || '#6b7280'} />; })}</Bar>
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>{alertStatusTracker.map((entry, i) => { const colors = { Active: '#ef4444', Investigating: '#f59e0b', Acknowledged: '#3b82f6', Resolved: '#22c55e' }; return <Cell key={i} fill={colors[entry.status] || '#6b7280'} />; })}
+            <LabelList dataKey="count" position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
+                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -200,7 +222,11 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart data={[{ city: CITIES.find(c => c.id === city)?.name || city, total: alertKPIs.total, critical_high: alertKPIs.critical + alertKPIs.high }]}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="city" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip /><Legend />
-                  <Bar dataKey="total" name="Total Anomalies" fill="#6366f1" radius={[4, 4, 0, 0]} /><Bar dataKey="critical_high" name="Critical + High" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="total" name="Total Anomalies" fill="#6366f1" radius={[4, 4, 0, 0]}>
+            <LabelList dataKey="total" position="top" formatter={fmtV} style={VLAB} />
+          </Bar><Bar dataKey="critical_high" name="Critical + High" fill="#ef4444" radius={[4, 4, 0, 0]}>
+            <LabelList dataKey="critical_high" position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -227,7 +253,10 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
             <div className="card-header">Top 20 Highest Deviation Scores</div>
             <ResponsiveContainer width="100%" height={500}>
               <BarChart data={top20Deviations} layout="vertical" margin={{ left: 100 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11 }} /><YAxis dataKey="device_id" type="category" width={90} tick={{ fontSize: 10 }} /><Tooltip />
-                <Bar dataKey="score" radius={[0, 4, 4, 0]}>{top20Deviations.map((entry, i) => <Cell key={i} fill={deviationCellColor(entry.score)} />)}</Bar>
+                <Bar dataKey="score" radius={[0, 4, 4, 0]}>{top20Deviations.map((entry, i) => <Cell key={i} fill={deviationCellColor(entry.score)} />)}
+            <LabelList dataKey="score" position="right" formatter={fmtV} style={VLAB} />
+          </Bar>
+              <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -237,7 +266,10 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
               <div className="card-header">Score Distribution</div>
               <ResponsiveContainer width="100%" height={280}>
                 <BarChart data={scoreDistribution}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="bin" tick={{ fontSize: 12 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>{scoreDistribution.map((_, i) => { const colors = ['#22c55e', '#84cc16', '#f59e0b', '#f97316', '#ef4444']; return <Cell key={i} fill={colors[i]} />; })}</Bar>
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>{scoreDistribution.map((_, i) => { const colors = ['#22c55e', '#84cc16', '#f59e0b', '#f97316', '#ef4444']; return <Cell key={i} fill={colors[i]} />; })}
+            <LabelList dataKey="count" position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
+                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -246,7 +278,10 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
               <ResponsiveContainer width="100%" height={280}>
                 <LineChart data={deviationRollingTrend}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="day" tick={{ fontSize: 10 }} interval={4} /><YAxis domain={[0, 1]} tick={{ fontSize: 11 }} /><Tooltip />
                   <ReferenceLine y={0.7} stroke="#ef4444" strokeDasharray="6 3" label={{ value: 'Threshold', fill: '#ef4444', fontSize: 11, position: 'insideTopRight' }} />
-                  <Line type="monotone" dataKey="score" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3, fill: '#f59e0b' }} name="Rolling Avg" />
+                  <Line type="monotone" dataKey="score" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3, fill: '#f59e0b' }} name="Rolling Avg">
+            <LabelList dataKey="score" content={endOnlyLabel(deviationRollingTrend)} />
+          </Line>
+                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -260,7 +295,7 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
           <div className="card" style={{ marginBottom: 24, overflowX: 'auto' }}>
             <div className="card-header">Outlier Devices (Score &gt; 70)</div>
             <table className="data-table">
-              <thead><tr><th>Device ID</th><th>City</th><th>Type</th><th>Score</th><th>Trend</th><th>Flagged Metrics</th><th>Days Anomalous</th></tr></thead>
+              <thead><tr><th>Device ID</th><th>City</th><th>Type</th><th>Score</th><th>Trend</th><th>Flagged Metrics</th><th>Days Anomalous</th><th>Action</th></tr></thead>
               <tbody>
                 {outlierDevices.map((d, i) => (
                   <tr key={i}>
@@ -269,9 +304,29 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
                     <td style={{ fontSize: 16 }}>{d.score >= 85 ? <span style={{ color: '#ef4444' }}>&#9650;</span> : <span style={{ color: '#f59e0b' }}>&#9660;</span>}</td>
                     <td style={{ fontSize: 12 }}>{d.flagged_metrics || 'Error Rate, Latency'}</td>
                     <td>{d.days_anomalous || Math.round(d.score / 10 + 2)}</td>
+                    <td>
+                      {/* 29-Jul-2026. This table is still fed by mockData, whose device
+                          ids (CHI-VLD-00980) do not exist in Aurora. Clicking Analyse
+                          therefore opened a Device 360 in which EVERY panel truthfully
+                          reported "no record" - which reads as a broken dashboard rather
+                          than as a sample row. The button is disabled for synthetic ids
+                          and says why. The test is on the id pattern, not a hard switch,
+                          so the moment this table is repointed at real PS4 rows the
+                          button starts working again with no further change. */}
+                      {(() => {
+                        const isSampleId = /^CHI-/.test(String(d.device_id || ""));
+                        return (
+                          <AnalyseButton compact disabled={isSampleId}
+                            onClick={() => setAnalyseDevice(d.device_id)}
+                            title={isSampleId
+                              ? "Sample row - this id is not in the live data. Use Weekly Anomaly (v3) for real devices."
+                              : "Open Device 360 - this device across PS1 to PS5, including its PS2 cascade history"} />
+                        );
+                      })()}
+                    </td>
                   </tr>
                 ))}
-                {outlierDevices.length === 0 && <tr><td colSpan={7} style={{ textAlign: 'center', opacity: 0.5, padding: 24 }}>No outlier devices detected</td></tr>}
+                {outlierDevices.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', opacity: 0.5, padding: 24 }}>No outlier devices detected</td></tr>}
               </tbody>
             </table>
           </div>
@@ -281,7 +336,11 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
               <div className="card-header">Outlier vs Normal Device Metrics</div>
               <ResponsiveContainer width="100%" height={280}>
                 <BarChart data={outlierComparison}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="metric" tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip /><Legend />
-                  <Bar dataKey="outlier" name="Outlier Devices" fill="#ef4444" radius={[4, 4, 0, 0]} /><Bar dataKey="normal" name="Normal Devices" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="outlier" name="Outlier Devices" fill="#ef4444" radius={[4, 4, 0, 0]}>
+            <LabelList dataKey="outlier" position="top" formatter={fmtV} style={VLAB} />
+          </Bar><Bar dataKey="normal" name="Normal Devices" fill="#22c55e" radius={[4, 4, 0, 0]}>
+            <LabelList dataKey="normal" position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -289,7 +348,10 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
               <div className="card-header">Outlier Persistence (Days Anomalous)</div>
               <ResponsiveContainer width="100%" height={280}>
                 <BarChart data={outlierPersistence} layout="vertical" margin={{ left: 90 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis type="number" tick={{ fontSize: 11 }} /><YAxis dataKey="device_id" type="category" width={80} tick={{ fontSize: 9 }} /><Tooltip />
-                  <Bar dataKey="days" fill="#f97316" radius={[0, 4, 4, 0]}>{outlierPersistence.map((entry, i) => <Cell key={i} fill={entry.days > 20 ? '#ef4444' : entry.days > 10 ? '#f97316' : '#f59e0b'} />)}</Bar>
+                  <Bar dataKey="days" fill="#f97316" radius={[0, 4, 4, 0]}>{outlierPersistence.map((entry, i) => <Cell key={i} fill={entry.days > 20 ? '#ef4444' : entry.days > 10 ? '#f97316' : '#f59e0b'} />)}
+            <LabelList dataKey="days" position="right" formatter={fmtV} style={VLAB} />
+          </Bar>
+                <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -312,7 +374,10 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
               <AreaChart data={anomalyTrend}>
                 <defs><linearGradient id="anomalyGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#ef4444" stopOpacity={0.4} /><stop offset="95%" stopColor="#ef4444" stopOpacity={0.05} /></linearGradient></defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="date" tick={{ fontSize: 10 }} interval={4} /><YAxis tick={{ fontSize: 11 }} /><Tooltip />
-                <Area type="monotone" dataKey="count" stroke="#ef4444" strokeWidth={2} fill="url(#anomalyGradient)" />
+                <Area type="monotone" dataKey="count" stroke="#ef4444" strokeWidth={2} fill="url(#anomalyGradient)">
+            <LabelList dataKey="count" content={endOnlyLabel(deviationRollingTrend)} />
+          </Area>
+              <Legend wrapperStyle={{ fontSize: 11, paddingTop: 4 }} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -321,8 +386,12 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
             <div className="card-header">Anomaly Count with Trend Line</div>
             <ResponsiveContainer width="100%" height={300}>
               <ComposedChart data={anomalyRateData}><CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" /><XAxis dataKey="date" tick={{ fontSize: 10 }} interval={4} /><YAxis tick={{ fontSize: 11 }} /><Tooltip /><Legend />
-                <Bar dataKey="count" name="Daily Anomalies" fill="#6366f1" radius={[4, 4, 0, 0]} opacity={0.7} />
-                <Line type="monotone" dataKey="trend" name="Trend (EMA)" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                <Bar dataKey="count" name="Daily Anomalies" fill="#6366f1" radius={[4, 4, 0, 0]} opacity={0.7}>
+            <LabelList dataKey="count" position="top" formatter={fmtV} style={VLAB} />
+          </Bar>
+                <Line type="monotone" dataKey="trend" name="Trend (EMA)" stroke="#f59e0b" strokeWidth={2} dot={false}>
+            <LabelList dataKey="trend" content={endOnlyLabel(deviationRollingTrend)} />
+          </Line>
               </ComposedChart>
             </ResponsiveContainer>
           </div>
@@ -346,6 +415,12 @@ export default function PS4AnomalyDetectionTab({ city, selectedDevices }) {
             </div>
           </div>
         </div>
+      )}
+      {activeTab === 'weeklyv3' && (
+        <PS4WeeklyV3 city={city} onAnalyse={setAnalyseDevice} />
+      )}
+      {analyseDevice && (
+        <Device360Modal deviceId={analyseDevice} onClose={() => setAnalyseDevice(null)} />
       )}
     </div>
   );

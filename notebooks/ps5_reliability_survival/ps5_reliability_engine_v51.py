@@ -44,7 +44,9 @@ CONFIG = {
     "GOLD_BUCKET": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
     "S3_REGION": "us-east-1",
     "SURVIVAL_TABLE": "mars_dev.silver.device_survival_intervals",   # 175,447 rows (fallback interval grain)
-    "FAILURE_TABLE": "mars_dev.silver.device_failures",             # 668,418 rows: the failure-event hub (edw_availability_events)
+    "FAILURE_TABLE": "mars_dev.silver.device_event_enriched",       # queried directly (S16) for is_hardware_oos_event -- 
+                                                                     # device_failures' TVM/GATE rows are chargeable-availability-
+                                                                     # sourced (edw_availability_events), NOT hardware-OOS; see load_hw_oos_failures()
     "HWCONFIG_TABLE": "mars_dev.silver.hw_config_current",
     "INCIDENT_HISTORY_TABLE": "mars_dev.silver.incident_history",    # CMDB static priors (optional)
 
@@ -53,12 +55,24 @@ CONFIG = {
     # Chargeable-SLA is a SUBSET of OOS (relief/exclusion change SLA accounting, not the physical failure);
     # for predictive maintenance the event is any time the device goes OOS on HARDWARE. Broader event =>
     # more observed failures => less censoring, richer survival signal (see PS5 impact note in the docs).
+    #
+    # Mechanism fix (2026-07-24, v2): the 2026-07-23 change flipped this CONFIG intent, but
+    # load_hw_oos_failures() still read silver.device_failures -- which is NOT a clean hardware-OOS
+    # source. Its TVM/GATE rows come from bronze.edw_availability_events (FAILURE_LEVEL>0 AND
+    # EXCLUDED=0), which the S26 DDL's own comments call "chargeable failures"; only its VALIDATOR
+    # rows are genuinely hardware-OOS (from device_event_enriched.is_hardware_oos_event). Worse,
+    # device_failures' materialized columns drop fault_state/is_hardware_oos_event/is_chargeable
+    # entirely, so the old best-effort column-guessing could never re-derive "any hardware OOS" for
+    # TVM/GATE at runtime -- it silently passed the chargeable-only rows through unfiltered. v2 reads
+    # device_event_enriched directly (same query gold.device_ps2_chains already uses for PS2's
+    # cascade-day gate), so TVM/GATE/VALIDATOR all get the same genuine is_hardware_oos_event flag.
     "EVENT_DEFINITION": "hw_oos_set",
-    "EVENT_DEF_VERSION": "2026-07-23.v1",
-    "BUILD_INTERVALS_FROM_FAILURES": True,   # True: derive intervals+label+features from device_failures; False: use silver survival grain
+    "EVENT_DEF_VERSION": "2026-07-24.v2",
+    "BUILD_INTERVALS_FROM_FAILURES": True,   # True: derive intervals+label+features from device_event_enriched (v2); False: use silver survival grain
     "FAILURE_EPISODE_DEDUP": "day",          # collapse same-day multi-row failures (array members / Set+relief) to one episode
     "HW_OOS_SET": {
-        "require_oos": True,                 # dim_event_matrix 'Counted-as-OOS' / dim_event_type.is_oos_event / device_failures is_oos flag
+        "require_oos": True,                 # PRIMARY: device_event_enriched.is_hardware_oos_event (dim_event_type, S07) -- already excludes
+                                              # commanded/maintenance codes 106/110/151/208/519/1603/1604 at the source
         "fault_state_set_value": "Set",      # fault_state must be 'Set' (device GOES out of service), not 'Clear'
         "require_device_fault": True,        # dim_failure_level.is_device_fault (== failure_level in the device-fault set)
         "device_fault_levels": [1, 2, 3, 4, 5, 16],   # Metric-Category 2 = device faults
@@ -70,7 +84,7 @@ CONFIG = {
     },
     "ROLL_FAIL_WINDOWS": [7, 30, 90],        # roll_fail_* windows (days), counted STRICTLY before interval_start
 
-    # baseline = leakage-safe recency + static context (now incl. as-of hardware-OOS failure recency, from device_failures)
+    # baseline = leakage-safe recency + static context (now incl. as-of hardware-OOS failure recency, from device_event_enriched)
     "RECENCY_FEATURES": ["failure_seq", "log_failure_seq", "prior_interval_days",
                           "log_prior_interval_days", "mean_prior_interval_days",
                           "days_since_fail", "log_days_since_fail",
@@ -518,20 +532,46 @@ def _is_true(s):
     return s.astype(str).str.strip().str.lower().isin(["true", "1", "t", "y", "yes"])
 
 def load_hw_oos_failures(cat):
-    """Load device_failures for `cat` and filter to ANY HARDWARE OOS 'Set' events, then dedupe to episodes.
-    Best-effort on columns (device_failures is slim; names vary) — apply whichever filters exist and print
-    exactly what was applied + how many events survived. THIS is the single canonical event set from which
-    BOTH the survival label AND the days_since_fail / roll_fail_* features are built (feature-label alignment)."""
+    """Load ANY-HARDWARE-OOS 'Set' episodes for `cat`, then dedupe to per-device-day episodes. THIS is the
+    single canonical event set from which BOTH the survival label AND the days_since_fail / roll_fail_*
+    features are built (feature-label alignment).
+
+    Fix (2026-07-24, event_def_version 2026-07-24.v2): previously read silver.device_failures, which is
+    NOT a clean hardware-OOS source — its TVM/GATE rows come from bronze.edw_availability_events
+    (FAILURE_LEVEL>0 AND EXCLUDED=0), which that table's own DDL comments describe as "chargeable
+    failures"; only its VALIDATOR rows are genuinely hardware-OOS (sourced from
+    device_event_enriched.is_hardware_oos_event). Worse, device_failures' materialized columns drop
+    fault_state/is_hardware_oos_event/is_chargeable entirely, so the best-effort column-guessing below
+    could never actually re-derive "any hardware OOS" for TVM/GATE at runtime — it silently fell through
+    to "NONE APPLIED" and let the chargeable-only TVM/GATE rows pass straight through as if they were
+    hardware OOS. CONFIG["FAILURE_TABLE"] now points at device_event_enriched directly, which carries the
+    SAME genuine is_hardware_oos_event flag for TVM/GATE/VALIDATOR alike — this is the exact query
+    gold.device_ps2_chains already uses for PS2's cascade-day gate, so PS2 and PS5 are on one definition.
+    The best-effort guessing is kept as a fallback so synthetic/smoke-test frames shaped like the old
+    device_failures schema still score (never a silent pass-through: every filter that fires is logged)."""
     cfg = CONFIG["HW_OOS_SET"]
-    f = load_table(CONFIG["FAILURE_TABLE"], cat=cat, catcol="device_category", required=True)
+    f = load_table(CONFIG["FAILURE_TABLE"], cat=cat, catcol="mars_device_category", required=True)
     f = coerce(f); n0 = len(f); applied = []
-    dcol = "failure_date" if "failure_date" in f.columns else next((c for c in f.columns if "date" in c.lower()), None)
+
+    # day grain: prefer transit_day (device_event_enriched's day column — matches PS2's own gate exactly)
+    dcol = next((c for c in ["transit_day", "failure_date"] if c in f.columns), None) \
+        or next((c for c in f.columns if "date" in c.lower() or c.lower() == "event_dtm"), None)
     f["failure_date"] = pd.to_datetime(f[dcol], errors="coerce")
     f = f[f["failure_date"].notna() & (f["failure_date"] <= pd.Timestamp(CONFIG["RUN_DATE"]))]
-    fs = next((c for c in ["fault_state", "FAULT_STATE", "AE_FAULT_STATE"] if c in f.columns), None)
+
+    # fault-onset only: 'Set' (not 'Clear'/'Automatic Clear')
+    fs = next((c for c in ["EVENT_STATE_TYPE_NAME", "event_state_type_name", "fault_state", "FAULT_STATE"] if c in f.columns), None)
     if fs is not None:
         f = f[f[fs].astype(str).str.strip().str.lower().isin([cfg["fault_state_set_value"].lower(), "set", "s"])]
         applied.append(f"{fs}='Set'")
+
+    # genuine hardware OOS: is_hardware_oos_event (device_event_enriched/dim_event_type) is PRIMARY and
+    # already excludes commanded/maintenance codes at the source; only fall back to older/looser flags
+    # if it's absent from the loaded frame
+    if cfg["require_oos"]:
+        oos = next((c for c in ["is_hardware_oos_event", "is_oos_event", "counted_as_oos", "is_oos", "is_counted_oos"] if c in f.columns), None)
+        if oos is not None:
+            f = f[_is_true(f[oos])]; applied.append(f"{oos}=TRUE")
     if cfg["require_device_fault"]:
         idf = next((c for c in ["is_device_fault", "IS_DEVICE_FAULT"] if c in f.columns), None)
         fl = next((c for c in ["failure_level", "FAILURE_LEVEL", "AE_FAILURE_LEVEL"] if c in f.columns), None)
@@ -540,11 +580,8 @@ def load_hw_oos_failures(cat):
         elif fl is not None:
             f = f[pd.to_numeric(f[fl], errors="coerce").isin(cfg["device_fault_levels"])]
             applied.append(f"{fl} in {cfg['device_fault_levels']}")
-    if cfg["require_oos"]:
-        oos = next((c for c in ["is_oos_event", "is_hardware_oos_event", "counted_as_oos", "is_oos", "is_counted_oos"] if c in f.columns), None)
-        if oos is not None:
-            f = f[_is_true(f[oos])]; applied.append(f"{oos}=TRUE")
-    for flag, on in [("is_commanded_oos", cfg["exclude_commanded_oos"]), ("is_maintenance_oos", cfg["exclude_maintenance_oos"])]:
+    for flag, on in [("is_commanded_oos_event", cfg["exclude_commanded_oos"]), ("is_commanded_oos", cfg["exclude_commanded_oos"]),
+                     ("is_maintenance_oos", cfg["exclude_maintenance_oos"])]:
         c = next((x for x in [flag, flag.upper()] if x in f.columns), None)
         if on and c is not None:
             f = f[~_is_true(f[c])]; applied.append(f"NOT {c}")
@@ -552,7 +589,7 @@ def load_hw_oos_failures(cat):
         ch = next((c for c in ["is_chargeable", "IS_CHARGEABLE"] if c in f.columns), None)
         if ch is not None:
             f = f[_is_true(f[ch])]; applied.append(f"{ch}=TRUE (chargeable)")
-    od = next((c for c in ["outage_duration_min", "duration_min", "outage_min"] if c in f.columns), None)
+    od = next((c for c in ["duration_to_clear_min", "outage_duration_min", "duration_min", "outage_min"] if c in f.columns), None)
     if cfg["min_outage_min"] > 0 and od is not None:
         f = f[pd.to_numeric(f[od], errors="coerce").fillna(0) >= cfg["min_outage_min"]]; applied.append(f"{od}>={cfg['min_outage_min']}")
     if cfg["exclude_coordinated_array"]:
@@ -567,8 +604,9 @@ def load_hw_oos_failures(cat):
         f["_d"] = f["failure_date"].dt.normalize()
         f = f.sort_values(["DEVICE_ID", "failure_date"]).drop_duplicates(["DEVICE_ID", "_d"]).drop(columns="_d")
     f = f.sort_values(["DEVICE_ID", "failure_date"]).reset_index(drop=True)
-    print(f"  [event=hw_oos_set] device_failures {n0:,} -> {len(f):,} episodes ({f['DEVICE_ID'].nunique():,} devices) | "
-          f"filters: {', '.join(applied) if applied else 'NONE APPLIED (columns absent — CONFIRM device_failures schema)'}")
+    src = CONFIG["FAILURE_TABLE"].rsplit(".", 1)[-1]
+    print(f"  [event=hw_oos_set] {src} {n0:,} -> {len(f):,} episodes ({f['DEVICE_ID'].nunique():,} devices) | "
+          f"filters: {', '.join(applied) if applied else 'NONE APPLIED (columns absent — CONFIRM schema)'}")
     return f
 
 def build_intervals_from_failures(f, cat):
@@ -1210,17 +1248,16 @@ def make_synthetic(seed=11):
                 SURV.append({"DEVICE_KEY": dk, "DEVICE_ID": did, "device_category": cat,
                              "interval_start_date": start, "interval_end_date": start + pd.Timedelta(days=int(dur)),
                              "interval_days": round(dur,1), "is_ongoing": (not closed), "is_first_interval": (k==0)})
-                # device_failures: a HARDWARE-OOS 'Set' episode at each interval boundary (the event stream v5 builds from)
-                FAIL.append({"DEVICE_KEY": dk, "DEVICE_ID": did, "device_category": cat, "failure_date": start,
-                             "fault_state": "Set", "failure_level": int(rng.choice([2,3,4,5])), "is_device_fault": True,
-                             "is_oos_event": True, "is_commanded_oos": False, "is_maintenance_oos": False,
-                             "outage_duration_min": max(1.0, 30+20*z)})
+                # device_event_enriched (v2 source): a HARDWARE-OOS 'Set' episode at each interval boundary
+                # (the event stream v5 builds from) -- shaped like the real S16 columns, not the old device_failures hub
+                FAIL.append({"DEVICE_KEY": dk, "DEVICE_ID": did, "mars_device_category": cat, "transit_day": start,
+                             "EVENT_STATE_TYPE_NAME": "Set", "is_hardware_oos_event": True,
+                             "is_commanded_oos_event": False, "duration_to_clear_min": max(1.0, 30+20*z)})
                 if rng.random() < 0.35:   # decoys the hw-OOS-Set filter must DROP (commanded / maintenance / Clear / non-device)
-                    FAIL.append({"DEVICE_KEY": dk, "DEVICE_ID": did, "device_category": cat,
-                                 "failure_date": start - pd.Timedelta(days=1), "fault_state": rng.choice(["Clear","Set"]),
-                                 "failure_level": int(rng.choice([0,7,8])), "is_device_fault": bool(rng.random()<.5),
-                                 "is_oos_event": True, "is_commanded_oos": bool(rng.random()<.5), "is_maintenance_oos": bool(rng.random()<.5),
-                                 "outage_duration_min": max(1.0, 10+10*z)})
+                    FAIL.append({"DEVICE_KEY": dk, "DEVICE_ID": did, "mars_device_category": cat,
+                                 "transit_day": start - pd.Timedelta(days=1), "EVENT_STATE_TYPE_NAME": rng.choice(["Clear","Set"]),
+                                 "is_hardware_oos_event": bool(rng.random()<.5),
+                                 "is_commanded_oos_event": bool(rng.random()<.5), "duration_to_clear_min": max(1.0, 10+10*z)})
                 for dd in range(1,15):
                     day = start - pd.Timedelta(days=int(dd)); dis = dis0 + (start - pd.Timestamp(hist_start)).days
                     FAC.append({"FACILITY_ID": fac, "device_category": cat, "transit_day": day,

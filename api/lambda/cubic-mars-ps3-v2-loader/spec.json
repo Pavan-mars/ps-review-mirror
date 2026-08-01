@@ -1,0 +1,319 @@
+{
+ "run_scorecard": {
+  "table": "ps3_v2_run_scorecard",
+  "file": "ps3_run_scorecard",
+  "cols": [
+   "device_category",
+   "head",
+   "status",
+   "champion",
+   "validation_f1_macro",
+   "test_f1_macro",
+   "promotion_gate_pass",
+   "shap_status",
+   "shap_rows",
+   "causal_status",
+   "causal_dashboard_ready_rows",
+   "reason"
+  ]
+ },
+ "severity_action_queue": {
+  "table": "ps3_v2_severity_action_queue",
+  "file": "ps3_severity_action_queue",
+  "cols": [
+   "device_category",
+   "device_id",
+   "serial_number",
+   "facility_id",
+   "source_event_timestamp",
+   "data_as_of_timestamp",
+   "availability_event_id",
+   "predicted_severity",
+   "critical_probability",
+   "major_probability",
+   "prediction_confidence",
+   "decision_threshold",
+   "action_band",
+   "action_priority_score",
+   "prior_incidents_24h",
+   "prior_incidents_7d",
+   "prior_incidents_30d",
+   "prior_critical_rate_30d",
+   "hours_since_prior_incident",
+   "model",
+   "model_status",
+   "score_generated_at_utc",
+   "prediction_scope"
+  ]
+ },
+ "shap_incident": {
+  "table": "ps3_v2_shap_incident",
+  "file": "ps3_shap_incident_explanations",
+  "cols": [
+   "device_category",
+   "head",
+   "availability_event_id",
+   "device_id",
+   "serial_number",
+   "facility_id",
+   "event_timestamp",
+   "actual_label",
+   "predicted_label",
+   "predicted_probability",
+   "feature",
+   "feature_value",
+   "shap_value",
+   "abs_shap_value",
+   "feature_rank",
+   "model",
+   "explainer",
+   "publication_status",
+   "explanation_scope"
+  ]
+ },
+ "shap_global": {
+  "table": "ps3_v2_shap_global",
+  "file": "ps3_shap_global_feature_importance",
+  "cols": [
+   "device_category",
+   "head",
+   "target_class",
+   "feature",
+   "mean_abs_shap",
+   "mean_signed_shap",
+   "feature_rank",
+   "explained_partition",
+   "model",
+   "explainer",
+   "n_explained_rows",
+   "publication_status",
+   "explanation_scope"
+  ]
+ },
+ "device_reliability": {
+  "table": "ps3_v2_device_reliability",
+  "file": "ps3_device_reliability",
+  "cols": [
+   "device_id",
+   "incident_count",
+   "critical_incidents",
+   "critical_rate",
+   "latest_incident_at",
+   "mean_interval_hours",
+   "median_interval_hours",
+   "reliability_risk_band",
+   "first_incident_at",
+   "recent_24h_recurrence",
+   "recent_30d_recurrence",
+   "days_since_latest_incident",
+   "device_category"
+  ]
+ },
+ "component_reliability": {
+  "table": "ps3_v2_component_reliability",
+  "file": "ps3_component_reliability",
+  "cols": [
+   "component_label",
+   "incident_count",
+   "affected_devices",
+   "affected_serials",
+   "critical_rate",
+   "component_label_semantics",
+   "portfolio_priority_score",
+   "critical_incidents",
+   "latest_incident_at",
+   "max_prior_incidents_30d",
+   "device_category"
+  ]
+ },
+ "facility_hotspots": {
+  "table": "ps3_v2_facility_hotspots",
+  "file": "ps3_facility_hotspots",
+  "cols": [
+   "facility_id",
+   "incident_count",
+   "affected_devices",
+   "critical_rate",
+   "latest_incident_at",
+   "max_facility_prior_incidents_24h",
+   "device_category"
+  ]
+ },
+ "model_comparison": {
+  "table": "ps3_v2_model_comparison",
+  "file": "ps3_model_comparison",
+  "cols": [
+   "device_category",
+   "head",
+   "model",
+   "train_f1_macro",
+   "validation_f1_macro",
+   "validation_accuracy",
+   "validation_balanced_accuracy",
+   "train_validation_f1_gap",
+   "validation_stability_pass",
+   "validation_stability_reasons",
+   "test_f1_macro",
+   "promotion_gate_pass",
+   "promotion_gate_reasons",
+   "validation_ece",
+   "validation_roc_auc_macro_ovr",
+   "decision_threshold",
+   "fit_status",
+   "selected_on_validation_only",
+   "test_used_for_model_selection",
+   "test_accuracy",
+   "test_balanced_accuracy",
+   "test_ece",
+   "test_constant_predictor",
+   "test_macro_precision",
+   "test_macro_recall",
+   "test_support",
+   "test_brier",
+   "test_log_loss",
+   "test_roc_auc_macro_ovr",
+   "test_validation_f1_drop"
+  ]
+ },
+ "driver_importance": {
+  "table": "ps3_v2_driver_importance",
+  "file": "ps3_model_driver_importance",
+  "cols": [
+   "device_category",
+   "head",
+   "model",
+   "feature",
+   "mean_macro_f1_drop",
+   "std_macro_f1_drop",
+   "n_validation_rows",
+   "importance_scope",
+   "interpretation"
+  ]
+ },
+ "promotion_status": {
+  "table": "ps3_v2_promotion_status",
+  "file": "ps3_model_promotion_status",
+  "cols": [
+   "device_category",
+   "head",
+   "status",
+   "champion_selected_on_validation",
+   "action_feed_eligible",
+   "target",
+   "target_semantics",
+   "reason"
+  ]
+ },
+ "causal_effects": {
+  "table": "ps3_v2_causal_effects",
+  "file": "ps3_observational_effect_estimates",
+  "cols": [
+   "device_category",
+   "treatment_id",
+   "treatment_column",
+   "treatment_definition",
+   "outcome_id",
+   "outcome_label",
+   "target_semantics",
+   "estimation_status",
+   "n_crossfit_rows",
+   "treated_rows",
+   "control_rows",
+   "event_rows",
+   "non_event_rows",
+   "aipw_risk_difference",
+   "confidence_interval_95_low",
+   "confidence_interval_95_high",
+   "standard_error",
+   "p_value_normal_approx",
+   "propensity_overlap_share",
+   "max_abs_weighted_smd_numeric",
+   "balance_pass",
+   "overlap_pass",
+   "dashboard_ready",
+   "evidence_level",
+   "scope",
+   "reason"
+  ]
+ },
+ "display_policy": {
+  "table": "ps3_v2_display_policy",
+  "file": "ps3_dashboard_display_policy",
+  "cols": [
+   "dashboard_element",
+   "dataset",
+   "display_allowed",
+   "row_count",
+   "display_label",
+   "required_disclaimer"
+  ]
+ },
+ "readiness": {
+  "table": "ps3_v2_readiness",
+  "file": "ps3_data_readiness_scorecard",
+  "cols": [
+   "device_category",
+   "gold_rows",
+   "severity_label_coverage",
+   "component_label_coverage",
+   "configured_enrichment_sources",
+   "loaded_enrichment_sources",
+   "data_readiness_status",
+   "reason"
+  ]
+ },
+ "data_freshness": {
+  "table": "ps3_v2_data_freshness",
+  "file": "ps3_data_freshness",
+  "cols": [
+   "data_as_of_timestamp",
+   "run_timestamp_utc",
+   "input_rows",
+   "eligible_rows",
+   "event_start",
+   "event_end",
+   "freshness_scope"
+  ]
+ },
+ "device_serial_component": {
+  "table": "ps3_v2_device_serial_component",
+  "file": "ps3_device_serial_component_reliability",
+  "cols": [
+   "device_id",
+   "serial_number",
+   "component_label",
+   "incident_count",
+   "critical_rate",
+   "component_label_semantics",
+   "latest_incident_at",
+   "recurrence_30d",
+   "device_category"
+  ]
+ },
+ "device_serial": {
+  "table": "ps3_v2_device_serial",
+  "file": "ps3_device_serial_reliability",
+  "cols": [
+   "device_id",
+   "serial_number",
+   "incident_count",
+   "critical_incidents",
+   "critical_rate",
+   "latest_incident_at",
+   "max_prior_incidents_30d",
+   "device_category"
+  ]
+ },
+ "component_taxonomy": {
+  "table": "ps3_v2_component_taxonomy",
+  "file": "ps3_component_taxonomy_audit",
+  "cols": [
+   "device_category",
+   "component_label",
+   "split",
+   "taxonomy_status",
+   "action",
+   "rows"
+  ]
+ }
+}

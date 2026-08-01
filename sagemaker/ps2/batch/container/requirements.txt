@@ -1,0 +1,5 @@
+numpy<2
+pandas>=2.0
+pyarrow>=14
+flask>=3.0
+gunicorn>=21

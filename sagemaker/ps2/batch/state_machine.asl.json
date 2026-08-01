@@ -1,0 +1,77 @@
+{
+  "Comment": "PS2 cascade daily pipeline: state-refresh -> Batch Transform (BYOC ECR) -> RDS load. Mirrors the state-refresh/transform/load cadence recommended in sagemaker/ps5/batch/README_batch_pipeline.md, first real Step Function build for this project.",
+  "StartAt": "StateRefresh",
+  "States": {
+    "StateRefresh": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+      "Parameters": {
+        "ProcessingJobName.$": "States.Format('ps2-refresh-{}', $$.Execution.Name)",
+        "RoleArn": "${SAGEMAKER_EXEC_ROLE_ARN}",
+        "AppSpecification": {
+          "ImageUri": "${PIPELINE_IMAGE_URI}",
+          "ContainerEntrypoint": [
+            "/bin/bash", "-c",
+            "ASOF=$(date -u +%F); python refresh_device_state.py --gold-s3 s3://${GOLD_BUCKET}/chicago/gold/device_ps2_chains --hwconfig-s3 s3://${GOLD_BUCKET}/chicago/silver/hw_config_current --asof $ASOF --bucket ${GOLD_BUCKET} --state-prefix chicago/ps2/state --population-prefix chicago/ps2/population --out-dir /opt/ml/processing/output"
+          ]
+        },
+        "ProcessingResources": {
+          "ClusterConfig": { "InstanceCount": 1, "InstanceType": "ml.m5.large", "VolumeSizeInGB": 20 }
+        },
+        "StoppingCondition": { "MaxRuntimeInSeconds": 1800 }
+      },
+      "Retry": [ { "ErrorEquals": ["States.ALL"], "IntervalSeconds": 30, "MaxAttempts": 2, "BackoffRate": 2.0 } ],
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "PipelineFailed" } ],
+      "Next": "BatchTransform"
+    },
+    "BatchTransform": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+      "Parameters": {
+        "ProcessingJobName.$": "States.Format('ps2-transform-{}', $$.Execution.Name)",
+        "RoleArn": "${SAGEMAKER_EXEC_ROLE_ARN}",
+        "AppSpecification": {
+          "ImageUri": "${PIPELINE_IMAGE_URI}",
+          "ContainerEntrypoint": [
+            "/bin/bash", "-c",
+            "ASOF=$(date -u +%F); python run_batch_transform.py --image-uri ${SCORER_IMAGE_URI} --model-data s3://${GOLD_BUCKET}/chicago/ps2/model/model_${MODEL_TAG}.tar.gz --role ${SAGEMAKER_EXEC_ROLE_ARN} --state-prefix s3://${GOLD_BUCKET}/chicago/ps2/state --output s3://${GOLD_BUCKET}/chicago/ps2/scored --asof $ASOF"
+          ]
+        },
+        "ProcessingResources": {
+          "ClusterConfig": { "InstanceCount": 1, "InstanceType": "ml.m5.large", "VolumeSizeInGB": 20 }
+        },
+        "StoppingCondition": { "MaxRuntimeInSeconds": 3600 }
+      },
+      "Retry": [ { "ErrorEquals": ["States.ALL"], "IntervalSeconds": 30, "MaxAttempts": 2, "BackoffRate": 2.0 } ],
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "PipelineFailed" } ],
+      "Next": "RDSLoad"
+    },
+    "RDSLoad": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+      "Parameters": {
+        "ProcessingJobName.$": "States.Format('ps2-load-{}', $$.Execution.Name)",
+        "RoleArn": "${SAGEMAKER_EXEC_ROLE_ARN}",
+        "AppSpecification": {
+          "ImageUri": "${PIPELINE_IMAGE_URI}",
+          "ContainerEntrypoint": [
+            "/bin/bash", "-c",
+            "ASOF=$(date -u +%F); python load_transform_output_to_rds.py --scored s3://${GOLD_BUCKET}/chicago/ps2/scored --population s3://${GOLD_BUCKET}/chicago/ps2/population --asof $ASOF --city CHI --secret ${RDS_SECRET_ID}"
+          ]
+        },
+        "ProcessingResources": {
+          "ClusterConfig": { "InstanceCount": 1, "InstanceType": "ml.m5.large", "VolumeSizeInGB": 20 }
+        },
+        "StoppingCondition": { "MaxRuntimeInSeconds": 1800 }
+      },
+      "Retry": [ { "ErrorEquals": ["States.ALL"], "IntervalSeconds": 30, "MaxAttempts": 2, "BackoffRate": 2.0 } ],
+      "Catch": [ { "ErrorEquals": ["States.ALL"], "ResultPath": "$.error", "Next": "PipelineFailed" } ],
+      "End": true
+    },
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "PS2PipelineFailed",
+      "CauseText": "One of state-refresh / batch-transform / RDS-load failed after retries -- check the ps2-* Processing Job in SageMaker Studio for logs."
+    }
+  }
+}

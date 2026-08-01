@@ -208,7 +208,8 @@ def migrate(_evt):
                "sql/38_ps4_weekly_v3.sql",
                "sql/39_ps3_v2.sql",
                "sql/40_ps3_v2_rootcause.sql",
-               "sql/41_dim_device_bus.sql"):
+               "sql/41_dim_device_bus.sql",
+               "sql/42_ps2_serial_grain.sql"):
         path = os.path.join(here, fn)
         if not os.path.exists(path):
             results[fn] = {"skipped": "file not present"}; continue
@@ -1118,6 +1119,164 @@ def route(method, path, params, body):
         if lim > 0:
             sql += f" LIMIT {int(lim)}"
         return ok(rows(sql, c=city))
+    # ---- PS2 SERIAL-GRAIN  (added 01-Aug-2026) ----------------------------
+    #
+    # ONE route, seventeen metrics: GET /ps2/serial/{metric}?city=CHI
+    #
+    # The front end for this has existed since 26-Jul and was already correct.
+    # PS2SerialGrainAnalytics.jsx, PS2RichAnalytics.jsx and useSerialDeviceMap
+    # all call apiPS2SerialMetric(), which fetches /ps2/serial/{metric} --
+    # a path this handler had no branch for. api.js swallows a non-2xx and
+    # returns [], so all thirteen panels rendered their "no data yet" message
+    # instead of an error. Nothing was broken; the server end was never built.
+    # The 01-Aug PS2 load put ~158,000 serial-grain rows into Aurora. This is
+    # the only thing standing between those rows and the screen.
+    #
+    # Column names below are NOT chosen -- each one is what the JSX reads off
+    # the row object. Verified panel by panel before writing this:
+    #   suppression family/min_support_floor/cells_reported/cells_suppressed
+    #   chronic     serial_id/device_category/reference_period_days/
+    #               reference_period_source/n_cascades/recurrence_rate_per_day/
+    #               peer_pct_rank/chronicity_flag
+    #   recurrence  serial_id/cascade_days/chronic
+    #   leadlag     serial_id/sub_a/sub_b/mean/median/p25/p75/n
+    #   assoc       serial_id/antecedents/consequents/support/confidence/
+    #               lift/conviction
+    #   impact      entity_id (NOT serial_id)/cascade_days/total_impact/avg_impact
+    #   velocity    age_bucket/n/mean_velocity_min_per_fault
+    #   crossps     entity_grain/n_ps2_ignition_entities/n_matched_in_cross_ps/
+    #               match_rate/ps1_*/ps4_*/note
+    #   sankey      subsystem_from/subsystem_to/cascade_count/
+    #               total_business_impact/avg_severity
+    #   network     subsystem (the table column is node_id -- aliased)/scope/
+    #               betweenness/pagerank/in_degree/out_degree
+    #   ignition    subsystem/ignition_count/termination_count
+    #   facility    facility_id/cascade_days/distinct_devices/contagion_rate
+    #   phi         serial_id/sub_a/sub_b/phi
+    #   condprob    serial_id/sub_a/sub_b/window/window_bucket/n_a/n_ab/
+    #               p_b_given_a   ("window" is a RESERVED KEYWORD -- quoted,
+    #               and emitted twice because the JSX reads both spellings)
+    #   hmm         serial_id/n_obs/pct_time_critical/mean_chain_length/
+    #               converged/n_iter_run
+    #   markov      serial_id/n_chains/self_transition_rate  (roster)
+    #   cmdb        serial_id/device_id  (drives every Analyse button on this
+    #               tab -- an empty map disables all of them)
+    #
+    # Every metric returns the NEWEST computed_date for the city only, the
+    # same rule the device-grain PS2 routes use.
+    if path.startswith("/ps2/serial/"):
+        metric = path[len("/ps2/serial/"):].strip("/").lower()
+        serial = ((params or {}).get("serial_id") or "").strip()
+        # ps2_conditional_prob_serial is 89,990 rows and ps2_phi_matrix_serial
+        # is 30,430. Both are always requested WITH a serial_id by the JSX;
+        # the cap is the guard for when they are not.
+        lim = _clamp_int((params or {}).get("limit"), 500, 1, 5000)
+
+        def _latest(tbl, cols, order="", serial_col=None):
+            w = ""
+            if serial_col and serial:
+                w = f" AND {serial_col}=:s"
+            return (f"SELECT {cols} FROM {tbl} WHERE city_id=:c"
+                    f" AND computed_date=(SELECT MAX(computed_date) FROM {tbl}"
+                    f" WHERE city_id=:c){w} {order} LIMIT {lim}")
+
+        M = {
+            "suppression": _latest(
+                "ps2_suppression_summary_serial",
+                'family, grain, min_support_floor, cells_suppressed, '
+                'cells_reported, run_id, computed_date',
+                "ORDER BY family"),
+            "chronic": _latest(
+                "ps2_chronic_recurrence_serial",
+                'serial_id, device_category, reference_period_days, '
+                'reference_period_source, n_cascades, recurrence_rate_per_day, '
+                'peer_pct_rank, chronicity_flag',
+                "ORDER BY recurrence_rate_per_day DESC NULLS LAST",
+                "serial_id"),
+            "recurrence": _latest(
+                "ps2_recurrence_serial",
+                'serial_id, cascade_days, chronic',
+                "ORDER BY cascade_days DESC NULLS LAST", "serial_id"),
+            "leadlag": _latest(
+                "ps2_leadlag_timing_serial",
+                'serial_id, sub_a, sub_b, "mean", median, p25, p75, n',
+                "ORDER BY serial_id, sub_a, sub_b", "serial_id"),
+            "assoc": _latest(
+                "ps2_association_rules_serial",
+                'serial_id, antecedents, consequents, support, confidence, '
+                'lift, conviction',
+                "ORDER BY lift DESC NULLS LAST", "serial_id"),
+            "impact": _latest(
+                "ps2_business_impact_serial",
+                'entity_id, cascade_days, total_impact, avg_impact',
+                "ORDER BY total_impact DESC NULLS LAST"),
+            "velocity": _latest(
+                "ps2_cascade_velocity_by_age_serial",
+                'age_bucket, n, mean_velocity_min_per_fault',
+                "ORDER BY age_bucket"),
+            "crossps": _latest(
+                "ps2_cross_ps_attribution_serial",
+                'entity_grain, n_ps2_ignition_entities, n_matched_in_cross_ps, '
+                'match_rate, ps1_high_risk_co_occur_n, '
+                'ps1_high_risk_co_occur_rate, ps4_anomaly_co_occur_n, '
+                'ps4_anomaly_co_occur_rate, note',
+                "ORDER BY entity_grain"),
+            "sankey": _latest(
+                "ps2_cascade_sankey_subsystem",
+                'subsystem_from, subsystem_to, cascade_count, '
+                'total_business_impact, avg_severity',
+                "ORDER BY cascade_count DESC NULLS LAST"),
+            "network": _latest(
+                "ps2_network_centrality",
+                'node_id AS subsystem, scope, betweenness, pagerank, '
+                'in_degree, out_degree',
+                "ORDER BY pagerank DESC NULLS LAST"),
+            "ignition": _latest(
+                "ps2_ignition_termination_subsystem",
+                'subsystem, ignition_count, termination_count',
+                "ORDER BY ignition_count DESC NULLS LAST"),
+            "facility": _latest(
+                "ps2_facility_contagion_facility",
+                'facility_id, cascade_days, distinct_devices, contagion_rate',
+                "ORDER BY cascade_days DESC NULLS LAST"),
+            "phi": _latest(
+                "ps2_phi_matrix_serial",
+                'serial_id, sub_a, sub_b, phi',
+                "ORDER BY phi DESC NULLS LAST", "serial_id"),
+            "condprob": _latest(
+                "ps2_conditional_prob_serial",
+                'serial_id, sub_a, sub_b, "window", "window" AS window_bucket, '
+                'n_a, n_ab, p_b_given_a',
+                "ORDER BY p_b_given_a DESC NULLS LAST", "serial_id"),
+            "hmm": _latest(
+                "ps2_hmm_regimes_serial",
+                'serial_id, n_obs, pct_time_critical, mean_chain_length, '
+                'converged, n_iter_run',
+                "ORDER BY pct_time_critical DESC NULLS LAST", "serial_id"),
+            "markov": _latest(
+                "ps2_markov_self_transition_serial",
+                'serial_id, n_chains, self_transition_rate',
+                "ORDER BY n_chains DESC NULLS LAST", "serial_id"),
+            # The serial -> device map. ps2_device_catalog is the only place
+            # the two identifiers sit on one row. Without this every Analyse
+            # button on the serial tab stays disabled.
+            "cmdb": ("SELECT DISTINCT serial AS serial_id, device_id"
+                     " FROM ps2_device_catalog WHERE city_id=:c"
+                     " AND serial IS NOT NULL AND device_id IS NOT NULL"
+                     " AND computed_date=(SELECT MAX(computed_date)"
+                     " FROM ps2_device_catalog WHERE city_id=:c) LIMIT 20000"),
+        }
+        if metric not in M:
+            return err(404, "unknown ps2 serial metric '%s' -- known: %s"
+                       % (metric, ", ".join(sorted(M))))
+        # One metric failing must not take the tab down. _safe_rows returns []
+        # and logs rather than raising, so a table that has not been loaded
+        # yet degrades to that panel's own "no data yet" message.
+        if serial and metric in ("chronic", "recurrence", "leadlag", "assoc",
+                                 "phi", "condprob", "hmm", "markov"):
+            return ok(_safe_rows(M[metric], c=city, s=serial))
+        return ok(_safe_rows(M[metric], c=city))
+
     if path == "/ps2/hub":
         return ok({"nodes": rows("SELECT node_id,freq,is_hub FROM ps2_subsystem_hub_summary WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_subsystem_hub_summary WHERE city_id=:c) ORDER BY freq DESC", c=city),
                    "edges": rows("SELECT source_sub,target_sub,phi FROM ps2_subsystem_hub_edges WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_subsystem_hub_edges WHERE city_id=:c)", c=city)})

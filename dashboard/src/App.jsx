@@ -8,6 +8,10 @@ import LoginPage from './pages/LoginPage';
 import AdminConsole from './pages/AdminConsole';
 import ExecutiveOverview from './pages/ExecutiveOverview';
 import CityDashboard from './pages/CityDashboard';
+import PS1Overview from './v2/PS1Overview';
+import PS4Overview from './v2/PS4Overview';
+import PS2Overview from './v2/PS2Overview';
+import V2Shell from './v2/V2Shell';
 
 function DashboardLayout({ children }) {
   return (
@@ -60,6 +64,47 @@ function App() {
             <Route path="/dashboard/city/:cityId" element={
               <ProtectedRoute>
                 <DashboardLayout><CityDashboard /></DashboardLayout>
+              </ProtectedRoute>
+            } />
+
+            {/* v2 preview. Additive: no existing route is altered. */}
+            <Route path="/v2/ps1" element={
+              <ProtectedRoute>
+                <AdminLayout>
+                  <div style={{ padding: '22px 26px', background: '#FCFCFB', minHeight: '100vh' }}>
+                    <PS1Overview city="CHI" />
+                  </div>
+                </AdminLayout>
+              </ProtectedRoute>
+            } />
+
+            <Route path="/v2/ps4" element={
+              <ProtectedRoute>
+                <AdminLayout>
+                  <div style={{ padding: '22px 26px', background: '#FCFCFB', minHeight: '100vh' }}>
+                    <PS4Overview city="CHI" />
+                  </div>
+                </AdminLayout>
+              </ProtectedRoute>
+            } />
+
+            <Route path="/v2/ps2" element={
+              <ProtectedRoute>
+                <AdminLayout>
+                  <div style={{ padding: '22px 26px', background: '#FCFCFB', minHeight: '100vh' }}>
+                    <PS2Overview city="CHI" />
+                  </div>
+                </AdminLayout>
+              </ProtectedRoute>
+            } />
+
+            <Route path="/v2" element={
+              <ProtectedRoute>
+                <AdminLayout>
+                  <div style={{ padding: '22px 26px', background: '#FCFCFB', minHeight: '100vh' }}>
+                    <V2Shell city="CHI" />
+                  </div>
+                </AdminLayout>
               </ProtectedRoute>
             } />
 

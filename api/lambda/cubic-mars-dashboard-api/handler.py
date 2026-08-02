@@ -1,5 +1,5 @@
 """
-cubic-mars-dashboard-api  —  VPC Lambda for the CUBIC MARS Chicago dashboard.
+cubic-mars-dashboard-api  â€”  VPC Lambda for the CUBIC MARS Chicago dashboard.
 Jobs: 1. action=migrate -> applies sql/01..08 to Aurora (missing files skipped)
       2. HTTP API -> read routes for PS1/PS2/PS3/PS5 (+device-level) + PS4 alerts
 pg8000 pure-python driver (no native build).
@@ -21,7 +21,7 @@ _conn = None
 # statement in sql/11 runs past 15s, pg8000 raises "The read operation timed
 # out", and the socket is left unusable. migrate() raises this for its own
 # run and puts it back before returning.
-_CONN_TIMEOUT = 15
+_CONN_TIMEOUT = 60
 
 def _creds():
     s = json.loads(_SECRETS.get_secret_value(SecretId=os.environ["SECRET_ARN"])["SecretString"])
@@ -209,7 +209,10 @@ def migrate(_evt):
                "sql/39_ps3_v2.sql",
                "sql/40_ps3_v2_rootcause.sql",
                "sql/41_dim_device_bus.sql",
-               "sql/42_ps2_serial_grain.sql"):
+               "sql/42_ps2_serial_grain.sql",
+               # 02-Aug-2026. The 20 tables published by PS2 v2.5.2/2.5.3.
+               # Purely additive; the 27 legacy PS2 tables are untouched.
+               "sql/44_ps2_v25.sql"):
         path = os.path.join(here, fn)
         if not os.path.exists(path):
             results[fn] = {"skipped": "file not present"}; continue
@@ -524,7 +527,7 @@ def _device_360(city, dev):
         if perf:
             out["ps1"].update({k2: perf[0][k2] for k2 in perf[0]})
             out["ps1"]["note"] = (
-                f"Champion {perf[0].get('algorithm')} — quality gate "
+                f"Champion {perf[0].get('algorithm')} â€” quality gate "
                 f"{perf[0].get('quality_gate')}, promoted={perf[0].get('promoted')}. "
                 f"Held-out AUC {perf[0].get('test_auc')}, AP {perf[0].get('test_ap')}, "
                 f"precision {perf[0].get('test_prec')}, recall {perf[0].get('test_rec')}.")
@@ -849,7 +852,7 @@ def _device_360(city, dev):
                 pass
         ps5["note"] = ("Device-level RUL from ps5_reliability_estimates. "
                        + ("Data-quality gate PASSED." if d5[0].get("data_quality_gate_passed")
-                          else "Data-quality gate NOT passed — treat the RUL as indicative only."))
+                          else "Data-quality gate NOT passed â€” treat the RUL as indicative only."))
     else:
         ps5["found"] = False
     if cat:
@@ -1011,7 +1014,7 @@ def _cross_ps(o):
     if a and b:
         agree = a == b
         verdict = "agree" if agree else "disagree"
-        detail = (f"PS2 cascades start at {p2raw} and PS3 attributes failures to {p3raw} — "
+        detail = (f"PS2 cascades start at {p2raw} and PS3 attributes failures to {p3raw} â€” "
                   + ("the same subsystem, reached by two independent methods."
                      if agree else
                      "two different subsystems. Neither is confirmed; inspect both."))
@@ -1044,7 +1047,7 @@ def _reco(o, prob, thr):
     elif prob is not None and thr is not None and prob >= thr:
         _qg = (ps1.get("quality_gate") or "").upper()
         _tail = ("" if _qg == "PASS"
-                 else " REVIEW-ONLY: this model has not passed its quality gate — treat as a watch signal, not an auto-dispatch.")
+                 else " REVIEW-ONLY: this model has not passed its quality gate â€” treat as a watch signal, not an auto-dispatch.")
         base = ("PS1 flags elevated 3-day failure risk (%.1f%% vs threshold %.1f%%).%s"
                 % (prob*100, thr*100, _tail))
     else:
@@ -1084,8 +1087,209 @@ def _sn_payload(dev, cat, o):
         "u_source": "MARS-predictive", "u_state": "staged", "caller_id": "mars.integration"}
 
 
+# ============ PS2 v2.5 label-aligned generation (sql/44) ====================
+# ONE route family over the 20 tables sql/44 creates, plus /ps2/status.
+#
+# WHY A FAMILY AND NOT 20 ROUTES
+# The tables share one shape: city-scoped, one snapshot per computed_date,
+# replaced wholesale by the daily loader. Twenty near-identical route blocks is
+# twenty chances to forget the city filter or the latest-date subquery. The
+# metric name is validated against this dict, so an unknown one 404s rather
+# than reaching SQL.
+#
+# EVERY QUERY IS SCOPED TO THAT TABLE'S OWN LATEST computed_date.
+# The loader commits all 20 in one transaction so they normally agree. Scoping
+# each independently means a partially refreshed database degrades to "one
+# panel is stale" instead of "one panel is empty".
+#
+# id IS NEVER SELECTED. It is BIGSERIAL and the daily DELETE+INSERT
+# regenerates it, so it is not a stable reference for a link, a saved view or
+# a ServiceNow payload. The business key is.
+#
+# "precision" IS QUOTED. It is a column name in two of these tables and a
+# PostgreSQL keyword. This project already lost a load to an unquoted
+# "window" after eight tables were staged.
+#
+# CAPS. API Gateway kills the integration at 30s. cofailure_clusters holds
+# 83,184 rows and repair_effectiveness 38,395, so both default to a browse
+# window and are never a denominator -- the rollup routes are.
+#
+# (table, select list, order by, default limit, max limit, date column or None)
+_PS2V25 = {
+    # -- label and governance (ps2_v25_*) --------------------------------
+    "label-daily": ("ps2_v25_failure_label_daily",
+        'label_date,device_category,eligible_device_days,positive_device_days,eligible_devices,'
+        'positive_devices,future_hardware_oos_set_events,median_hours_to_next_oos,'
+        'p90_hours_to_next_oos,negative_device_days,label_positive_rate',
+        "label_date, device_category", 2000, 5000, "label_date"),
+    "label-summary": ("ps2_v25_failure_label_summary",
+        'device_category,eligible_device_days,positive_device_days,eligible_devices,positive_devices,'
+        'future_hardware_oos_set_events,mean_hours_to_next_oos,median_hours_to_next_oos,'
+        'p90_hours_to_next_oos,positive_days_with_commanded_oos,negative_device_days,'
+        'label_positive_rate,positive_device_share,label_horizon_days,label_cutoff_date,label_definition',
+        "device_category", 100, 100, None),
+    "label-horizon": ("ps2_v25_failure_horizon_profile",
+        'device_category,lead_day,positive_device_days_at_lead,eligible_device_days,'
+        'positive_rate_at_lead,label_definition',
+        "device_category, lead_day", 100, 100, None),
+    "label-parity": ("ps2_v25_ps1_label_parity",
+        'device_category,eligible_device_days,comparable_device_days,matching_device_days,'
+        'mismatching_device_days,source_label_positive_rate,rebuilt_label_positive_rate,'
+        'legacy_sla_positive_rate,parity_rate,parity_status,rebuilt_target',
+        "device_category", 100, 100, None),
+    "definition-alignment": ("ps2_v25_failure_definition_alignment",
+        'device_category,silver_ps1_failure_device_days,governed_oos_episode_device_days,'
+        'overlap_device_days,silver_only_device_days,governed_only_device_days,'
+        'silver_to_governed_overlap_rate,governed_to_silver_overlap_rate,definition_jaccard',
+        "device_category", 100, 100, None),
+    "model-performance": ("ps2_v25_ps1_model_performance",
+        'device_category,evaluated_device_days,eligible_device_days,prediction_coverage,'
+        'true_positive,false_positive,true_negative,false_negative,actual_positive_rate,'
+        'predicted_positive_rate,"precision",recall,specificity,f1_score,balanced_accuracy,'
+        'brier_score,roc_auc,pr_auc,evaluation_status',
+        "device_category", 100, 100, None),
+    "category-profile": ("ps2_v25_category_profile",
+        'device_category_raw,device_category,event_count,device_count,first_event_ts,'
+        'last_event_ts,is_mapped,is_target_scope',
+        "event_count DESC", 200, 500, None),
+    "run-quality": ("ps2_v25_run_quality",
+        'check_name,passed,observed_value,threshold,severity,metric_context,'
+        'quality_status,run_mode,run_disposition',
+        "severity, passed, check_name", 200, 500, None),
+
+    # -- governed OOS, patterns, components (ps2_v2_*) -------------------
+    "oos-trend": ("ps2_v2_daily_oos_trend",
+        'event_date,device_category,hardware_oos_onsets,affected_devices,hardware_oos_minutes,'
+        'validated_failure_onsets,chargeable_oos_onsets',
+        "event_date, device_category", 2000, 5000, "event_date"),
+    "exposure": ("ps2_v2_customer_exposure",
+        'event_date,device_category,hardware_oos_onsets,hardware_oos_minutes,'
+        'transactions_exposed,revenue_cents_exposed',
+        "event_date, device_category", 2000, 5000, "event_date"),
+    "governance": ("ps2_v2_oos_governance",
+        'device_category,oos_evidence_class,failure_evidence_class,event_count,device_count,outage_minutes',
+        "device_category, event_count DESC", 200, 500, None),
+    "precursors": ("ps2_v2_precursor_patterns",
+        'device_category,component_subsystem,next_subsystem,pattern_key,edge_support,'
+        'pre_oos_edge_count,validated_failure_edge_count,median_edge_lag_seconds,p95_edge_lag_seconds,'
+        'baseline_pre_oos_rate,pre_oos_rate,pre_oos_wilson_lower_95,pre_oos_lift_vs_category,'
+        'validated_failure_rate,evidence_tier,priority_score',
+        "priority_score DESC NULLS LAST", 500, 2000, None),
+    "leadlag": ("ps2_v2_leadlag_timing",
+        'device_category,component_subsystem,next_subsystem,pattern_key,edge_support,'
+        'median_edge_lag_seconds,p95_edge_lag_seconds,pre_oos_rate,pre_oos_lift_vs_category,evidence_tier',
+        "edge_support DESC", 500, 2000, None),
+    "topology": ("ps2_v2_topology_nodes",
+        'device_category,subsystem,outgoing_edge_volume,out_degree,outgoing_pre_oos_rate,'
+        'incoming_edge_volume,in_degree,flow_centrality_score',
+        "flow_centrality_score DESC NULLS LAST", 200, 500, None),
+    "drift": ("ps2_v2_pattern_drift",
+        'device_category,component_subsystem,next_subsystem,baseline_count,recent_count,'
+        'baseline_pre_oos_count,recent_pre_oos_count,baseline_pre_oos_rate,recent_pre_oos_rate,'
+        'rate_change,drift_flag',
+        "rate_change DESC NULLS LAST", 500, 2000, None),
+    "serials": ("ps2_v2_component_serial_patterns",
+        'device_category,component_subsystem,component_serial_id,hardware_oos_episode_count,'
+        'validated_failure_count,hardware_oos_minutes,observed_oos_days,last_oos_ts,'
+        'serial_evidence_tier,component_priority_score,current_component_age_days,'
+        'hardware_component_description,hardware_source,current_config_device_count,'
+        'hardware_age_enrichment',
+        "component_priority_score DESC NULLS LAST", 1000, 5000, None),
+    "deterioration": ("ps2_v2_device_deterioration",
+        'device_id,device_category,event_date,hardware_oos_onsets,hardware_oos_minutes,'
+        'validated_failure_onsets,baseline_mean_28d,baseline_std_28d,oos_zscore_28d,alert_reason',
+        "oos_zscore_28d DESC NULLS LAST", 1000, 5000, "event_date"),
+    "clusters": ("ps2_v2_cofailure_clusters",
+        'event_date,cluster_scope,cluster_id,device_category,facility_id,cofailing_devices,'
+        'hardware_oos_onsets,observed_group_devices,cofailure_share,coordinated_station_flag,'
+        'major_station_flag',
+        "event_date DESC, cofailing_devices DESC", 1000, 5000, "event_date"),
+    "repairs": ("ps2_v2_repair_effectiveness",
+        'repair_id,maintenance_component_subsystem,ledger_type,maintenance_date,'
+        'pre_30d_oos_onsets,post_30d_oos_onsets,post_vs_pre_change,interpretation_note',
+        "maintenance_date DESC", 1000, 5000, "maintenance_date"),
+    "cross-ps": ("ps2_v2_cross_ps_alignment",
+        'source,truth_positive_count,signal_positive_count,matched_positive_count,'
+        '"precision",recall,population_unit,alignment_status',
+        "source", 100, 100, None),
+}
+
+# Which optional filters each table can honour. Asked of the SELECT list rather
+# than hardcoded per table, so a column that is not there can never be filtered
+# on -- that would be a 42703 at request time instead of an ignored parameter.
+_PS2V25_FILTERS = (
+    ("category", "device_category"),
+    ("device",   "device_id"),
+    ("serial",   "component_serial_id"),
+    ("facility", "facility_id"),
+    ("subsystem", "component_subsystem"),
+)
+
+
+def _ps2_v25_route(path, params, city):
+    """Returns a response for /ps2/v25/* and /ps2/status, else None."""
+    params = params or {}
+
+    if path == "/ps2/status":
+        # One row per table. A coherent load shows ONE distinct run_id across
+        # all 20. More than one means a partial load -- the failure that
+        # otherwise shows up as a tab where 18 panels are today and 2 are last
+        # week. The view does the UNION so this route stays a one-liner.
+        data = rows(
+            "SELECT table_name, run_id, computed_date, notebook_version, as_of_ts, row_count "
+            "FROM v_ps2_v25_status WHERE city_id=:c ORDER BY table_name", c=city)
+        run_ids = sorted({r["run_id"] for r in data if r.get("run_id")})
+        return ok({
+            "city": city,
+            "tables": len(data),
+            "expected_tables": len(_PS2V25),
+            "run_ids": run_ids,
+            "coherent": len(run_ids) == 1 and len(data) == len(_PS2V25),
+            "computed_date": (data[0]["computed_date"] if data else None),
+            "as_of_ts": (data[0]["as_of_ts"] if data else None),
+            "rows": data,
+        })
+
+    if not path.startswith("/ps2/v25/"):
+        return None
+
+    metric = path[len("/ps2/v25/"):].strip("/")
+    if metric == "":
+        return ok({"metrics": sorted(_PS2V25), "usage": "/ps2/v25/<metric>?city=CHI"})
+    spec = _PS2V25.get(metric)
+    if spec is None:
+        return err(404, "unknown PS2 v2.5 metric %r. Known: %s" % (metric, ", ".join(sorted(_PS2V25))))
+
+    table, cols, order, dflt, hard, datecol = spec
+    where = ["city_id=:c",
+             "computed_date=(SELECT MAX(computed_date) FROM %s WHERE city_id=:c)" % table]
+    kw = {"c": city}
+
+    have = cols.replace('"', '')
+    for pname, col in _PS2V25_FILTERS:
+        v = (params.get(pname) or "").strip()
+        if v and col in have.split(","):
+            where.append("%s=:%s" % (col, pname))
+            kw[pname] = v.upper() if col == "device_category" else v
+
+    if datecol:
+        for pname, op in (("from", ">="), ("to", "<=")):
+            v = (params.get(pname) or "").strip()
+            if v:
+                where.append("%s %s :%s" % (datecol, op, pname))
+                kw[pname] = v
+
+    limit = _clamp_int(params.get("limit"), dflt, 1, hard)
+    offset = _clamp_int(params.get("offset"), 0, 0, 1000000)
+    sql = ("SELECT %s FROM %s WHERE %s ORDER BY %s LIMIT %d OFFSET %d"
+           % (cols, table, " AND ".join(where), order, limit, offset))
+    return ok(rows(sql, **kw))
+
+
 def route(method, path, params, body):
     city = q((params or {}).get("city", CITY))
+    _v25 = _ps2_v25_route(path, params, city)
+    if _v25 is not None: return _v25
     if path == "/ps2/windows":
         return ok(rows("SELECT window_bucket,cascade_days,pct,total_cascade_days,slow_fast_fault_mult,slow_fast_duration_mult FROM ps2_cascade_window_summary WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_cascade_window_summary WHERE city_id=:c) ORDER BY cascade_days DESC", c=city))
     if path == "/ps2/windowdetail":

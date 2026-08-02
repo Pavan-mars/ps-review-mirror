@@ -25,6 +25,7 @@ import { Badge, Card, Chip, Empty, Grid, Loading, Note, Panel, Section, Stat } f
 import PS1Overview from './PS1Overview';
 import PS2Overview from './PS2Overview';
 import PS4Overview from './PS4Overview';
+import Device360 from './Device360';
 import {
   CARD, INK, INK_2, INK_3, LINE, STATUS,
   compact, deviceColor, deviceShort, dfmt, font, nfmt, pct,
@@ -321,6 +322,7 @@ const TABS = [
   { key: 'ps4', label: 'PS4 Anomaly' },
   { key: 'ps3', label: 'PS3 Root cause', wip: true },
   { key: 'ps5', label: 'PS5 Remaining life', wip: true },
+  { key: 'device', label: 'Device 360' },
 ];
 
 function WipPanel({ title, body }) {
@@ -337,8 +339,13 @@ export default function V2Shell({ city = 'CHI' }) {
   // Deep links: /v2#ps2 selects that tab, and switching updates the hash so a
   // tab can be sent to someone. The three standalone routes still work.
   useEffect(() => {
-    const h = String(window.location.hash || '').replace('#', '');
-    if (TABS.some((t) => t.key === h)) setTab(h);
+    const apply = () => {
+      const h = String(window.location.hash || '').replace('#', '').trim();
+      if (h && TABS.some((t) => t.key === h)) setTab(h);
+    };
+    apply();
+    window.addEventListener('hashchange', apply);
+    return () => window.removeEventListener('hashchange', apply);
   }, []);
 
   const open = useCallback((k) => {
@@ -360,6 +367,7 @@ export default function V2Shell({ city = 'CHI' }) {
       {tab === 'ps1' && <PS1Overview city={city} />}
       {tab === 'ps2' && <PS2Overview city={city} />}
       {tab === 'ps4' && <PS4Overview city={city} />}
+      {tab === 'device' && <Device360 city={city} />}
       {tab === 'ps3' && (
         <WipPanel
           title="PS3 - root cause and severity"

@@ -292,17 +292,6 @@ function EstateOverview({ onOpen }) {
         />
 
         <PSCard
-          code="PS4" title="Anomaly detection"
-          what="Devices behaving unlike their peer group in a given week."
-          asOf={ps4AsOf}
-          loading={f.ps4Timeline.loading || f.ps4Timeline.idle}
-          error={f.ps4Timeline.error}
-          stats={ps4}
-          note="Scored at device-week grain, so a device can appear in several weeks."
-          onOpen={() => onOpen('ps4')}
-        />
-
-        <PSCard
           code="PS3" title="Root cause and severity"
           what="Which component an OOS episode is attributed to, and how soon that device comes back."
           asOf={ps3AsOf}
@@ -311,6 +300,17 @@ function EstateOverview({ onOpen }) {
           stats={ps3}
           note="Severity and confirmed root cause are not available in this run -- all seven evidence sources report not_configured. The screen says so rather than showing empty panels."
           onOpen={() => onOpen('ps3')}
+        />
+
+        <PSCard
+          code="PS4" title="Anomaly detection"
+          what="Devices behaving unlike their peer group in a given week."
+          asOf={ps4AsOf}
+          loading={f.ps4Timeline.loading || f.ps4Timeline.idle}
+          error={f.ps4Timeline.error}
+          stats={ps4}
+          note="Scored at device-week grain, so a device can appear in several weeks."
+          onOpen={() => onOpen('ps4')}
         />
 
         <PSCard
@@ -326,8 +326,8 @@ function EstateOverview({ onOpen }) {
           {[
             ['PS1', 'live', 'Daily inference. Cross-wired daily tables plus the station roll-up.'],
             ['PS2', 'live', '20 tables, refreshed wholesale by the daily loader. No served model.'],
-            ['PS4', 'live', 'Weekly anomaly scoring at device-week grain.'],
             ['PS3', 'live', '20 tables from the V26 source-first run, refreshed wholesale by the v25 loader.'],
+            ['PS4', 'live', 'Weekly anomaly scoring at device-week grain.'],
             ['PS5', 'wip', 'Notebook being revised.'],
           ].map(([k, s, d]) => (
             <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -349,8 +349,8 @@ const TABS = [
   { key: 'overview', label: 'Estate overview' },
   { key: 'ps1', label: 'PS1 Failure' },
   { key: 'ps2', label: 'PS2 Cascading' },
-  { key: 'ps4', label: 'PS4 Anomaly' },
   { key: 'ps3', label: 'PS3 Root cause' },
+  { key: 'ps4', label: 'PS4 Anomaly' },
   { key: 'ps5', label: 'PS5 Remaining life', wip: true },
   { key: 'device', label: 'Device 360' },
 ];
@@ -396,9 +396,9 @@ export default function V2Shell({ city = 'CHI' }) {
       {tab === 'overview' && <EstateOverview onOpen={open} />}
       {tab === 'ps1' && <PS1Overview city={city} />}
       {tab === 'ps2' && <PS2Overview city={city} />}
+      {tab === 'ps3' && <PS3Overview city={city} />}
       {tab === 'ps4' && <PS4Overview city={city} />}
       {tab === 'device' && <Device360 city={city} />}
-      {tab === 'ps3' && <PS3Overview city={city} />}
       {tab === 'ps5' && (
         <WipPanel
           title="PS5 - remaining useful life"

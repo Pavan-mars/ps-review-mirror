@@ -20,8 +20,26 @@ global.Node = dom.window.Node;
 global.getComputedStyle = dom.window.getComputedStyle;
 global.requestAnimationFrame = (cb) => setTimeout(() => cb(Date.now()), 0);
 global.cancelAnimationFrame = (id) => clearTimeout(id);
-global.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
+// GIVE THE CHARTS A REAL SIZE.
+//
+// The first version of this harness left ResizeObserver a no-op and
+// getBoundingClientRect returning zeros, so recharts' ResponsiveContainer
+// measured 0x0 and drew nothing -- and a chart with its axes wired backwards
+// looked exactly like a chart that was merely unmeasured. It passed a screen
+// whose bars did not render at all.
+//
+// Reporting a fixed 820x300 makes the marks real, so "did any bar draw" becomes
+// an assertion instead of something only a human eye catches.
+const BOX = { width: 820, height: 300, top: 0, left: 0, right: 820, bottom: 300, x: 0, y: 0 };
+dom.window.HTMLElement.prototype.getBoundingClientRect = function () { return { ...BOX, toJSON: () => BOX }; };
+global.ResizeObserver = class {
+  constructor(cb) { this.cb = cb; }
+  observe(el) { this.cb([{ target: el, contentRect: BOX }], this); }
+  unobserve() {} disconnect() {}
+};
 dom.window.ResizeObserver = global.ResizeObserver;
+Object.defineProperty(dom.window.HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 820 });
+Object.defineProperty(dom.window.HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 300 });
 global.Blob = dom.window.Blob;
 global.URL.createObjectURL = () => 'blob:x';
 
@@ -46,7 +64,7 @@ const PS3 = (await import('./build/PS3Overview.js')).default;
 const root = createRoot(document.getElementById('root'));
 await new Promise((res) => { root.render(React.createElement(PS3, { city: 'CHI' })); setTimeout(res, 2500); });
 
-const TABS = ['What breaks', 'Devices', 'Where it happens', 'What repeats', 'How we know'];
+const TABS = ['What breaks', 'Root cause & severity', 'Devices', 'Where it happens', 'What repeats', 'How we know'];
 const seen = {};
 const tabText = {};
 for (const label of TABS) {
@@ -55,7 +73,17 @@ for (const label of TABS) {
   btn.click();
   await new Promise((r) => setTimeout(r, 1400));
   const t = document.getElementById('root').textContent || '';
-  seen[label] = { chars: t.length, svg: (document.getElementById('root').innerHTML.match(/<svg/g) || []).length };
+  const h = document.getElementById('root').innerHTML;
+  seen[label] = {
+    chars: t.length,
+    svg: (h.match(/<svg/g) || []).length,
+    // Counted SEPARATELY. A combined count is not enough: with the axes wired
+    // backwards the donut still drew its 8 sectors and only the 8 bars were
+    // missing, so the total merely halved and a floor of "at least one mark"
+    // passed a broken chart. Bars and sectors are asserted independently.
+    bars: (h.match(/recharts-rectangle/g) || []).length,
+    sectors: (h.match(/recharts-sector/g) || []).length,
+  };
   tabText[label] = t;
 }
 
@@ -63,6 +91,33 @@ const html = document.getElementById('root').innerHTML;
 const text = document.getElementById('root').textContent || '';
 console.log('--- PS3 render smoke ---');
 for (const [k, v] of Object.entries(seen)) console.log(`  tab ${k.padEnd(18)}`, JSON.stringify(v));
+// Tabs that carry charts must have drawn marks. This is the assertion the
+// first version of this file was missing.
+// Minimum bars and sectors each tab must draw, from the real data:
+//   What breaks      donut (8 components) + ranked bars (8)
+//   Devices          stacked columns, 4 bands x 3 fleets
+//   Where it happens two ranked bar charts, 12 rows each
+const CHART_TABS = {
+  'What breaks':      { bars: 6, sectors: 6 },
+  // the root-cause ladder is deliberately NOT a chart: four of its five stages
+  // are zero, and a funnel that collapses to nothing reads as a rendering
+  // failure rather than as the finding it is
+
+  'Devices':          { bars: 6, sectors: 0 },
+  'Where it happens': { bars: 12, sectors: 0 },
+};
+let markFail = 0;
+for (const [tab, need] of Object.entries(CHART_TABS)) {
+  const g = seen[tab] || {};
+  const okBars = (g.bars || 0) >= need.bars;
+  const okSect = (g.sectors || 0) >= need.sectors;
+  if (!okBars || !okSect) {
+    markFail++;
+    console.log(`  MARKS MISSING  ${tab}: bars ${g.bars || 0}/${need.bars}, sectors ${g.sectors || 0}/${need.sectors}`);
+  } else {
+    console.log(`  marks drawn    ${tab}: bars ${g.bars}, sectors ${g.sectors}`);
+  }
+}
 console.log('routes served  :', served.size, '/', Object.keys(fixtures).length);
 console.log('unmatched      :', [...new Set(unmatched)].join(', ') || '(none)');
 const real = errors.filter((e) => !/not wrapped in act|useLayoutEffect does nothing|MODULE_TYPELESS_PACKAGE_JSON|Reparsing as ES module/i.test(e));
@@ -74,6 +129,8 @@ real.slice(0, 8).forEach((e) => console.log('   !', e.slice(0, 260)));
 // unmounts a view when you leave it.
 const must = {
   'What breaks': [
+    // the donut legend -- identity must not be colour-alone
+    'DAP', 'DEV',
     'Severity and confirmed root cause are not available',
     'One mode dominates every unfiltered total',
     'zero episodes carry the commanded signal',
@@ -90,13 +147,27 @@ const must = {
     'Components with adequate common support',
     'Covariate balance',
   ],
+  'Root cause & severity': [
+    'What PS3 means by a root cause',
+    'The chain stops at stage 1',
+    '1. Observed component',
+    '4. Confirmed root cause',
+    '5. Dashboard domain',
+    'Component and subsystem',
+    'Why no severity is shown',
+    'Where root cause would come from',
+    'DOPP',            // the subsystem layer that was invisible before
+    'GATE_MECH',
+  ],
   'How we know': [
     'Read the feature mix before the score',
-    'Why severity was refused',
-    'Where root cause would come from',
+    'live on the',     // the pointer to where the two moved sections went
   ],
 };
-const mustNot = ['NaN', 'undefined', '[object Object]', 'Infinity'];
+const mustNot = ['NaN', 'undefined', '[object Object]', 'Infinity',
+  // the exact raw ratios that reached the axis when RankBars was wired
+  // backwards -- a category axis should never carry a 15-digit float
+  '8.108108108108109', '46.666666666666664', '6.36111111111111'];
 console.log('--- content ---');
 let bad = 0;
 for (const [tab, probes] of Object.entries(must)) {
@@ -112,6 +183,46 @@ for (const [tab, t] of Object.entries(tabText)) {
   }
 }
 if (!bad) console.log('clean    no NaN / undefined / [object Object] / Infinity on any tab');
+// ---- the device lookup and the Analyse modal --------------------------
+// Building a control is not the same as it working. Type a device id that is
+// really in the run, assert its PS3 facts appear, then press Analyse and
+// assert the modal mounts.
+{
+  const devTab = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Devices');
+  if (devTab) { devTab.click(); await new Promise((r) => setTimeout(r, 1400)); }
+  const input = document.querySelector('input');
+  console.log('--- device lookup ---');
+  console.log(`${input ? 'present ' : 'MISSING '} lookup input`);
+  if (input) {
+    const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'RVG01601');
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 700));
+    const t = document.getElementById('root').textContent || '';
+    for (const probe of ['found in this run', 'Fare Gates', 'OOS episodes', 'SET events', 'Median gap']) {
+      const ok = t.includes(probe);
+      if (!ok) bad++;
+      console.log(`${ok ? 'present ' : 'MISSING '} lookup shows ${probe}`);
+    }
+    // 89 episodes / 341 SET events is what the live run holds for RVG01601
+    for (const [label, want] of [['episode count', '89'], ['SET events', '341']]) {
+      const ok = t.includes(want);
+      if (!ok) bad++;
+      console.log(`${ok ? 'ok      ' : 'WRONG   '} lookup ${label} = ${want}`);
+    }
+    const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Analyse this device');
+    console.log(`${btn ? 'present ' : 'MISSING '} Analyse button`);
+    if (btn) {
+      btn.click();
+      await new Promise((r) => setTimeout(r, 1600));
+      const m = document.getElementById('root').textContent || '';
+      const opened = m.includes('RVG01601') && m.length > t.length;
+      if (!opened) bad++;
+      console.log(`${opened ? 'present ' : 'MISSING '} Analyse modal mounted for the device`);
+    }
+  } else { bad++; }
+}
+
 const status = tabText['What breaks'] || '';
 console.log(`${status.includes('Replay run, not a live score') ? 'present ' : 'MISSING '} [status bar] Replay run, not a live score`);
 
@@ -141,4 +252,4 @@ for (const [label, want] of [['GATE clock share', '49%'], ['GATE macro F1', '0.5
   if (!ok) bad++;
   console.log(`${ok ? 'ok      ' : 'WRONG   '} ${label.padEnd(22)} expected "${want}"`);
 }
-process.exit(real.length || bad ? 1 : 0);
+process.exit(real.length || bad || markFail ? 1 : 0);

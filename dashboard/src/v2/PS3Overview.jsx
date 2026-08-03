@@ -52,13 +52,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getObj, getRows } from './v2api';
 import {
-  Badge, Breadcrumb, Card, Chip, DrilldownProvider, Empty, Grid, Hero,
-  Loading, Note, Panel, Section, Stat,
+  Badge, Breadcrumb, Card, Chip, DrilldownProvider, Empty, Grid, Hero, Legend,
+  Loading, Note, Panel, Section, Stat, TextField,
 } from './Kit';
-import { ChartFrame, ColumnBars, Donut, RankBars } from './Charts';
+import { ColumnBars, Donut, RankBars } from './Charts';
 import DataTable from './DataTable';
+import AnalyseModal from './AnalyseModal';
 import {
-  CARD, INK, INK_2, INK_3, LINE, STATUS,
+  CAT, CARD, INK, INK_2, LINE,
   compact, deviceColor, deviceShort, dfmt, font, nfmt, pct,
 } from './theme';
 
@@ -89,15 +90,20 @@ const FEED_FN = {
   stages:      (city) => getRows('/ps3/v25/run-stage-audit', { city }),
   columns:     (city) => getRows('/ps3/v25/column-profile', { city }),
   runStatus:   (city) => getRows('/ps3/v25/run-status', { city }),
+  // 1500 is the route's own hard cap. Used ONLY to derive which component maps
+  // to which subsystem -- a lookup, where a sample is legitimate. Never used
+  // as a denominator; every count on this screen comes from a rollup.
+  episodes:    (city) => getRows('/ps3/v25/episodes', { city, limit: 1500 }),
 };
 const ALL_KEYS = Object.keys(FEED_FN);
 
 const VIEWS = [
   { key: 'components', label: 'What breaks',      feeds: ['components', 'commanded', 'maturity', 'repeat'] },
+  { key: 'rootcause',  label: 'Root cause & severity', feeds: ['maturity', 'components', 'evidence', 'columns', 'episodes'] },
   { key: 'devices',    label: 'Devices',          feeds: ['reliability', 'devices', 'serials'] },
   { key: 'where',      label: 'Where it happens', feeds: ['facilities'] },
   { key: 'repeats',    label: 'What repeats',     feeds: ['repeat', 'effects', 'balance'] },
-  { key: 'evidence',   label: 'How we know',      feeds: ['scorecard', 'importance', 'maturity', 'columns', 'evidence', 'sourceAudit', 'stages', 'runStatus'] },
+  { key: 'evidence',   label: 'How we know',      feeds: ['scorecard', 'importance', 'maturity', 'sourceAudit', 'stages', 'runStatus'] },
 ];
 
 // ---------------------------------------------------------------------
@@ -247,6 +253,9 @@ function ComponentsView({ feeds }) {
     [comp, fleet]
   );
 
+  // Colour is assigned HERE, once, and both the donut and its legend read it
+  // from the same array. Letting the chart default to CAT[i] and writing the
+  // legend separately is how a legend ends up disagreeing with its chart.
   const mix = useMemo(() => {
     const tot = shown.reduce((t, r) => t + num(r.oos_episode_count), 0) || 1;
     const byComp = new Map();
@@ -254,9 +263,10 @@ function ComponentsView({ feeds }) {
       const k = r.component_attribution || '(unattributed)';
       byComp.set(k, (byComp.get(k) || 0) + num(r.oos_episode_count));
     });
-    return Array.from(byComp, ([name, value]) => ({
-      name, value, share: value / tot,
-    })).sort((a, b) => b.value - a.value);
+    return Array.from(byComp, ([name, value]) => ({ name, value, share: value / tot }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 8)
+      .map((d, i) => ({ ...d, color: CAT[i % CAT.length] }));
   }, [shown]);
 
   const gateDap = useMemo(() => {
@@ -331,17 +341,30 @@ function ComponentsView({ feeds }) {
         </Note>
         <Grid cols="repeat(auto-fit,minmax(320px,1fr))">
           <Panel title="Share of episodes" hint={fleet ? deviceShort(fleet) : 'All fleets'}>
-            <Feed feed={feeds.components} height={260}>
+            <Feed feed={feeds.components} height={300}>
               {() => (mix.length ? (
-                <Donut data={mix.slice(0, 8)} height={240}
-                  centerLabel="episodes"
-                  centerValue={compact(mix.reduce((t, m) => t + m.value, 0))} />
+                <>
+                  <Donut data={mix} height={230}
+                    colors={(d, i) => (d && d.color) || CAT[i % CAT.length]}
+                    centerLabel="episodes"
+                    centerValue={compact(mix.reduce((t, m) => t + m.value, 0))} />
+                  <div style={{ marginTop: 10 }}>
+                    <Legend items={mix.map((m) => ({
+                      label: `${m.name} ${pct(m.share, 1)}`, color: m.color,
+                    }))} />
+                  </div>
+                </>
               ) : <Empty height={240} />)}
             </Feed>
           </Panel>
           <Panel title="Episodes by component" hint="ranked">
-            <Feed feed={feeds.components} height={260}>
-              {() => <RankBars data={mix.slice(0, 10)} xKey="name" yKey="value" height={240} fmt={nfmt} />}
+            <Feed feed={feeds.components} height={300}>
+              {/* xKey is the NUMERIC key and yKey the category: RankBars is a
+                  horizontal bar chart. Passing them the other way round put the
+                  raw values on the category axis and asked the bar to plot a
+                  string, so nothing drew at all. */}
+              {() => <RankBars data={mix} xKey="value" yKey="name" height={260}
+                colorBy={(d) => d.color} fmt={nfmt} unit=" episodes" />}
             </Feed>
           </Panel>
         </Grid>
@@ -375,8 +398,271 @@ function ComponentsView({ feeds }) {
   );
 }
 
+
 // =====================================================================
-// 2. DEVICES
+// 2. ROOT CAUSE AND SEVERITY
+//
+// This tab exists because the screen was answering "what breaks" and "which
+// devices" while the tab was named for root cause and severity, and a reader
+// had no place to go to find out what PS3 means by either or why neither is
+// populated. Saying "not available" in a note on another tab is not the same
+// as showing the chain and where it stops.
+// =====================================================================
+const RC_STAGE_TONE = { yes: 'good', no: 'neutral' };
+
+function RootCauseView({ feeds }) {
+  const maturity = feeds.maturity.rows;
+  const comp = feeds.components.rows;
+  const ev = feeds.evidence.rows;
+  const cols = feeds.columns.rows;
+  const epi = feeds.episodes.rows;
+
+  // Population figures, from the rollup -- never from the episode sample.
+  const pop = useMemo(() => {
+    const sum = (k) => (maturity || []).reduce((t, r) => t + num(r[k]), 0);
+    return {
+      episodes: sum('oos_episode_count'),
+      attributed: sum('component_attribution_count'),
+      candidate: sum('candidate_root_cause_count'),
+      confirmed: sum('confirmed_root_cause_count'),
+      severity: sum('observed_severity_count'),
+    };
+  }, [maturity]);
+
+  // The dashboard-facing domain values actually present, from the rollup.
+  const domains = useMemo(() => {
+    const d = new Map();
+    (comp || []).forEach((r) => {
+      const k = r.dashboard_root_cause_domain || '(none)';
+      d.set(k, (d.get(k) || 0) + num(r.oos_episode_count));
+    });
+    return Array.from(d, ([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+  }, [comp]);
+
+  // component -> subsystem. A LOOKUP derived from the episode sample, so the
+  // pairings are real even though the counts are only the sample's. DEV maps
+  // to three different subsystems, which is why subsystem is worth showing at
+  // all: the attribution column is coarser than the machine actually is.
+  const subsystems = useMemo(() => {
+    const m = new Map();
+    (epi || []).forEach((e) => {
+      const key = [cat(e), e.component_attribution, e.component_subsystem].join('|');
+      m.set(key, (m.get(key) || 0) + 1);
+    });
+    return Array.from(m, ([k, n]) => {
+      const [fleet, component, subsystem] = k.split('|');
+      return { fleet, component, subsystem, sample: n };
+    }).sort((a, b) => b.sample - a.sample);
+  }, [epi]);
+
+  const multiSub = useMemo(() => {
+    const m = new Map();
+    subsystems.forEach((r) => {
+      if (!m.has(r.component)) m.set(r.component, new Set());
+      m.get(r.component).add(r.subsystem);
+    });
+    return Array.from(m).filter(([, v]) => v.size > 1)
+      .map(([c, v]) => ({ component: c, subsystems: Array.from(v).sort() }));
+  }, [subsystems]);
+
+  // The status strings the run stamps on every episode. Read from the sample
+  // because they are per-episode fields, and reported as "in the sample".
+  const statuses = useMemo(() => {
+    const pick = (k) => {
+      const c = new Map();
+      (epi || []).forEach((e) => c.set(String(e[k]), (c.get(String(e[k])) || 0) + 1));
+      return Array.from(c, ([value, n]) => ({ value, n })).sort((a, b) => b.n - a.n);
+    };
+    return {
+      rootCause: pick('root_cause_status'),
+      severity: pick('severity_status'),
+      attribution: pick('component_attribution_status'),
+      conflict: pick('evidence_conflict_status'),
+    };
+  }, [epi]);
+
+  const LADDER = [
+    { stage: '1. Observed component', have: pop.attributed, of: pop.episodes,
+      what: 'The component named on the OOS event itself.',
+      status: statuses.attribution[0] && statuses.attribution[0].value },
+    { stage: '2. Candidate root cause', have: pop.candidate, of: pop.episodes,
+      what: 'A free-text cause proposed by a work order or incident, before review.',
+      status: 'no source configured' },
+    { stage: '3. Linked root cause', have: 0, of: pop.episodes,
+      what: 'A candidate matched to this episode by device and time window.',
+      status: 'no source configured' },
+    { stage: '4. Confirmed root cause', have: pop.confirmed, of: pop.episodes,
+      what: 'A linked cause an engineer signed off against a taxonomy.',
+      status: statuses.rootCause[0] && statuses.rootCause[0].value },
+    { stage: '5. Dashboard domain', have: 0, of: pop.episodes,
+      what: 'The confirmed cause folded into a small set of reportable domains.',
+      status: (domains[0] && domains[0].name) || '(unlabelled)' },
+  ];
+
+  const loading = feeds.maturity.loading || feeds.maturity.idle;
+
+  return (
+    <>
+      <Section
+        eyebrow="Definition"
+        title="What PS3 means by a root cause"
+        sub="Five stages. An episode has to clear all of them before the screen can name a cause."
+      >
+        <Note>
+          <strong>The chain stops at stage 1.</strong> Every one of the{' '}
+          {nfmt(pop.episodes)} episodes carries an observed component; none carries a candidate,
+          a linked or a confirmed root cause. That is a wiring gap, not a finding about the fleet
+          -- the sources those stages read are not configured, so there is nothing to link to.
+        </Note>
+        <Card>
+          <div style={{ display: 'grid', gap: 0 }}>
+            {LADDER.map((r, i) => {
+              const has = r.have > 0;
+              return (
+                <div key={r.stage} style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'minmax(190px,1.1fr) minmax(240px,2fr) 130px 190px',
+                  gap: 12, alignItems: 'center', padding: '12px 4px',
+                  borderTop: i ? `1px solid ${LINE}` : 'none',
+                }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: has ? INK : INK_2 }}>{r.stage}</div>
+                  <div style={{ ...font.micro, lineHeight: 1.5 }}>{r.what}</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: has ? INK : INK_2 }}>
+                    {loading ? '--' : `${nfmt(r.have)} / ${nfmt(r.of)}`}
+                    <div style={{ ...font.micro, fontWeight: 600 }}>
+                      {loading || !r.of ? '' : pct(r.have / r.of, 0)}
+                    </div>
+                  </div>
+                  <div>
+                    <Badge tone={RC_STAGE_TONE[has ? 'yes' : 'no']}>
+                      {has ? 'populated' : 'empty'}
+                    </Badge>
+                    <div style={{ ...font.micro, marginTop: 4, wordBreak: 'break-word' }}>{r.status}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      </Section>
+
+      <Section eyebrow="What is populated" title="Component and subsystem"
+        sub="The nearest thing PS3 currently has to a mechanical cause, and it is on every episode.">
+        <Feed feed={feeds.episodes} height={300}>
+          {() => (
+            <>
+              <Note>
+                Attribution is the component named on the event. The <strong>subsystem</strong> behind
+                it is finer and is not shown anywhere else on this screen.
+                {multiSub.length > 0 && (
+                  <> {multiSub.map((m) => `${m.component} alone spans ${m.subsystems.join(', ')}`).join('; ')}
+                  {' '}-- so the attribution column is coarser than the machine is, and two episodes
+                  sharing a component may not share a subsystem.</>
+                )}
+                {' '}Pairings are read from a {nfmt((epi || []).length)}-episode sample, so treat the
+                counts as indicative and the pairings as real.
+              </Note>
+              <Card>
+                <DataTable
+                  rows={subsystems}
+                  columns={[
+                    { key: 'fleet', label: 'Fleet', render: (r) => deviceShort(r.fleet) },
+                    { key: 'component', label: 'Component attribution' },
+                    { key: 'subsystem', label: 'Subsystem' },
+                    { key: 'sample', label: 'Episodes in sample', num: true },
+                  ]}
+                  height={300} pageSize={25} exportName="ps3_component_subsystem"
+                />
+              </Card>
+            </>
+          )}
+        </Feed>
+      </Section>
+
+      <Section eyebrow="Severity" title="Why no severity is shown">
+        <Feed feed={feeds.columns} height={260}>
+          {(rows) => {
+            const refused = rows.filter((r) => r.usable_as_observed_label === false);
+            return (
+              <>
+                <Note>
+                  A candidate severity label that is <strong>fully determined by EVENT_TYPE_ID</strong> is a
+                  lookup on the event type, not an observation of the incident -- calling it severity
+                  would dress a constant up as a measurement. The run refuses those rather than
+                  training on them: {refused.length} of {rows.length} profiled columns were refused.
+                  {statuses.severity[0] && (
+                    <> Every episode is stamped <em>{statuses.severity[0].value}</em> as a result.</>
+                  )}
+                </Note>
+                <Card>
+                  <DataTable
+                    rows={rows}
+                    columns={[
+                      { key: 'column', label: 'Candidate column' },
+                      { key: 'non_null', label: 'Non-null', num: true },
+                      { key: 'null_rate', label: 'Null rate', num: true, render: (r) => pct(num(r.null_rate), 2) },
+                      { key: 'distinct_values', label: 'Distinct', num: true },
+                      { key: 'deterministic_given_event_type', label: 'Determined by event type',
+                        render: (r) => (r.deterministic_given_event_type ? 'yes' : 'no') },
+                      { key: 'usable_as_observed_label', label: 'Verdict', render: (r) => (
+                        <Badge tone={r.usable_as_observed_label ? 'good' : 'neutral'}>
+                          {r.usable_as_observed_label ? 'usable' : 'refused'}
+                        </Badge>
+                      ) },
+                    ]}
+                    height={260} pageSize={20} searchable={false} exportName="ps3_column_profile"
+                  />
+                </Card>
+              </>
+            );
+          }}
+        </Feed>
+      </Section>
+
+      <Section eyebrow="Unblocking" title="Where root cause would come from">
+        <Feed feed={feeds.evidence} height={240}>
+          {(rows) => {
+            const nc = rows.filter((r) => String(r.status) === 'not_configured');
+            return (
+              <>
+                <Note>
+                  {nc.length} of {rows.length} evidence sources report <em>not_configured</em>. Wiring any
+                  one of them fills stages 2 to 5 above without a schema change: the columns already
+                  exist in Aurora and are already returned by the API, holding null. That was the
+                  reason for listing them rather than filtering them out.
+                </Note>
+                <Card>
+                  <DataTable
+                    rows={rows}
+                    columns={[
+                      { key: 'source', label: 'Source' },
+                      { key: 'status', label: 'Status', render: (r) => (
+                        <Badge tone={String(r.status) === 'not_configured' ? 'neutral' : 'good'}>{r.status}</Badge>
+                      ) },
+                      { key: 'rows', label: 'Rows', num: true },
+                      { key: 'detail', label: 'Detail' },
+                    ]}
+                    height={240} pageSize={20} searchable={false} exportName="ps3_evidence_audit"
+                  />
+                </Card>
+                {statuses.conflict[0] && (
+                  <Note>
+                    Conflict handling, verbatim from the run: <em>{statuses.conflict[0].value}</em>.
+                    With no evidence loaded there is nothing to conflict, so this reads as a
+                    placeholder today and becomes meaningful the moment two sources disagree.
+                  </Note>
+                )}
+              </>
+            );
+          }}
+        </Feed>
+      </Section>
+    </>
+  );
+}
+
+// =====================================================================
+// 3. DEVICES
 // =====================================================================
 const BAND_TONE = {
   WORST_5_PCT: 'critical',
@@ -386,8 +672,9 @@ const BAND_TONE = {
 };
 const BAND_ORDER = ['WORST_5_PCT', 'WORST_20_PCT', 'ABOVE_MEDIAN', 'BELOW_MEDIAN'];
 
-function DevicesView({ feeds }) {
+function DevicesView({ feeds, onAnalyse }) {
   const [fleet, setFleet] = useState(null);
+  const [q, setQ] = useState('');
   const rel = feeds.reliability.rows;
   const serials = feeds.serials.rows;
 
@@ -404,12 +691,37 @@ function DevicesView({ feeds }) {
     }));
   }, [shown]);
 
+  // Band counts SPLIT BY FLEET. The first version of this panel was a bar
+  // chart of the same four numbers already listed beside it -- two encodings
+  // of one fact and no new information. The fleet split is the thing the list
+  // cannot show, and it is where the difference lives: gates are almost
+  // entirely above their own median, validators almost entirely below.
+  const bandByFleet = useMemo(() => {
+    const m = new Map();
+    (rel || []).forEach((r) => {
+      const b = String(r.reliability_risk_band || 'UNBANDED');
+      if (!m.has(b)) m.set(b, { band: b, name: b.replace(/_/g, ' ').toLowerCase(), GATE: 0, TVM: 0, VALIDATOR: 0 });
+      const c = cat(r);
+      if (FLEETS.includes(c)) m.get(b)[c] += 1;
+    });
+    return BAND_ORDER.filter((b) => m.has(b)).map((b) => m.get(b));
+  }, [rel]);
+
   // The notebook labels the basis itself. Read it off the data rather than
   // describing it from memory -- if the basis ever changes, this text follows.
   const basis = useMemo(() => {
     const s = new Set((rel || []).map((r) => r.band_basis).filter(Boolean));
     return Array.from(s);
   }, [rel]);
+
+  // Resolved from the feed already in memory rather than a new request: the
+  // reliability table for the whole city is 2,806 rows and is already loaded.
+  const lookup = useMemo(() => {
+    const id = q.trim().toUpperCase();
+    if (!id) return null;
+    const row = (rel || []).find((r) => String(r.device_id).toUpperCase() === id);
+    return { found: !!row, row: row || {} };
+  }, [q, rel]);
 
   const serialUseless = useMemo(() => {
     const d = new Set((serials || []).map((r) => String(r.component_serial_nbr)));
@@ -427,11 +739,18 @@ function DevicesView({ feeds }) {
           prediction that it will fail next.
         </Note>
         <Grid cols="repeat(auto-fit,minmax(300px,1fr))">
-          <Panel title="Devices by band" hint={fleet ? deviceShort(fleet) : 'All fleets'}>
-            <Feed feed={feeds.reliability} height={240}>
-              {() => (bands.length
-                ? <RankBars data={bands} xKey="name" yKey="value" height={220} fmt={nfmt} />
-                : <Empty height={220} />)}
+          <Panel title="Devices by band and fleet" hint="every fleet is banded against its own median">
+            <Feed feed={feeds.reliability} height={280}>
+              {() => (bandByFleet.length ? (
+                <>
+                  <ColumnBars data={bandByFleet} xKey="name" height={230} stacked
+                    series={FLEETS.map((f) => ({ key: f, label: deviceShort(f), color: deviceColor(f) }))}
+                    fmt={nfmt} />
+                  <div style={{ marginTop: 10 }}>
+                    <Legend items={FLEETS.map((f) => ({ label: deviceShort(f), color: deviceColor(f) }))} />
+                  </div>
+                </>
+              ) : <Empty height={230} />)}
             </Feed>
           </Panel>
           <Panel title="Band mix">
@@ -454,7 +773,57 @@ function DevicesView({ feeds }) {
         </Grid>
       </Section>
 
-      <Section eyebrow="Detail" title="Device reliability">
+      <Section eyebrow="Lookup" title="Find a device"
+        sub="Type a device id for its PS3 v2.5 record, then open the cross-problem Device 360.">
+        <Card>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 260, flex: '0 1 320px' }}>
+              <TextField
+                value={q}
+                onChange={setQ}
+                placeholder="Device id, e.g. RVG01601"
+                onKeyDown={(e) => { if (e.key === 'Enter' && q.trim()) onAnalyse(q.trim().toUpperCase()); }}
+              />
+            </div>
+            <Chip active={!!q.trim()} onClick={() => q.trim() && onAnalyse(q.trim().toUpperCase())}>
+              Analyse this device
+            </Chip>
+            {!!lookup && (
+              <span style={{ ...font.micro }}>
+                {lookup.found ? 'found in this run' : 'not present in the PS3 v2.5 run'}
+              </span>
+            )}
+          </div>
+
+          {!!lookup && lookup.found && (
+            <Grid cols="repeat(auto-fit,minmax(170px,1fr))" style={{ marginTop: 14 }}>
+              <Stat label="Fleet" value={deviceShort(lookup.row.mars_device_category)} />
+              <Stat label="OOS episodes" value={nfmt(num(lookup.row.oos_episode_count))} />
+              <Stat label="SET events" value={nfmt(num(lookup.row.oos_set_event_count))} />
+              <Stat
+                label="Median gap"
+                value={lookup.row.median_interval_hours == null ? '--'
+                  : `${nfmt(num(lookup.row.median_interval_hours) / 24, 2)} d`}
+              />
+              <Stat label="Band" value={String(lookup.row.reliability_risk_band || '')
+                .replace(/_/g, ' ').toLowerCase()} />
+              <Stat label="Latest episode" value={dfmt(lookup.row.latest_episode_at)} />
+            </Grid>
+          )}
+
+          {!!lookup && !lookup.found && q.trim() && (
+            <Note>
+              No PS3 v2.5 record for <strong>{q.trim().toUpperCase()}</strong> in this run
+              -- it either recorded no OOS episode in the window, or it is not a TVM,
+              fare gate or validator. Device 360 may still hold PS1, PS2 and PS4
+              history for it, so the Analyse button is still worth pressing.
+            </Note>
+          )}
+        </Card>
+      </Section>
+
+      <Section eyebrow="Detail" title="Device reliability"
+        sub="Click any row to open Device 360 for that device.">
         <Card>
           <Feed feed={feeds.reliability} height={380}>
             {() => (
@@ -477,6 +846,7 @@ function DevicesView({ feeds }) {
                   { key: 'latest_episode_at', label: 'Latest episode', render: (r) => dfmt(r.latest_episode_at) },
                 ]}
                 height={380} pageSize={50} exportName="ps3_device_reliability"
+                onRowClick={(r) => onAnalyse(r.device_id)}
               />
             )}
           </Feed>
@@ -502,7 +872,7 @@ function DevicesView({ feeds }) {
 }
 
 // =====================================================================
-// 3. WHERE IT HAPPENS
+// 4. WHERE IT HAPPENS
 // =====================================================================
 function WhereView({ feeds }) {
   const [fleet, setFleet] = useState(null);
@@ -511,14 +881,26 @@ function WhereView({ feeds }) {
 
   const top = useMemo(
     () => [...shown].sort((a, b) => num(b.oos_episodes) - num(a.oos_episodes)).slice(0, 12)
-      .map((r) => ({ name: `${r.facility_id} ${deviceShort(r.mars_device_category)}`, value: num(r.oos_episodes) })),
+      .map((r) => ({
+        name: `${r.facility_id} ${deviceShort(r.mars_device_category)}`,
+        value: num(r.oos_episodes),
+        code: cat(r),
+      })),
     [shown]
   );
 
+  // Rounded at the source. 1200/148 is 8.108108108108109 and that number reached
+  // the axis verbatim; a ratio of episodes to devices is not meaningful past one
+  // decimal and formatting it only at the label leaves the raw value in tooltips
+  // and in the CSV export.
   const perDevice = useMemo(
     () => [...shown].filter((r) => num(r.devices) >= 20)
       .sort((a, b) => num(b.episodes_per_device) - num(a.episodes_per_device)).slice(0, 12)
-      .map((r) => ({ name: `${r.facility_id} ${deviceShort(r.mars_device_category)}`, value: num(r.episodes_per_device) })),
+      .map((r) => ({
+        name: `${r.facility_id} ${deviceShort(r.mars_device_category)}`,
+        value: Math.round(num(r.episodes_per_device) * 10) / 10,
+        code: cat(r),
+      })),
     [shown]
   );
 
@@ -537,13 +919,15 @@ function WhereView({ feeds }) {
         <Grid cols="repeat(auto-fit,minmax(320px,1fr))">
           <Panel title="Most episodes" hint="raw count">
             <Feed feed={feeds.facilities} height={300}>
-              {() => <RankBars data={top} xKey="name" yKey="value" height={280} fmt={nfmt} />}
+              {() => <RankBars data={top} xKey="value" yKey="name" height={280}
+                colorBy={(d) => deviceColor(d.code)} fmt={nfmt} unit=" episodes" />}
             </Feed>
           </Panel>
           <Panel title="Most episodes per device" hint="20+ devices only">
             <Feed feed={feeds.facilities} height={300}>
               {() => (perDevice.length
-                ? <RankBars data={perDevice} xKey="name" yKey="value" height={280} fmt={(v) => nfmt(v, 1)} />
+                ? <RankBars data={perDevice} xKey="value" yKey="name" height={280}
+                    colorBy={(d) => deviceColor(d.code)} fmt={(v) => nfmt(v, 1)} unit=" per device" />
                 : <Empty height={280} />)}
             </Feed>
           </Panel>
@@ -577,7 +961,7 @@ function WhereView({ feeds }) {
 }
 
 // =====================================================================
-// 4. WHAT REPEATS  (recurrence + the gated causal layer)
+// 5. WHAT REPEATS  (recurrence + the gated causal layer)
 // =====================================================================
 const WEAK = 'estimated_weak_overlap';
 
@@ -713,14 +1097,11 @@ function RepeatsView({ feeds }) {
 }
 
 // =====================================================================
-// 5. HOW WE KNOW
+// 6. HOW WE KNOW
 // =====================================================================
 function EvidenceView({ feeds }) {
   const score = feeds.scorecard.rows;
   const imp = feeds.importance.rows;
-  const cols = feeds.columns.rows;
-  const ev = feeds.evidence.rows;
-
   // Best model per scope, and how much of it is clock and calendar.
   const scopes = useMemo(() => {
     const byScope = new Map();
@@ -743,14 +1124,6 @@ function EvidenceView({ feeds }) {
   const passing = scopes.filter((s) => String(s.quality_gate) === 'passed');
   const worstClock = scopes.filter((s) => s.nFeatures && s.clockShare >= 0.4);
 
-  const refused = useMemo(
-    () => (cols || []).filter((r) => r.usable_as_observed_label === false),
-    [cols]
-  );
-  const notConfigured = useMemo(
-    () => (ev || []).filter((r) => String(r.status) === 'not_configured'),
-    [ev]
-  );
 
   return (
     <>
@@ -821,67 +1194,10 @@ function EvidenceView({ feeds }) {
         </Card>
       </Section>
 
-      <Section eyebrow="Labels" title="Why severity was refused">
-        <Feed feed={feeds.columns} height={260}>
-          {(rows) => (
-            <>
-              <Note>
-                A candidate label that is fully determined by EVENT_TYPE_ID is a lookup on the event
-                type, not an observation of the incident, so the run refuses it rather than training
-                on it. {refused.length} of {rows.length} profiled columns were refused on that basis.
-              </Note>
-              <Card>
-                <DataTable
-                  rows={rows}
-                  columns={[
-                    { key: 'column', label: 'Column' },
-                    { key: 'non_null', label: 'Non-null', num: true },
-                    { key: 'null_rate', label: 'Null rate', num: true, render: (r) => pct(num(r.null_rate), 2) },
-                    { key: 'distinct_values', label: 'Distinct', num: true },
-                    { key: 'deterministic_given_event_type', label: 'Determined by event type',
-                      render: (r) => (r.deterministic_given_event_type ? 'yes' : 'no') },
-                    { key: 'usable_as_observed_label', label: 'Usable', render: (r) => (
-                      <Badge tone={r.usable_as_observed_label ? 'good' : 'neutral'}>
-                        {r.usable_as_observed_label ? 'usable' : 'refused'}
-                      </Badge>
-                    ) },
-                  ]}
-                  height={260} pageSize={20} searchable={false} exportName="ps3_column_profile"
-                />
-              </Card>
-            </>
-          )}
-        </Feed>
-      </Section>
-
-      <Section eyebrow="Sources" title="Where root cause would come from">
-        <Feed feed={feeds.evidence} height={220}>
-          {(rows) => (
-            <>
-              <Note>
-                {notConfigured.length} of {rows.length} root-cause evidence sources report
-                not_configured. Until at least one is wired, confirmed root cause stays empty and
-                the columns that would carry it stay null -- they are present in the schema and in
-                the API so they populate without a code change on the day the export lands.
-              </Note>
-              <Card>
-                <DataTable
-                  rows={rows}
-                  columns={[
-                    { key: 'source', label: 'Source' },
-                    { key: 'status', label: 'Status', render: (r) => (
-                      <Badge tone={String(r.status) === 'not_configured' ? 'neutral' : 'good'}>{r.status}</Badge>
-                    ) },
-                    { key: 'rows', label: 'Rows', num: true },
-                    { key: 'detail', label: 'Detail' },
-                  ]}
-                  height={220} pageSize={20} searchable={false} exportName="ps3_evidence_audit"
-                />
-              </Card>
-            </>
-          )}
-        </Feed>
-      </Section>
+      <Note>
+        Why severity is refused and where a confirmed root cause would come from now live on the
+        <strong> Root cause &amp; severity</strong> tab, next to the definition they explain.
+      </Note>
 
       <Grid cols="repeat(auto-fit,minmax(340px,1fr))">
         <Panel title="OOS source" hint="what the run read">
@@ -980,6 +1296,9 @@ function StatusBar({ feed }) {
 
 export default function PS3Overview({ city = 'CHI' }) {
   const [view, setView] = useState('components');
+  // Lives on the shell, not inside DevicesView, so the modal survives a
+  // sub-tab switch and can be opened from anywhere on the screen later.
+  const [analyse, setAnalyse] = useState(null);
   const { feeds, request } = useFeeds(city);
 
   useEffect(() => {
@@ -1003,10 +1322,19 @@ export default function PS3Overview({ city = 'CHI' }) {
         <Breadcrumb />
 
         {active.key === 'components' && <ComponentsView feeds={feeds} />}
-        {active.key === 'devices' && <DevicesView feeds={feeds} />}
+        {active.key === 'rootcause' && <RootCauseView feeds={feeds} />}
+        {active.key === 'devices' && <DevicesView feeds={feeds} onAnalyse={setAnalyse} />}
         {active.key === 'where' && <WhereView feeds={feeds} />}
         {active.key === 'repeats' && <RepeatsView feeds={feeds} />}
         {active.key === 'evidence' && <EvidenceView feeds={feeds} />}
+
+        {/* The same cross-problem modal PS1 and PS4 open. It reads
+            /ps1/device-360, which carries PS1, PS2, PS4 and the PLAN-B PS3
+            generation -- ps3_v25_* is not in that route yet, so the PS3 detail
+            on this screen is the panel above, not the modal. */}
+        {analyse && (
+          <AnalyseModal city={city} deviceId={analyse} onClose={() => setAnalyse(null)} />
+        )}
       </div>
     </DrilldownProvider>
   );

@@ -212,7 +212,19 @@ def migrate(_evt):
                "sql/42_ps2_serial_grain.sql",
                # 02-Aug-2026. The 20 tables published by PS2 v2.5.2/2.5.3.
                # Purely additive; the 27 legacy PS2 tables are untouched.
-               "sql/44_ps2_v25.sql"):
+               "sql/44_ps2_v25.sql",
+               # 03-Aug-2026. The 20 tables published by PS3 V26, built
+               # from that run's own schema dump rather than a fixture.
+               # Purely additive and every name is prefixed ps3_v25_, so
+               # ps3_incident_predictions / ps3_device_predictions /
+               # ps3_v2_* -- what the deployed PS3 screens read today --
+               # are untouched and remain the plan-B set.
+               "sql/45_ps3_v25.sql",
+               # 03-Aug-2026. PS2 v2.5.4 union-minute columns. ADD COLUMN
+               # IF NOT EXISTS on two existing tables; no DROP, no ALTER
+               # TYPE, and hardware_oos_minutes is left exactly as it was
+               # so the published component-burden measure still resolves.
+               "sql/46_ps2_v254_union_minutes.sql"):
         path = os.path.join(here, fn)
         if not os.path.exists(path):
             results[fn] = {"skipped": "file not present"}; continue

@@ -1,20 +1,18 @@
 -- =====================================================================
 -- sql/45_ps3_v25.sql
 --
--- The 20 tables published by PS3_RootCause_Severity_SageMaker_Source_First_V25.
+-- The 20 tables published by PS3_RootCause_Severity_SageMaker_Source_First_V26.
+--
+-- BUILT FROM A REAL RUN, NOT A FIXTURE. Every column name, value type and null
+-- rate below was read from ps3_schema_dump.py executed in the same kernel as
+-- run 6a7002b0-a0fc-41f8-bb0f-1ad5a5358edf (source_first_ps1_ps2_ps3_label_aligned_v26, computed_date 2026-04-11,
+-- run_mode REPLAY). 20 tables, 271 columns, 1 JSONB.
 --
 -- PURELY ADDITIVE. Nothing here drops, alters or renames anything. Every
 -- existing PS3 table -- ps3_incident_predictions, ps3_device_predictions,
--- ps3_v2_rootcause, ps3_serial_risk and the rest that the deployed API serves
--- today -- is untouched and remains the plan-B set. Every new name is prefixed
+-- ps3_v2_rootcause, ps3_serial_risk and the rest the deployed API serves today
+-- -- is untouched and remains the plan-B set. Every new name is prefixed
 -- ps3_v25_ so a collision with that generation is structurally impossible.
---
--- TYPES ARE READ, NOT INFERRED. Column names and pandas dtypes were captured by
--- executing the V25 table builders and profiling every column, the same way
--- sql/44 was built from real PS2 manifests. VERIFY against the ps3_schema_dump
--- output from the real run before applying: a dtype that differs between the
--- fixture and production is exactly the kind of thing that only shows up on the
--- first load.
 --
 -- FOUR DESIGN CHOICES, INHERITED FROM sql/44 DELIBERATELY
 --
@@ -30,40 +28,59 @@
 --    a list of dicts. As TEXT it would load a stringified Python repr and be
 --    unqueryable.
 --
--- ONE THING TO CHECK BEFORE THE FIRST LOAD. The loader refuses to publish a
--- table whose declared key is null or duplicated. Keys chosen below are the
--- grain each builder groups on, but several group with dropna=False, so a null
--- component or facility is possible in real data where the fixture had none.
--- The load is a dry run first for exactly this reason.
+-- TYPES FOLLOW OBSERVED VALUES, NOT PANDAS DTYPES.
+-- ps3_v25_device_episode_fact.predicted_component_confidence is an object-dtype
+-- column holding python floats; keyed on the dtype it would have been TEXT and
+-- every dashboard query would have had to cast a confidence score.
 -- =====================================================================
 
--- COLUMNS WHOSE TYPE COULD NOT BE OBSERVED (all-null in the reference run).
--- pandas types an all-NaN column float64 whatever it will really hold, so each
--- of these is declared TEXT, which accepts anything, and must be confirmed
--- against the ps3_schema_dump output from the real run before this is applied:
---   ps3_v25_device_episode_fact.bus_id
+-- ALL-NULL IN THE REAL RUN -- TYPE CHOSEN BY INTENT, NOT OBSERVED.
+-- pandas types an all-NaN column float64 whatever it will really hold, so
+-- each of these is declared TEXT, which accepts any future value. They are
+-- all-null because the label/taxonomy exports they depend on are not yet
+-- configured, not because the column is dead:
 --   ps3_v25_device_episode_fact.linked_severity
 --   ps3_v25_device_episode_fact.linked_component
 --   ps3_v25_device_episode_fact.linked_root_cause
 --   ps3_v25_device_episode_fact.linked_root_cause_domain
---   ps3_v25_device_episode_fact.linked_confidence
 --   ps3_v25_device_episode_fact.linked_source
 --   ps3_v25_device_episode_fact.link_method
+--   ps3_v25_device_episode_fact.observed_severity_label
 --   ps3_v25_device_episode_fact.confirmed_root_cause_label
 --   ps3_v25_device_episode_fact.confirmed_root_cause_domain
---   ps3_v25_device_episode_fact.root_cause_confidence
 --   ps3_v25_device_episode_fact.root_cause_evidence_source
 --   ps3_v25_device_episode_fact.root_cause_link_method
 --   ps3_v25_device_episode_fact.candidate_root_cause_raw
+--   ps3_v25_device_summary.latest_dashboard_severity
 --   ps3_v25_device_summary.latest_dashboard_root_cause_domain
 --   ps3_v25_prediction_explainability.device_id
 --   ps3_v25_prediction_explainability.mars_device_category
 --   ps3_v25_prediction_explainability.predicted_label
---   ps3_v25_prediction_explainability.shap_value
---   ps3_v25_prediction_explainability.abs_shap_value
 --   ps3_v25_root_cause_evidence_audit.reference
+--
+-- TYPED BY INTENT, READ OFF THE BUILDER SOURCE RATHER THAN THE RUN:
+--   ps3_v25_device_day.event_date -> DATE (observed dtype datetime64[ns], null_rate 0.0)
+--   ps3_v25_device_episode_fact.linked_confidence -> DOUBLE PRECISION (observed dtype object, null_rate 1.0)
+--   ps3_v25_device_episode_fact.root_cause_confidence -> DOUBLE PRECISION (observed dtype object, null_rate 1.0)
+--   ps3_v25_prediction_explainability.shap_value -> DOUBLE PRECISION (observed dtype float64, null_rate 1.0)
+--   ps3_v25_prediction_explainability.abs_shap_value -> DOUBLE PRECISION (observed dtype float64, null_rate 1.0)
+--
+-- KNOWN SHAPE ISSUES IN THE SOURCE RUN (recorded here, fixed in the notebook,
+-- not worked around in SQL):
+--   ps3_v25_device_episode_fact._episode_row_id is an internal scratch column
+--     that leaked past the publish boundary. Harmless to load; drop it from
+--     the notebook's publish list rather than from this DDL, so the table and
+--     the parquet keep the same shape.
+--   ps3_v25_device_day has 54,239 rows -- exactly the episode count -- and
+--     oos_episode_starts is 1 on every row. That is one row per episode, not
+--     one row per device-day. The declared key still holds only if no device
+--     has two episodes in a day; see the key report.
+--   ps3_v25_serial_reliability.component_serial_nbr has 2 distinct values over
+--     2,762 rows: the serial is almost entirely the unattributed bucket. The
+--     composite key holds because device_id carries the grain.
+--
 
--- ps3_v25_causal_balance: 36 rows in the reference run, 4 columns, PK (city_id, treatment_component, covariate)
+-- ps3_v25_causal_balance: 54 rows in run 6a7002b0, 4 columns, PK (city_id, treatment_component, covariate)
 CREATE TABLE IF NOT EXISTS ps3_v25_causal_balance (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -74,7 +91,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_causal_balance (
   , PRIMARY KEY ("city_id", "treatment_component", "covariate")
 );
 
--- ps3_v25_causal_effects: 4 rows in the reference run, 22 columns, PK (city_id, treatment_component, outcome)
+-- ps3_v25_causal_effects: 6 rows in run 6a7002b0, 22 columns, PK (city_id, treatment_component, outcome)
 CREATE TABLE IF NOT EXISTS ps3_v25_causal_effects (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -103,7 +120,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_causal_effects (
   , PRIMARY KEY ("city_id", "treatment_component", "outcome")
 );
 
--- ps3_v25_commanded_split: 3 rows in the reference run, 5 columns, PK (city_id, mars_device_category)
+-- ps3_v25_commanded_split: 3 rows in run 6a7002b0, 5 columns, PK (city_id, mars_device_category)
 CREATE TABLE IF NOT EXISTS ps3_v25_commanded_split (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -115,7 +132,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_commanded_split (
   , PRIMARY KEY ("city_id", "mars_device_category")
 );
 
--- ps3_v25_component_summary: 24 rows in the reference run, 7 columns, PK (city_id, mars_device_category, component_attribution, dashboard_root_cause_domain, dashboard_severity)
+-- ps3_v25_component_summary: 14 rows in run 6a7002b0, 7 columns, PK (city_id, mars_device_category, component_attribution, dashboard_root_cause_domain, dashboard_severity)
 CREATE TABLE IF NOT EXISTS ps3_v25_component_summary (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -129,13 +146,13 @@ CREATE TABLE IF NOT EXISTS ps3_v25_component_summary (
   , PRIMARY KEY ("city_id", "mars_device_category", "component_attribution", "dashboard_root_cause_domain", "dashboard_severity")
 );
 
--- ps3_v25_device_day: 14,720 rows in the reference run, 11 columns, PK (city_id, device_id, mars_device_category, event_date)
+-- ps3_v25_device_day: 54,239 rows in run 6a7002b0, 11 columns, PK (city_id, device_id, mars_device_category, event_date)
 CREATE TABLE IF NOT EXISTS ps3_v25_device_day (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
   , "device_id" TEXT NOT NULL
   , "mars_device_category" TEXT NOT NULL
-  , "event_date" TIMESTAMP NOT NULL
+  , "event_date" DATE NOT NULL
   , "oos_episode_starts" BIGINT
   , "oos_set_events" BIGINT
   , "set_signal_span_minutes" DOUBLE PRECISION
@@ -148,7 +165,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_device_day (
 );
 CREATE INDEX IF NOT EXISTS idx_ps3_v25_device_day_event_date_mars_device_category ON ps3_v25_device_day ("city_id", "event_date", "mars_device_category");
 
--- ps3_v25_device_episode_fact: 14,720 rows in the reference run, 78 columns, PK (city_id, oos_episode_id)
+-- ps3_v25_device_episode_fact: 54,239 rows in run 6a7002b0, 78 columns, PK (city_id, oos_episode_id)
 CREATE TABLE IF NOT EXISTS ps3_v25_device_episode_fact (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -184,12 +201,11 @@ CREATE TABLE IF NOT EXISTS ps3_v25_device_episode_fact (
   , "events_clear_clamped" DOUBLE PRECISION
   , "episode_scope_status" TEXT
   , "episode_scope_start" TIMESTAMP
-  , "_episode_row_id" BIGINT
   , "linked_severity" TEXT
   , "linked_component" TEXT
   , "linked_root_cause" TEXT
   , "linked_root_cause_domain" TEXT
-  , "linked_confidence" TEXT
+  , "linked_confidence" DOUBLE PRECISION
   , "linked_source" TEXT
   , "link_method" TEXT
   , "observed_severity_label" TEXT
@@ -198,7 +214,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_device_episode_fact (
   , "component_attribution_status" TEXT
   , "confirmed_root_cause_label" TEXT
   , "confirmed_root_cause_domain" TEXT
-  , "root_cause_confidence" TEXT
+  , "root_cause_confidence" DOUBLE PRECISION
   , "root_cause_evidence_source" TEXT
   , "root_cause_link_method" TEXT
   , "root_cause_status" TEXT
@@ -214,9 +230,9 @@ CREATE TABLE IF NOT EXISTS ps3_v25_device_episode_fact (
   , "prior_episodes_90d" DOUBLE PRECISION
   , "days_since_prior_episode" DOUBLE PRECISION
   , "device_oos_recency_status" TEXT
-  , "predicted_severity" TEXT
-  , "predicted_severity_confidence" TEXT
-  , "severity_model_status" TEXT
+  , "predicted_component" TEXT
+  , "predicted_component_confidence" DOUBLE PRECISION
+  , "component_model_status" TEXT
   , "run_id" TEXT
   , "computed_at_utc" TEXT
   , "data_as_of_date" TEXT
@@ -237,7 +253,7 @@ CREATE INDEX IF NOT EXISTS idx_ps3_v25_device_episode_fact_mars_device_category_
 CREATE INDEX IF NOT EXISTS idx_ps3_v25_device_episode_fact_facility_id ON ps3_v25_device_episode_fact ("city_id", "facility_id");
 CREATE INDEX IF NOT EXISTS idx_ps3_v25_device_episode_fact_component_serial_nbr ON ps3_v25_device_episode_fact ("city_id", "component_serial_nbr");
 
--- ps3_v25_device_reliability: 1,050 rows in the reference run, 16 columns, PK (city_id, device_id, mars_device_category)
+-- ps3_v25_device_reliability: 2,806 rows in run 6a7002b0, 16 columns, PK (city_id, device_id, mars_device_category)
 CREATE TABLE IF NOT EXISTS ps3_v25_device_reliability (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -261,7 +277,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_device_reliability (
 );
 CREATE INDEX IF NOT EXISTS idx_ps3_v25_device_reliability_mars_device_category_oos_episode_count ON ps3_v25_device_reliability ("city_id", "mars_device_category", "oos_episode_count");
 
--- ps3_v25_device_summary: 1,050 rows in the reference run, 9 columns, PK (city_id, device_id, mars_device_category)
+-- ps3_v25_device_summary: 2,806 rows in run 6a7002b0, 9 columns, PK (city_id, device_id, mars_device_category)
 CREATE TABLE IF NOT EXISTS ps3_v25_device_summary (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -277,7 +293,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_device_summary (
   , PRIMARY KEY ("city_id", "device_id", "mars_device_category")
 );
 
--- ps3_v25_facility_rollup: 45 rows in the reference run, 11 columns, PK (city_id, facility_id, mars_device_category)
+-- ps3_v25_facility_rollup: 366 rows in run 6a7002b0, 11 columns, PK (city_id, facility_id, mars_device_category)
 CREATE TABLE IF NOT EXISTS ps3_v25_facility_rollup (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -296,7 +312,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_facility_rollup (
 );
 CREATE INDEX IF NOT EXISTS idx_ps3_v25_facility_rollup_mars_device_category ON ps3_v25_facility_rollup ("city_id", "mars_device_category");
 
--- ps3_v25_label_maturity: 3 rows in the reference run, 8 columns, PK (city_id, mars_device_category)
+-- ps3_v25_label_maturity: 3 rows in run 6a7002b0, 8 columns, PK (city_id, mars_device_category)
 CREATE TABLE IF NOT EXISTS ps3_v25_label_maturity (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -311,7 +327,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_label_maturity (
   , PRIMARY KEY ("city_id", "mars_device_category")
 );
 
--- ps3_v25_model_feature_importance: 36 rows in the reference run, 5 columns, PK (city_id, target, model, feature, model_scope)
+-- ps3_v25_model_feature_importance: 12 rows in run 6a7002b0, 5 columns, PK (city_id, target, model, feature, model_scope)
 CREATE TABLE IF NOT EXISTS ps3_v25_model_feature_importance (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -323,7 +339,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_model_feature_importance (
   , PRIMARY KEY ("city_id", "target", "model", "feature", "model_scope")
 );
 
--- ps3_v25_model_scorecard: 14 rows in the reference run, 13 columns, PK (city_id, target, candidate_model, model_scope)
+-- ps3_v25_model_scorecard: 8 rows in run 6a7002b0, 13 columns, PK (city_id, target, candidate_model, model_scope)
 CREATE TABLE IF NOT EXISTS ps3_v25_model_scorecard (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -343,7 +359,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_model_scorecard (
   , PRIMARY KEY ("city_id", "target", "candidate_model", "model_scope")
 );
 
--- ps3_v25_oos_source_audit: 1 rows in the reference run, 12 columns, PK (city_id, source)
+-- ps3_v25_oos_source_audit: 1 rows in run 6a7002b0, 12 columns, PK (city_id, source)
 CREATE TABLE IF NOT EXISTS ps3_v25_oos_source_audit (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -362,7 +378,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_oos_source_audit (
   , PRIMARY KEY ("city_id", "source")
 );
 
--- ps3_v25_prediction_explainability: 3 rows in the reference run, 12 columns, PK (city_id, target, model_output, oos_episode_id, feature)
+-- ps3_v25_prediction_explainability: 3 rows in run 6a7002b0, 12 columns, PK (city_id, target, model_output, oos_episode_id, feature)
 CREATE TABLE IF NOT EXISTS ps3_v25_prediction_explainability (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -373,15 +389,15 @@ CREATE TABLE IF NOT EXISTS ps3_v25_prediction_explainability (
   , "mars_device_category" TEXT
   , "predicted_label" TEXT
   , "feature" TEXT NOT NULL
-  , "shap_value" TEXT
-  , "abs_shap_value" TEXT
+  , "shap_value" DOUBLE PRECISION
+  , "abs_shap_value" DOUBLE PRECISION
   , "explanation_status" TEXT
   , "explanation_note" TEXT
   , "model_scope" TEXT
   , PRIMARY KEY ("city_id", "target", "model_output", "oos_episode_id", "feature")
 );
 
--- ps3_v25_repeat_interval: 12 rows in the reference run, 11 columns, PK (city_id, component_attribution, mars_device_category)
+-- ps3_v25_repeat_interval: 14 rows in run 6a7002b0, 11 columns, PK (city_id, component_attribution, mars_device_category)
 CREATE TABLE IF NOT EXISTS ps3_v25_repeat_interval (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -399,7 +415,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_repeat_interval (
   , PRIMARY KEY ("city_id", "component_attribution", "mars_device_category")
 );
 
--- ps3_v25_root_cause_evidence_audit: 7 rows in the reference run, 5 columns, PK (city_id, source)
+-- ps3_v25_root_cause_evidence_audit: 7 rows in run 6a7002b0, 5 columns, PK (city_id, source)
 CREATE TABLE IF NOT EXISTS ps3_v25_root_cause_evidence_audit (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -411,7 +427,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_root_cause_evidence_audit (
   , PRIMARY KEY ("city_id", "source")
 );
 
--- ps3_v25_run_stage_audit: 8 rows in the reference run, 9 columns, PK (city_id, stage)
+-- ps3_v25_run_stage_audit: 8 rows in run 6a7002b0, 9 columns, PK (city_id, stage)
 CREATE TABLE IF NOT EXISTS ps3_v25_run_stage_audit (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -427,13 +443,12 @@ CREATE TABLE IF NOT EXISTS ps3_v25_run_stage_audit (
   , PRIMARY KEY ("city_id", "stage")
 );
 
--- ps3_v25_run_status: 19 rows in the reference run, 14 columns, PK (city_id, table_name)
+-- ps3_v25_run_status: 19 rows in run 6a7002b0, 14 columns, PK (city_id, table_name)
 CREATE TABLE IF NOT EXISTS ps3_v25_run_status (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
   , "run_id" TEXT
   , "revision" TEXT
-  , "computed_date" TEXT
   , "table_name" TEXT NOT NULL
   , "publish_status" TEXT
   , "rows" BIGINT
@@ -448,7 +463,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_run_status (
   , PRIMARY KEY ("city_id", "table_name")
 );
 
--- ps3_v25_serial_reliability: 5,063 rows in the reference run, 10 columns, PK (city_id, component_serial_nbr, device_id, mars_device_category)
+-- ps3_v25_serial_reliability: 2,762 rows in run 6a7002b0, 10 columns, PK (city_id, component_serial_nbr, device_id, mars_device_category)
 CREATE TABLE IF NOT EXISTS ps3_v25_serial_reliability (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -466,7 +481,7 @@ CREATE TABLE IF NOT EXISTS ps3_v25_serial_reliability (
 );
 CREATE INDEX IF NOT EXISTS idx_ps3_v25_serial_reliability_device_id ON ps3_v25_serial_reliability ("city_id", "device_id");
 
--- ps3_v25_source_column_profile: 7 rows in the reference run, 9 columns, PK (city_id, column)
+-- ps3_v25_source_column_profile: 7 rows in run 6a7002b0, 9 columns, PK (city_id, column)
 CREATE TABLE IF NOT EXISTS ps3_v25_source_column_profile (
     "city_id"        city_code NOT NULL REFERENCES cities(id)
   , "computed_date"  DATE
@@ -483,9 +498,9 @@ CREATE TABLE IF NOT EXISTS ps3_v25_source_column_profile (
 );
 
 -- ---------------------------------------------------------------------
--- The /ps3/status source. One row per table per run: if run_id or
--- computed_date disagree across the union, the dashboard is half-loaded and
--- this is the cheapest way to see it.
+-- The /ps3/status source. One row per table per run: if computed_date
+-- disagrees across the union, the dashboard is half-loaded and this is the
+-- cheapest way to see it.
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE VIEW v_ps3_v25_status AS
 SELECT 'ps3_v25_causal_balance' AS table_name, city_id, computed_date, COUNT(*) AS rows

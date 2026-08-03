@@ -79,6 +79,17 @@ _PS3V25 = {
         '"observed_severity_episode_count"',
         '"oos_episode_count" DESC', 500, 5000, None),
     # ps3_v25_device_episode_fact: 54,239 rows, 77 columns
+    # 1500, NOT 2000. Measured against the live API on 03-Aug-2026:
+    #   limit=1000 -> 3,033,966 bytes  200 OK
+    #   limit=1800 -> 5,461,360 bytes  200 OK
+    #   limit=2000 -> HTTP 500 in 2.8s (far too fast to be the 30s gateway
+    #                                   timeout -- this is Lambda's 6 MB
+    #                                   synchronous response cap)
+    # 3,034 bytes per row over 77 columns; 1500 lands at 4.5 MB.
+    # The headroom is not padding: 22 of those columns are all-null today and
+    # will carry real strings once the label and taxonomy exports are
+    # configured. The row gets WIDER, so a cap set flush against today's
+    # ceiling would start 500ing on the day root cause finally lands.
     "episodes": ("ps3_v25_device_episode_fact",
         '"oos_episode_id","device_id","mars_device_category","episode_start",'
         '"episode_last_signal","oos_set_event_count","first_oos_event_id",'
@@ -104,7 +115,7 @@ _PS3V25 = {
         '"right_censored_tail_days","chargeability_policy","shap_interpretation",'
         '"dashboard_root_cause_domain","dashboard_root_cause_status","dashboard_severity",'
         '"dashboard_severity_status"',
-        '"episode_start" DESC', 200, 2000, 'episode_start'),
+        '"episode_start" DESC', 200, 1500, 'episode_start'),
     # ps3_v25_root_cause_evidence_audit: 7 rows, 5 columns
     "evidence-audit": ("ps3_v25_root_cause_evidence_audit",
         '"source","status","reference","rows","detail"',

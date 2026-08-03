@@ -25,6 +25,7 @@ import { Badge, Card, Chip, Empty, Grid, Loading, Note, Panel, Section, Stat } f
 import PS1Overview from './PS1Overview';
 import PS2Overview from './PS2Overview';
 import PS4Overview from './PS4Overview';
+import PS3Overview from './PS3Overview';
 import Device360 from './Device360';
 import {
   CARD, INK, INK_2, INK_3, LINE, STATUS,
@@ -51,6 +52,12 @@ const OV_FEEDS = {
   ps2Trend:    () => getRows('/ps2/v25/oos-trend', { city: 'CHI', limit: 5000 }),
   ps2Label:    () => getRows('/ps2/v25/label-summary', { city: 'CHI' }),
   ps4Timeline: () => ps4api.timeline('CHI'),
+  //   PS3  /ps3/status + /ps3/v25/commanded-split. status carries the run id,
+  //        the computed date and the row totals in one call; commanded-split is
+  //        three rows and is the only per-fleet episode count that is a true
+  //        denominator rather than a capped browse list.
+  ps3Status:   () => getObj('/ps3/status', { city: 'CHI' }).then((o) => [o]),
+  ps3Split:    () => getRows('/ps3/v25/commanded-split', { city: 'CHI' }),
 };
 const OV_KEYS = Object.keys(OV_FEEDS);
 
@@ -206,6 +213,25 @@ function EstateOverview({ onOpen }) {
     ];
   }, [f.ps4Timeline.rows]);
 
+  const ps3 = useMemo(() => {
+    const st = (f.ps3Status.rows || [])[0];
+    const split = f.ps3Split.rows || [];
+    if (!st && !split.length) return null;
+    const epi = sumBy(split, 'oos_episodes');
+    const gate = split.find((r) => String(r.mars_device_category).toUpperCase() === 'GATE');
+    return [
+      { k: 'OOS episodes', v: compact(epi) },
+      { k: 'Fare gates share', v: gate && epi ? pct(num(gate.oos_episodes) / epi, 0) : '--' },
+      { k: 'Confirmed root cause', v: '0%', tone: 'warn' },
+      { k: 'Tables loaded', v: st ? `${st.tables}/${st.expected_tables}` : '--' },
+    ];
+  }, [f.ps3Status.rows, f.ps3Split.rows]);
+
+  const ps3AsOf = useMemo(() => {
+    const st = (f.ps3Status.rows || [])[0];
+    return st && st.computed_date ? dfmt(st.computed_date) : null;
+  }, [f.ps3Status.rows]);
+
   const ps1AsOf = useMemo(() => {
     const rows = f.ps1Stations.rows || [];
     let d = '';
@@ -277,10 +303,14 @@ function EstateOverview({ onOpen }) {
         />
 
         <PSCard
-          code="PS3" title="Root cause and severity" tone="wip"
-          what="Incident severity and component attribution from the Gold incident labels."
-          asOf={null}
-          note="Notebook under revision. The v2 screen is built once its outputs are published and loaded, the same way PS2 was."
+          code="PS3" title="Root cause and severity"
+          what="Which component an OOS episode is attributed to, and how soon that device comes back."
+          asOf={ps3AsOf}
+          loading={f.ps3Status.loading || f.ps3Status.idle}
+          error={f.ps3Status.error}
+          stats={ps3}
+          note="Severity and confirmed root cause are not available in this run -- all seven evidence sources report not_configured. The screen says so rather than showing empty panels."
+          onOpen={() => onOpen('ps3')}
         />
 
         <PSCard
@@ -297,7 +327,7 @@ function EstateOverview({ onOpen }) {
             ['PS1', 'live', 'Daily inference. Cross-wired daily tables plus the station roll-up.'],
             ['PS2', 'live', '20 tables, refreshed wholesale by the daily loader. No served model.'],
             ['PS4', 'live', 'Weekly anomaly scoring at device-week grain.'],
-            ['PS3', 'wip', 'Notebook being revised.'],
+            ['PS3', 'live', '20 tables from the V26 source-first run, refreshed wholesale by the v25 loader.'],
             ['PS5', 'wip', 'Notebook being revised.'],
           ].map(([k, s, d]) => (
             <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -320,7 +350,7 @@ const TABS = [
   { key: 'ps1', label: 'PS1 Failure' },
   { key: 'ps2', label: 'PS2 Cascading' },
   { key: 'ps4', label: 'PS4 Anomaly' },
-  { key: 'ps3', label: 'PS3 Root cause', wip: true },
+  { key: 'ps3', label: 'PS3 Root cause' },
   { key: 'ps5', label: 'PS5 Remaining life', wip: true },
   { key: 'device', label: 'Device 360' },
 ];
@@ -368,12 +398,7 @@ export default function V2Shell({ city = 'CHI' }) {
       {tab === 'ps2' && <PS2Overview city={city} />}
       {tab === 'ps4' && <PS4Overview city={city} />}
       {tab === 'device' && <Device360 city={city} />}
-      {tab === 'ps3' && (
-        <WipPanel
-          title="PS3 - root cause and severity"
-          body="The PS3 notebook is being revised. Its outputs are not yet published to the production prefix, so nothing is loaded into Aurora and there is nothing honest to show here. The screen gets built the same way PS2's did: run, read the real manifests, write the schema against them, then the routes, then the tab."
-        />
-      )}
+      {tab === 'ps3' && <PS3Overview city={city} />}
       {tab === 'ps5' && (
         <WipPanel
           title="PS5 - remaining useful life"

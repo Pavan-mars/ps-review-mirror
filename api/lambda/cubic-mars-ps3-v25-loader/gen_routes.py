@@ -40,7 +40,7 @@ HIDE = {"_episode_row_id", "city_id", "computed_date"}
 # wants a device's whole history pages it with ?device=&limit=&offset=.
 ROUTES = {
     # -- the grain ------------------------------------------------------
-    "episodes":      ("ps3_device_episode_fact", '"episode_start" DESC', 200, 2000, "episode_start"),
+    "episodes":      ("ps3_device_episode_fact", '"episode_start" DESC', 200, 1500, "episode_start"),
     "device-day":    ("ps3_device_day",          '"event_date" DESC, "device_id"', 500, 5000, "event_date"),
     # -- device and asset rollups ---------------------------------------
     "device-summary":     ("ps3_device_summary",      '"oos_episode_count" DESC', 500, 5000, None),
@@ -67,6 +67,26 @@ ROUTES = {
     "column-profile":     ("ps3_source_column_profile", '"column"', 50, 200, None),
 }
 
+# Per-metric notes emitted INTO the generated block. A rationale that lives
+# only in the generator is a rationale the next reader of handler.py never
+# sees -- and the max limit below is the kind of number that looks arbitrary
+# and gets "tidied up" back to a round 2000.
+NOTES = {
+    "episodes": [
+        "1500, NOT 2000. Measured against the live API on 03-Aug-2026:",
+        "  limit=1000 -> 3,033,966 bytes  200 OK",
+        "  limit=1800 -> 5,461,360 bytes  200 OK",
+        "  limit=2000 -> HTTP 500 in 2.8s (far too fast to be the 30s gateway",
+        "                                  timeout -- this is Lambda's 6 MB",
+        "                                  synchronous response cap)",
+        "3,034 bytes per row over 77 columns; 1500 lands at 4.5 MB.",
+        "The headroom is not padding: 22 of those columns are all-null today and",
+        "will carry real strings once the label and taxonomy exports are",
+        "configured. The row gets WIDER, so a cap set flush against today's",
+        "ceiling would start 500ing on the day root cause finally lands.",
+    ],
+}
+
 assert set(ROUTES[k][0] for k in ROUTES) == set(DUMP), (
     "route table and dump disagree: "
     f"{set(DUMP) ^ set(ROUTES[k][0] for k in ROUTES)}")
@@ -81,6 +101,8 @@ for slug in sorted(ROUTES):
     sel = ",".join(f'"{c["name"]}"' for c in cols)
     tgt = "ps3_v25_" + table[len("ps3_"):]
     lines.append(f'    # {tgt}: {spec["rows"]:,} rows, {len(cols)} columns')
+    for n in NOTES.get(slug, []):
+        lines.append(f"    # {n}")
     lines.append(f'    "{slug}": ("{tgt}",')
     # wrap the select list so no source line runs past 100 chars
     buf = ""

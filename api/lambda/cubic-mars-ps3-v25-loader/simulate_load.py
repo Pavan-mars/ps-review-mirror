@@ -3,6 +3,9 @@ PostgreSQL 16, using pg8000 (the loader's own driver) and rows carrying the
 exact python types pyarrow's to_pylist() yields for each column in the V26
 schema dump.
 
+Teardown is an explicit DROP, not a ROLLBACK: the handler issues its own
+COMMIT, which commits any transaction this script opened around it.
+
 S3 and Secrets Manager are stubbed. Everything else -- survey/choose_run,
 target_columns, json_columns, pk_columns, find_pk_collapse, the shaping loop,
 the chunk sizing and the INSERT itself -- is the deployed code, imported, not
@@ -20,6 +23,26 @@ sys.modules["boto3"] = _fake
 
 sys.path.insert(0, "/tmp/scratch/ps3/loader")
 import handler  # noqa: E402
+
+def reset_ps3_v25(c):
+    """Drop every ps3_v25_ object. Called BEFORE and AFTER, deliberately.
+
+    The first version of this harness wrapped everything in one BEGIN and ended
+    with ROLLBACK, and printed "the scratch database is unchanged". That was
+    false: handler.lambda_handler() issues its own COMMIT, which committed the
+    OUTER transaction -- DDL and all -- and the closing ROLLBACK was a no-op
+    against an already-committed transaction. The run itself was valid; the
+    cleanup claim was not. An explicit DROP cannot be defeated that way.
+    """
+    c.run("DROP VIEW IF EXISTS v_ps3_v25_status")
+    for t in ("causal_balance","causal_effects","commanded_split","component_summary",
+              "device_day","device_episode_fact","device_reliability","device_summary",
+              "facility_rollup","label_maturity","model_feature_importance",
+              "model_scorecard","oos_source_audit","prediction_explainability",
+              "repeat_interval","root_cause_evidence_audit","run_stage_audit",
+              "run_status","serial_reliability","source_column_profile"):
+        c.run(f"DROP TABLE IF EXISTS ps3_v25_{t} CASCADE")
+
 
 DUMP = json.load(open("/tmp/ps3_schema_real.json"))
 CDATE, RUN_ID, CITY = "2026-04-11", "6a7002b0-a0fc-41f8-bb0f-1ad5a5358edf", "CHI"
@@ -58,8 +81,7 @@ def main():
     conn = __import__("pg8000.native", fromlist=["native"]).Connection(
         user="postgres", unix_sock="/tmp/.s.PGSQL.5442", database="appdb")
 
-    # sql/45 into a transaction we throw away, so this leaves nothing behind.
-    conn.run("BEGIN")
+    reset_ps3_v25(conn)          # in case a previous run died mid-way
     ddl = open("/tmp/scratch/ps3/45_ps3_v25.sql").read()
     for stmt in [s.strip() for s in ddl.split(";\n") if s.strip()]:
         if stmt.lstrip().startswith("--") and "CREATE" not in stmt:
@@ -131,9 +153,11 @@ def main():
                   "ORDER BY 1 LIMIT 1")[0][0]
     print(f"  timestamp round trip: {type(ts).__name__} = {ts}")
 
-    conn.run("ROLLBACK")
+    reset_ps3_v25(conn)
+    left = conn.run("SELECT count(*) FROM information_schema.tables "
+                    "WHERE table_name LIKE 'ps3_v25_%'")[0][0]
     print()
-    print("rolled back -- the scratch database is unchanged")
+    print(f"torn down -- ps3_v25_ objects remaining: {left}")
     return out
 
 

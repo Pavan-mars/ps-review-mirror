@@ -538,3 +538,77 @@ Unrelated to provenance, and true of a production run too:
 `ps3_v25_prediction_explainability` holds **3 rows** across 2,806 devices.
 Per-episode explanations will be blank for effectively the whole estate.
 
+### 10.8 PS2 city-prefix migration — COMPLETE (08-Aug-2026)
+
+Done and verified end to end. PS2 now reads `chicago/ps2_outputs`.
+
+| Step | Result |
+|---|---|
+| Copy `ps2_outputs` → `chicago/ps2_outputs` | **709 objects, 16,397,197 bytes** — exact match to source |
+| IAM (`cubic-mars-ps2-rds-loader-role-dev`) | `chicago/ps2_outputs/*` added on both buckets; originals retained |
+| Live `PS2_PREFIX` | `chicago/ps2_outputs` |
+| Dry run | 47 tables, **294,749 rows, 0 refused, 0 errors, 0 skipped** |
+
+**PS2's IAM differs from PS3's and fails differently.** PS3 fenced `ListBucket`
+with an `s3:prefix` condition, so it failed instantly at `survey()`. PS2 grants
+`ListBucket` on the bare bucket ARNs with **no condition**; only `GetObject` is
+path-scoped. So a PS2 migration lists the new prefix happily and fails later, at
+first read. Do not assume one loader's failure mode predicts another's — read
+each policy.
+
+PS2's unconditioned `ListBucket` on two whole buckets is looser than PS3's and
+should be tightened, but **not** as part of a migration: adding a prefix
+condition to a role whose full access pattern has not been traced is how a
+loader breaks unattended.
+
+**Still open — the notebook has NOT been repointed.** The loader reads
+`chicago/ps2_outputs`; the notebook still writes `ps2_outputs`. Harmless while
+nobody runs PS2, but the next run lands where the loader no longer looks and the
+dashboard freezes at the copied snapshot **with no error** — just a
+`computed_date` that stops moving. Set before the next run:
+
+```
+PS2_PRODUCTION_EXPORT_PREFIX = chicago/ps2_outputs
+```
+
+The notebook guard survives it: `EXPORT_PREFIX` is compared against
+`PRODUCTION_EXPORT_PREFIX`, both from environment, so they stay equal.
+
+**PS2 is on an ENABLED daily rule (07:10 UTC)** — unlike PS3, which has none. A
+half-finished PS2 repoint runs unattended; a half-finished PS3 one does not.
+Never leave PS2 mid-migration overnight.
+
+### 10.9 Five PS2 audit outputs have no Aurora table
+
+Surfaced by the migration dry run; **pre-existing, not caused by it.**
+
+| S3 prefix | Rows |
+|---|---|
+| `ps2_v25_category_profile_audit` | 5 |
+| `ps2_v25_failure_definition_alignment_audit` | 4 |
+| `ps2_v25_failure_label_summary_audit` | 4 |
+| `ps2_v25_ps1_label_parity_audit` | 3 |
+| `ps2_v25_ps1_model_performance_audit` | 4 |
+
+Twenty rows carrying `quality_status`, `run_disposition`, `parity_rate`,
+`pr_auc`, `recall`, `brier_score`, `label_positive_rate` — the run-quality and
+PS1-parity evidence. It is written to S3 every run and never reaches the
+database, so nothing can query how the labels were validated. Worth a table pair
+after go-live.
+
+(`_runs`, `charts` and `ps2_v2_run_quality` also report `no_target` and are
+expected — control prefixes and empty.)
+
+### 10.10 Two AWS CLI calls that replace rather than update
+
+Both bit during this migration:
+
+- `aws lambda update-function-configuration --environment` — replaces the whole
+  environment map.
+- `aws iam put-role-policy` — replaces the named inline policy entirely.
+
+Always send a complete document and back up the live one first. And **derive the
+value inside the command** rather than depending on a file written earlier: a
+file saved from `--query 'Environment.Variables'` has no `Variables` wrapper and
+is rejected, while a malformed-but-valid document would apply silently.
+

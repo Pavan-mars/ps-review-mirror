@@ -1,7 +1,9 @@
 {
   "family": "cubic-mars-ps2-dashboard",
   "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
   "cpu": "256",
   "memory": "512",
   "executionRoleArn": "REPLACE_WITH_ecsTaskExecutionRole_ARN",
@@ -10,10 +12,18 @@
     {
       "name": "dashboard",
       "image": "REPLACE_WITH_ECR_IMAGE_URI:TAG",
-      "portMappings": [{ "containerPort": 8080, "protocol": "tcp" }],
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
       "essential": true,
       "healthCheck": {
-        "command": ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"],
+        "command": [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:8080/healthz || exit 1"
+        ],
         "interval": 15,
         "timeout": 3,
         "retries": 3,
@@ -27,7 +37,13 @@
           "awslogs-stream-prefix": "dashboard",
           "awslogs-create-group": "true"
         }
-      }
+      },
+      "environment": [
+        {
+          "name": "API_BASE_URL",
+          "value": "https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com"
+        }
+      ]
     }
   ]
 }

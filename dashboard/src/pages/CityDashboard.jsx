@@ -13,7 +13,6 @@ import { CITIES, TOC_COMPANIES } from '../data/mockData';
 import CityOverviewTab from '../components/tabs/CityOverviewTab';
 import PS1FailurePredictionTab from '../components/tabs/PS1FailurePredictionTab';
 import PS2CascadingFailureTab from '../components/tabs/PS2CascadingFailureTab';
-import PS3RootCauseTab from '../components/tabs/PS3RootCauseTab';
 import PS4AnomalyDetectionTab from '../components/tabs/PS4AnomalyDetectionTab';
 import PS5SLAReliabilityTab from '../components/tabs/PS5SLAReliabilityTab';
 
@@ -22,7 +21,29 @@ const TABS = [
   { id: 'overview',   label: 'Overview',            Component: CityOverviewTab },
   { id: 'ps1',        label: 'Failure Prediction',   Component: PS1FailurePredictionTab },
   { id: 'ps2',        label: 'Cascading Failure',    Component: PS2CascadingFailureTab },
-  { id: 'ps3',        label: 'Failure Severity',      Component: PS3RootCauseTab },
+  // PS3 RETIRED FROM THIS ROUTER, 04-Aug-2026. PK's call.
+  //
+  // Two reasons, and the second is the one that matters now:
+  //
+  //  1. It is superseded. PS3RootCauseTab reads /ps3/device-predictions,
+  //     which is a CAPPED browse list -- 300 rows by default against a run
+  //     covering thousands of devices -- and presents it as the fleet. The
+  //     v2 PS3 tab at /v2 takes every total from a rollup instead.
+  //  2. IT IS MISLABELLED. This entry called it 'Failure Severity', and
+  //     this run publishes NO severity: severity_shippable is false on
+  //     every row, because no source column survived the non-triviality
+  //     gate. A tab named for a thing the data does not contain is the
+  //     worst kind of wrong -- it is wrong in the navigation, before
+  //     anyone has read a number.
+  //
+  // NOT deleted, and the API route is NOT removed. The component file is
+  // left in place unimported, and /ps3/device-predictions still serves --
+  // it now returns the CURRENT run (real components across all three
+  // fleets, verified live 04-Aug), not the superseded 26-Jul one, and
+  // ps3_device_predictions is the same table /ps1/device-360 reads for its
+  // PS3 block. Removing the route would take Device 360 down with it.
+  //
+  // Restoring is putting this row and its import back.
   { id: 'ps4',        label: 'Anomaly Detection',     Component: PS4AnomalyDetectionTab },
   { id: 'ps5',        label: 'SLA & Reliability',     Component: PS5SLAReliabilityTab },
 ];

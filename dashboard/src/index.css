@@ -129,3 +129,59 @@ body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color
 .sidebar-footer { padding: 16px 20px; border-top: 1px solid rgba(255,255,255,0.08); }
 .sidebar-footer-title { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.4); display: block; }
 .sidebar-footer-version { font-size: 10px; color: rgba(255,255,255,0.25); display: block; margin-top: 3px; }
+
+
+/* =====================================================================
+   WHITE, COLLAPSIBLE SIDEBAR.                            04-Aug-2026
+   The dark rail was the heaviest object on a light dashboard, so the eye
+   landed on navigation before data. White with a hairline puts the weight
+   back on the numbers.
+
+   Collapsing is width-only -- the icons stay, the labels go. A rail that
+   disappears entirely leaves the reader with no way back, which is worse
+   than one that is merely narrow.
+   ===================================================================== */
+.sidebar {
+  background: #FFFFFF;
+  color: #374151;
+  border-right: 1px solid #E5E7EB;
+  transition: width .18s cubic-bezier(.4,0,.2,1);
+}
+.sidebar-logo   { border-bottom: 1px solid #E5E7EB; }
+.sidebar-footer { border-top: 1px solid #E5E7EB; }
+.sidebar-logo h1 { color: #111827; }
+.sidebar-subtitle, .sidebar-footer-title, .sidebar-footer-version { color: #6B7280; }
+.nav-label { color: #9CA3AF; }
+.nav-item  { color: #374151; }
+.nav-item:hover  { background: #F3F4F6; color: #111827; }
+.nav-item.active { background: #EEF2FF; color: #4338CA; font-weight: 650; }
+
+/* collapsed state */
+.app-layout.rail .sidebar      { width: 68px; }
+.app-layout.rail .main-content { margin-left: 68px; }
+.app-layout.rail .sidebar .nav-item span,
+.app-layout.rail .sidebar .nav-label,
+.app-layout.rail .sidebar .sidebar-subtitle,
+.app-layout.rail .sidebar .sidebar-footer,
+.app-layout.rail .sidebar .nav-badge { display: none; }
+/* In the rail the wordmark has nowhere to go, so it wraps into nonsense.
+   Hide it and let the toggle own the header strip -- the product name is
+   not what a reader needs from a 68px column. */
+.app-layout.rail .sidebar .sidebar-logo h1 { display: none; }
+.app-layout.rail .sidebar .sidebar-logo    { padding: 14px 0; min-height: 56px; }
+.app-layout.rail .rail-toggle              { right: 21px; top: 15px; }
+.app-layout.rail .sidebar .nav-item { justify-content: center; padding: 10px 0; }
+.main-content { transition: margin-left .18s cubic-bezier(.4,0,.2,1); }
+
+.rail-toggle {
+  /* INSIDE the rail, not straddling its edge. Hanging off the right put it
+     underneath the tab bar, where it was unclickable -- a control the user
+     cannot reach is worse than no control. */
+  position: absolute; top: 18px; right: 14px; width: 26px; height: 26px;
+  border-radius: 50%; border: 1px solid #E5E7EB; background: #FFFFFF;
+  color: #6B7280; cursor: pointer; display: flex; align-items: center;
+  justify-content: center; box-shadow: 0 1px 3px rgba(15,23,42,.10); z-index: 60;
+  font-size: 13px; line-height: 1;
+}
+.rail-toggle:hover { color: #111827; border-color: #C7CBD3; }
+.sidebar { position: fixed; }

@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { BarChart3, Settings, LogOut } from 'lucide-react';
+import { BarChart3, Settings, LogOut, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useAuth } from '../../auth/AuthContext';
 import { ROLE_LABELS } from '../../auth/mockAuthAPI';
 
@@ -21,8 +21,21 @@ const Sidebar = () => {
     navigate('/login');
   };
 
+  // Collapse is remembered for the session: a reader who narrows the rail
+  // wants it narrow on the next screen too, not just this one.
+  const [rail, setRail] = useState(false);
+  useEffect(() => {
+    const el = document.querySelector('.app-layout');
+    if (el) el.classList.toggle('rail', rail);
+  }, [rail]);
+
   return (
     <aside className="sidebar">
+      <button type="button" className="rail-toggle" onClick={() => setRail((v) => !v)}
+              aria-label={rail ? 'Expand navigation' : 'Collapse navigation'}
+              title={rail ? 'Expand' : 'Collapse'}>
+        {rail ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+      </button>
       <div className="sidebar-logo">
         <h1>CUBIC MARS</h1>
         <span className="sidebar-subtitle">Predictive Maintenance Platform</span>

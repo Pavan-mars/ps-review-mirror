@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../../runtimeConfig';
 // ============================================================================
 // PS4WeeklyV3.jsx  ->  src/components/tabs/PS4WeeklyV3.jsx
 //
@@ -35,7 +36,7 @@ import {
   Tooltip, Legend, ResponsiveContainer, ScatterChart, Scatter, ZAxis,
 } from 'recharts';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL
+const API_BASE = (API_BASE_URL
   || 'https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com').replace(/\/$/, '');
 
 // Fixed order. GATE, TVM, VALIDATOR always take the same hue regardless of

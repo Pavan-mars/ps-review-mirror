@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../../runtimeConfig';
 import React, { useState, useMemo, useEffect, useContext, useCallback } from 'react';
 import FilterContext from '../../context/FilterContext';
 import {
@@ -52,7 +53,7 @@ import PS3RootCauseV2 from './PS3RootCauseV2';
 // when a head missed its macro-F1 floor. Nothing here re-derives a masked value.
 // ============================================================================
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL
+const API_BASE = (API_BASE_URL
   || 'https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com').replace(/\/$/, '');
 
 // 27-Jul-2026 (PK, item 5). Causation for PS3.

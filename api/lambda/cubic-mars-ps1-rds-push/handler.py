@@ -248,15 +248,70 @@ DELETE = {
     "ps1_serial_predictions":  "city_id = :c AND run_id = :r",
 }
 
+# ---------------------------------------------------------------------------
+# WHY ps1_failure_predictions NEEDS A NARROWER DELETE THAN THE OTHER TWO
+# ---------------------------------------------------------------------------
+# The other two tables delete on run_id, which is unique per run, so a run can
+# only ever remove its own rows. ps1_failure_predictions deletes on
+# (city_id, computed_date) -- which is not run-scoped and not category-scoped.
+#
+# The three PS1 notebooks score ONE device category each. Run gates and then
+# TVMs against the same computed_date and the second run's DELETE removes the
+# first run's rows before inserting its own. The dashboard then shows one fleet
+# where it should show three, and nothing errors -- the load reports success,
+# because from the loader's point of view it did exactly what it was told.
+#
+# This is the normal operating pattern, not an edge case: the categories are
+# always scored separately.
+#
+# THE FIX. Delete only the categories present in THIS payload, one statement
+# per category. Anything already in the table for another category on the same
+# date is left alone.
+#
+# NULL CATEGORY. A row with no device_category cannot be scoped -- there is
+# nothing to match on. Rather than guess, those payloads fall back to the old
+# date-wide delete and say so in the warning list, so the behaviour is visible
+# rather than silent.
+DELETE_BY_CATEGORY = {
+    "ps1_failure_predictions":
+        "city_id = :c AND computed_date = :d AND device_category = :cat",
+}
+
 
 def write_rows(conn, rows_by_target, city, run_id, computed_date, source_rows, gold_s3, warn, batch=500):
     loaded = {}
     for t in ORDER:
         rows = rows_by_target.get(t, [])
-        conn.run(f"DELETE FROM {t} WHERE {DELETE[t]}", c=city, r=run_id, d=computed_date)
+
+        # An empty payload used to still run the DELETE, so a failed or empty
+        # read silently emptied the table for that date and reported success.
+        # A load with nothing to load should change nothing.
         if not rows:
             loaded[t] = 0
+            warn.append(f"{t}: payload empty - nothing deleted, nothing inserted")
             continue
+
+        scoped = DELETE_BY_CATEGORY.get(t)
+        if scoped:
+            cats = sorted({r.get("device_category") for r in rows
+                           if r.get("device_category") is not None})
+            has_null = any(r.get("device_category") is None for r in rows)
+            if cats and not has_null:
+                for one_cat in cats:
+                    conn.run(f"DELETE FROM {t} WHERE {scoped}",
+                             c=city, d=computed_date, cat=one_cat)
+                log.info("[load] %s <- delete scoped to %s", t, ", ".join(cats))
+            else:
+                conn.run(f"DELETE FROM {t} WHERE {DELETE[t]}",
+                         c=city, r=run_id, d=computed_date)
+                warn.append(
+                    f"{t}: device_category is NULL on at least one row, so the delete "
+                    f"could not be scoped and fell back to clearing the whole of "
+                    f"{computed_date} for {city}. Other categories loaded for that date "
+                    f"have been removed.")
+        else:
+            conn.run(f"DELETE FROM {t} WHERE {DELETE[t]}",
+                     c=city, r=run_id, d=computed_date)
         cols = list(rows[0].keys()); collist = ", ".join(cols)
         for i in range(0, len(rows), batch):
             chunk = rows[i:i + batch]

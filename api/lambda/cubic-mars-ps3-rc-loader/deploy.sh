@@ -68,17 +68,64 @@ du -h fn.zip | cut -f1 | sed 's/^/   /'
 
 echo ">> [4/5] create/update Lambda (VPC)"
 ENVV="Variables={RDS_SECRET_ID=$SECRET_NAME,RDS_HOST=$RDS_HOST,ARTIFACT_BUCKET=$ARTIFACTS,PS3_RC_PREFIX=$RC_PREFIX,CITY_ID=CHI,PG_TIMEOUT=300}"
+
+# --- ADDITIVE ENVIRONMENT (08-Aug-2026) ------------------------------------
+# `--environment "Variables={...}"` REPLACES the function's entire environment
+# map. Any variable set outside this script -- a prefix override, a feature
+# flag, a tuning knob -- was therefore erased on the next deploy, silently.
+# The symptom surfaces days later as a loader reading the wrong prefix, or a
+# disabled code path switching itself back on.
+#
+# This block reads the live environment and merges the values below ON TOP of
+# it: this script wins for the keys it owns, every other key survives. On a
+# first create there is no live config and the merge is a no-op.
+#
+# The JSON file form is deliberate -- the Variables={k=v,...} shorthand cannot
+# express a value containing a comma or an equals sign.
+ENVFILE="$(mktemp /tmp/lambda-env-XXXXXX.json)"
+aws lambda get-function-configuration --function-name "$FN" \
+    --query 'Environment.Variables' --output json 2>/dev/null > "$ENVFILE.live" || true
+[ -s "$ENVFILE.live" ] || echo '{}' > "$ENVFILE.live"
+cat > "$ENVFILE.py" <<'PYMERGE'
+import json, sys
+live_path, desired, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    live = json.load(open(live_path))
+    if not isinstance(live, dict):
+        live = {}
+except Exception:
+    live = {}
+inner = desired.strip()
+if inner.startswith("Variables={") and inner.endswith("}"):
+    inner = inner[len("Variables={"):-1]
+new = {}
+for pair in inner.split(","):
+    if "=" in pair:
+        k, v = pair.split("=", 1)
+        if k.strip():
+            new[k.strip()] = v
+merged = dict(live)
+merged.update(new)
+kept = sorted(set(live) - set(new))
+if kept:
+    print("   preserved %d pre-existing env var(s): %s" % (len(kept), ", ".join(kept)))
+json.dump({"Variables": merged}, open(out_path, "w"))
+PYMERGE
+python3 "$ENVFILE.py" "$ENVFILE.live" "$ENVV" "$ENVFILE"
+ENVOPT="file://$ENVFILE"
+# ---------------------------------------------------------------------------
+
 SUBNET_CSV=$(echo $SUBNETS | tr ' ' ',')
 if aws lambda get-function --function-name "$FN" >/dev/null 2>&1; then
   aws lambda update-function-code --function-name "$FN" --zip-file fileb://fn.zip >/dev/null
   aws lambda wait function-updated --function-name "$FN"
   aws lambda update-function-configuration --function-name "$FN" --timeout 900 --memory-size 1024 \
-    --vpc-config "SubnetIds=$SUBNET_CSV,SecurityGroupIds=$SG" --environment "$ENVV" >/dev/null
+    --vpc-config "SubnetIds=$SUBNET_CSV,SecurityGroupIds=$SG" --environment "$ENVOPT" >/dev/null
 else
   aws lambda create-function --function-name "$FN" --runtime python3.12 \
     --handler handler.lambda_handler --role "$ROLE_ARN" --zip-file fileb://fn.zip \
     --timeout 900 --memory-size 1024 \
-    --vpc-config "SubnetIds=$SUBNET_CSV,SecurityGroupIds=$SG" --environment "$ENVV" >/dev/null
+    --vpc-config "SubnetIds=$SUBNET_CSV,SecurityGroupIds=$SG" --environment "$ENVOPT" >/dev/null
 fi
 aws lambda wait function-updated --function-name "$FN"
 echo "   Lambda ready"

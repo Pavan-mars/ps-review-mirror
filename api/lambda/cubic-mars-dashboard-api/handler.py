@@ -224,7 +224,17 @@ def migrate(_evt):
                # IF NOT EXISTS on two existing tables; no DROP, no ALTER
                # TYPE, and hardware_oos_minutes is left exactly as it was
                # so the published component-burden measure still resolves.
-               "sql/46_ps2_v254_union_minutes.sql"):
+               "sql/46_ps2_v254_union_minutes.sql",
+               "sql/47_ps3_latest_run_widen.sql",
+               # 04-Aug-2026. MUST run AFTER sql/36 -- it CREATE OR REPLACEs
+               # v_ps1_xw_device_state, which sql/36 creates, so that the state
+               # is read on the last EVALUABLE day rather than the last scored
+               # one. Appended at the end, which gives that ordering for free.
+               #
+               # This list is a TUPLE, not a glob. A new sql/NN file that is not
+               # named here is silently skipped and the deploy still reports
+               # success, which is how migration 47 nearly shipped as a no-op.
+               "sql/48_ps1_state_evaluable_day.sql"):
         path = os.path.join(here, fn)
         if not os.path.exists(path):
             results[fn] = {"skipped": "file not present"}; continue
@@ -504,11 +514,165 @@ def _safe_rows(sql, **kw):
     cannot be read is now an absent section, and the reason is logged rather
     than raised.
     """
+    # PARALLEL PATH HOOK. When a request is running under
+    # _device_360_parallel, results prefetched concurrently are served from
+    # here. A MISS IS NOT AN ERROR -- it falls straight through to the
+    # sequential query below, which is exactly today's behaviour.
+    _st = getattr(_D360_TL, "state", None)
+    if _st is not None:
+        _k = (sql, tuple(sorted(kw.items())))
+        if _k in _st["cache"]:
+            return _st["cache"].pop(_k)
+        _st["seen"].append((sql, dict(kw)))
+
     try:
         return rows(sql, **kw)
     except Exception as e:
         print("device_360 sub-query failed, section skipped: %s", str(e)[:200])
         return []
+
+
+# =====================================================================
+# PARALLEL DEVICE-360  (opt-in, reversible)                 06-Aug-2026
+#
+# THE MEASUREMENT THAT MOTIVATED THIS
+#   /ps1/device-360   1 concurrent  5.5s
+#                     2 concurrent 10.4s
+#                     4 concurrent 21.0s
+#   RDS during 6-way load: CPU 57%, ReadLatency 0.0, connections 7->14.
+#
+# So: the database was NOT saturated, NOT doing disk I/O, and NOT short of
+# connections. _device_360 simply issues 25 queries ONE AT A TIME on a single
+# cached connection -- 5.5s / 25 = ~220ms each. The wall clock is the sum of a
+# queue, not the cost of the work.
+#
+# HOW THIS WORKS -- _device_360 IS NOT MODIFIED.
+#   Rewriting 572 lines of interleaved section-assembly to hoist its queries
+#   would be a large diff over code whose failure modes are already documented
+#   in comments. Instead this adds a prefetch cache in front of _safe_rows:
+#
+#   1. LEARN. The first call in a container runs _device_360 exactly as it runs
+#      today, recording every (sql, params) it issues. Cost: one normal request.
+#   2. PLAN. Keep only the queries whose parameters were EXACTLY {c: city} or
+#      {c: city, d: device} -- i.e. those that depend on nothing the function
+#      computes mid-flight. 19 of the 23 qualify. The four that bind `pid` or
+#      `cat` (drivers, feature-importance, perf, coverage) are excluded and
+#      stay sequential, because their values are not known until `p` returns.
+#      NOTE the trap this avoids: one query binds d=cat, not d=dev. Matching on
+#      parameter NAMES alone would replay it with the wrong value. The plan
+#      matches on VALUES, so that query is correctly left out.
+#   3. REPLAY. Later calls fire the planned queries concurrently across a small
+#      connection pool, then run _device_360 unchanged -- which now finds most
+#      of its results already in the cache and returns them without a round trip.
+#
+# WHY IT IS SAFE
+#   - A cache MISS is not an error: _safe_rows falls through to the normal
+#     sequential path. Worst case is today's behaviour.
+#   - A prefetch query that raises is simply not cached -- same fallthrough.
+#   - The pool is separate from conn(); the sequential path is untouched.
+#   - Off by default. Enable per-request with ?parallel=1, or per-environment
+#     with D360_PARALLEL=1. Revert = unset the variable. No redeploy.
+# =====================================================================
+import threading, queue as _queue
+from concurrent.futures import ThreadPoolExecutor
+
+D360_PARALLEL_DEFAULT = os.environ.get("D360_PARALLEL", "0") == "1"
+D360_POOL_SIZE        = int(os.environ.get("D360_POOL_SIZE", "6"))
+
+_D360_PLAN  = None                 # [("cd"|"c", sql)] learned once per container
+_D360_LOCK  = threading.Lock()
+_D360_POOL  = None
+_D360_TL    = threading.local()    # per-request {cache, seen}
+
+
+def _d360_pool():
+    """A small pool, built once per container. Separate from conn() on purpose:
+    the sequential path keeps its own connection and its own reconnect logic."""
+    global _D360_POOL
+    with _D360_LOCK:
+        if _D360_POOL is None:
+            q = _queue.Queue()
+            c = _creds()
+            for _ in range(D360_POOL_SIZE):
+                q.put(pg8000.native.Connection(
+                    user=c["user"], password=c["password"], host=c["host"],
+                    port=c["port"], database=c["database"], ssl_context=True,
+                    timeout=_CONN_TIMEOUT))
+            _D360_POOL = q
+    return _D360_POOL
+
+
+def _pooled_rows(sql, **kw):
+    """rows() against a pooled connection. A dead socket is replaced rather than
+    returned to the pool -- the same lesson conn() learned on 28-Jul."""
+    pool = _d360_pool()
+    cn = pool.get()
+    try:
+        res = cn.run(sql, **kw)
+        cols = [d["name"] for d in cn.columns]
+        out = [dict(zip(cols, r)) for r in res]
+        pool.put(cn)
+        return out
+    except Exception:
+        try: cn.close()
+        except Exception: pass
+        c = _creds()
+        try:
+            pool.put(pg8000.native.Connection(
+                user=c["user"], password=c["password"], host=c["host"],
+                port=c["port"], database=c["database"], ssl_context=True,
+                timeout=_CONN_TIMEOUT))
+        except Exception:
+            pool.put(None)          # keep the pool's size honest
+        raise
+
+
+def _d360_key(sql, kw):
+    return (sql, tuple(sorted(kw.items())))
+
+
+def _device_360_parallel(city, dev):
+    global _D360_PLAN
+
+    # ---- 1. LEARN (first call in this container) --------------------
+    if _D360_PLAN is None:
+        _D360_TL.state = {"cache": {}, "seen": []}
+        try:
+            out = _device_360(city, dev)
+            seen = _D360_TL.state["seen"]
+        finally:
+            _D360_TL.state = None
+        plan = []
+        for sql, kw in seen:
+            if kw == {"c": city, "d": dev}:  plan.append(("cd", sql))
+            elif kw == {"c": city}:          plan.append(("c", sql))
+        with _D360_LOCK:
+            _D360_PLAN = plan
+        print(f"[d360] plan learned: {len(plan)} of {len(seen)} queries are "
+              f"prefetchable", flush=True)
+        return out
+
+    # ---- 2. REPLAY --------------------------------------------------
+    work = [(sql, ({"c": city, "d": dev} if shape == "cd" else {"c": city}))
+            for shape, sql in _D360_PLAN]
+    cache = {}
+    try:
+        with ThreadPoolExecutor(max_workers=D360_POOL_SIZE) as ex:
+            futs = {ex.submit(_pooled_rows, sql, **kw): (sql, kw) for sql, kw in work}
+            for f, (sql, kw) in futs.items():
+                try:
+                    cache[_d360_key(sql, kw)] = f.result()
+                except Exception:
+                    pass            # miss -> _safe_rows does it sequentially
+    except Exception as e:
+        print(f"[d360] prefetch unavailable ({type(e).__name__}); sequential", flush=True)
+        cache = {}
+
+    _D360_TL.state = {"cache": cache, "seen": []}
+    try:
+        return _device_360(city, dev)
+    finally:
+        _D360_TL.state = None
 
 
 def _device_360(city, dev):
@@ -841,11 +1005,48 @@ def _device_360(city, dev):
     #
     # ps5["category"] already carries the device type from the PS1 lookup, so
     # nothing is lost by dropping the column.
-    d5 = _safe_rows("SELECT as_of_date, concordance_index, rul_standard_days, "
-                    "rul_conservative_days, reader_fault_count_30d, data_quality_gate_passed "
-                    "FROM ps5_reliability_estimates WHERE city_id=:c AND device_id=:d "
-                    "ORDER BY as_of_date DESC LIMIT 1", c=city, d=dev)
+    # 03-Aug-2026. THE DEVICE-LEVEL LOOKUP WAS POINTED AT A TABLE THAT IS NOT
+    # THE PS5 RUN. ps5_reliability_estimates is the first-generation estimate
+    # table -- the same one whose device_type column never applied in Aurora,
+    # documented above. The survival run publishes to v_ps5_device_rul (sql/29)
+    # and v_ps5_serial_rul (sql/30), which is what /ps5/device-rul serves and
+    # what the dashboard's PS5 screen shows.
+    #
+    # The consequence was not subtle: BMV02633 is rank 1 of 3,235 validators,
+    # CRITICAL, act_now, 0.9 days of remaining life -- and its own 360 page said
+    # "No device-level RUL row for this device". The most urgent device in the
+    # fleet read as unknown on the one screen an engineer opens about it.
+    #
+    # The live view is tried FIRST and the legacy table is kept as a fallback,
+    # so a device that only exists in the old estimates still resolves.
+    d5 = _safe_rows(
+        "SELECT feature_asof_date AS as_of_date, device_type, facility_id,"
+        " risk_band, is_overdue, rul_standard_days, predicted_median_survival_days,"
+        " hazard_score, current_healthy_age_days, days_since_hw_oos, roll_fail_30d,"
+        " n_prior_oos, rul_rank_in_type, n_devices_in_type, act_now "
+        "FROM v_ps5_device_rul WHERE city_id=:c AND device_id=:d "
+        "ORDER BY feature_asof_date DESC LIMIT 1", c=city, d=dev)
+    _ps5_src = "v_ps5_device_rul"
+    if not d5:
+        d5 = _safe_rows("SELECT as_of_date, concordance_index, rul_standard_days, "
+                        "rul_conservative_days, reader_fault_count_30d, data_quality_gate_passed "
+                        "FROM ps5_reliability_estimates WHERE city_id=:c AND device_id=:d "
+                        "ORDER BY as_of_date DESC LIMIT 1", c=city, d=dev)
+        _ps5_src = "ps5_reliability_estimates"
+    # Serial grain, deduplicated. v_ps5_serial_dupes measures up to 25 identical
+    # rows per (device, serial) on validators, every measured column constant
+    # inside the repeat -- a roster fan-out. DISTINCT can only drop rows equal
+    # on every selected column, so it cannot lose a reading.
+    _s5 = _safe_rows(
+        "SELECT DISTINCT component_serial_nbr, component_type_name, component_age_days,"
+        " risk_tier, risk_score, expected_component_rul_days, is_overdue, act_now,"
+        " has_serial, serial_source "
+        "FROM v_ps5_serial_rul WHERE city_id=:c AND device_id=:d "
+        "ORDER BY act_now DESC, expected_component_rul_days ASC NULLS LAST LIMIT 20",
+        c=city, d=dev)
     ps5 = {"level": "device" if d5 else "category", "category": cat}
+    if _s5:
+        ps5["components"] = _s5
     if d5:
         ps5.update(d5[0])
         ps5["found"] = True
@@ -862,9 +1063,26 @@ def _device_360(city, dev):
                                           else "narrow")
             except (TypeError, ValueError, ZeroDivisionError):
                 pass
-        ps5["note"] = ("Device-level RUL from ps5_reliability_estimates. "
-                       + ("Data-quality gate PASSED." if d5[0].get("data_quality_gate_passed")
-                          else "Data-quality gate NOT passed â€” treat the RUL as indicative only."))
+        if _ps5_src == "v_ps5_device_rul":
+            # Rank is WITHIN device type. The three survival models are fitted
+            # separately on separate populations with separate baseline
+            # hazards, so a 3-day TVM and a 3-day validator are not the same
+            # claim and the note says so where someone will actually read it.
+            ps5["source"] = _ps5_src
+            ps5["note"] = (
+                "Device-level remaining life from the survival run (v_ps5_device_rul). "
+                "Rank %s of %s is WITHIN this device type -- the three fleets are "
+                "modelled separately, so day counts are not comparable across them. "
+                "No fleet is signed off in the model registry yet, so treat this as "
+                "prioritisation rather than a schedule."
+                % (d5[0].get("rul_rank_in_type"), d5[0].get("n_devices_in_type")))
+        else:
+            ps5["source"] = _ps5_src
+            ps5["note"] = ("Device-level RUL from the legacy ps5_reliability_estimates "
+                           "table; the survival run has no row for this device. "
+                           + ("Data-quality gate PASSED."
+                              if d5[0].get("data_quality_gate_passed")
+                              else "Data-quality gate NOT passed -- indicative only."))
     else:
         ps5["found"] = False
     if cat:
@@ -873,7 +1091,9 @@ def _device_360(city, dev):
         rel = [r for r in _allrel if str(r.get("device_type")).lower() == p5]  # filter in python: no enum::text cast (pg8000.native-safe)
         ps5["reliability"] = rel[0] if rel else None
         if not d5:
-            ps5["note"] = "No device-level RUL row for this device; showing category reliability status only."
+            ps5["note"] = ("No remaining-life row for this device in either the survival "
+                           "run or the legacy estimates; showing category reliability "
+                           "status only.")
     out["ps5"] = ps5
     # ---- v2/v3 ENRICHMENT (29-Jul-2026) -------------------------------------
     # The Analyse modal previously stopped at the first-generation feeds. The
@@ -907,11 +1127,26 @@ def _device_360(city, dev):
     # Root cause: which component this device's incidents actually came from.
     # OBSERVED attribution, not a prediction - the run publishes no per-incident
     # predicted component, and the wording must not imply one.
+    # DISTINCT, and critical_weighted pulled into the select list because
+    # SELECT DISTINCT requires every ORDER BY expression to appear there.
+    # Without it this block repeated the same (component, serial) pair -- on
+    # TVM08212 the same BHU/fc6850 row came back several times, which reads on
+    # screen as several separate findings about the same part.
     ps3v2["rootcause"] = _q(
-        "SELECT component_label, component_label_semantics, serial_number,"
+        "SELECT DISTINCT component_label, component_label_semantics, serial_number,"
         " incident_count, critical_rate, recurrence_30d, latest_incident_at,"
-        " taxonomy_note FROM v_ps3_v2_rootcause WHERE city_id=:c AND device_id=:d"
-        " ORDER BY critical_weighted DESC NULLS LAST LIMIT 10", c=city, d=dev)
+        " taxonomy_note, critical_weighted FROM v_ps3_v2_rootcause"
+        " WHERE city_id=:c AND device_id=:d"
+        " ORDER BY critical_weighted DESC NULLS LAST LIMIT 20", c=city, d=dev)
+    # Belt and braces: if two rows differ only in a column the view computes,
+    # DISTINCT keeps both. The screen shows one line per part.
+    _seen, _rc = set(), []
+    for _r in ps3v2["rootcause"]:
+        _k = (_r.get("component_label"), _r.get("serial_number"))
+        if _k in _seen:
+            continue
+        _seen.add(_k); _rc.append(_r)
+    ps3v2["rootcause"] = _rc[:10]
     ps3v2["concentration"] = _q(
         "SELECT serial_number, total_incidents, distinct_components, concentration,"
         " concentration_verdict FROM v_ps3_v2_rootcause_concentration"
@@ -1172,7 +1407,13 @@ _PS2V25 = {
     # -- governed OOS, patterns, components (ps2_v2_*) -------------------
     "oos-trend": ("ps2_v2_daily_oos_trend",
         'event_date,device_category,hardware_oos_onsets,affected_devices,hardware_oos_minutes,'
-        'validated_failure_onsets,chargeable_oos_onsets',
+        'validated_failure_onsets,chargeable_oos_onsets,'
+        # 03-Aug-2026, sql/46. hardware_oos_minutes is the SUM of episode
+        # durations and double-counts concurrent episodes, so it is component
+        # burden and not device downtime. Availability must read
+        # hardware_oos_union_minutes. Both are returned so the difference
+        # stays visible rather than being silently swapped.
+        'hardware_oos_union_minutes,hardware_oos_onsets_distinct_interval',
         "event_date, device_category", 2000, 5000, "event_date"),
     "exposure": ("ps2_v2_customer_exposure",
         'event_date,device_category,hardware_oos_onsets,hardware_oos_minutes,'
@@ -1209,7 +1450,8 @@ _PS2V25 = {
         "component_priority_score DESC NULLS LAST", 1000, 5000, None),
     "deterioration": ("ps2_v2_device_deterioration",
         'device_id,device_category,event_date,hardware_oos_onsets,hardware_oos_minutes,'
-        'validated_failure_onsets,baseline_mean_28d,baseline_std_28d,oos_zscore_28d,alert_reason',
+        'validated_failure_onsets,baseline_mean_28d,baseline_std_28d,oos_zscore_28d,alert_reason,'
+        'hardware_oos_union_minutes,hardware_oos_onsets_distinct_interval',
         "oos_zscore_28d DESC NULLS LAST", 1000, 5000, "event_date"),
     "clusters": ("ps2_v2_cofailure_clusters",
         'event_date,cluster_scope,cluster_id,device_category,facility_id,cofailing_devices,'
@@ -2105,6 +2347,56 @@ def route(method, path, params, body):
     if path == "/ps1/xw-causation":
         return ok(_xw("SELECT * FROM v_ps1_xw_causation WHERE city_id=:c "
                       "ORDER BY critical_lift DESC", c=city))
+    # ---- LOCATION DIMENSION -------------------------------------------
+    # 2026-08-06. THE NAMES WERE ALWAYS THERE; NOTHING SERVED THEM.
+    #
+    # dim_device_station holds 2,183 distinct facility_ids and EVERY ONE has a
+    # facility_name. The only route that exposed any of them was
+    # /ps1/station-summary, and that INNER-drives off ps1_station_summary, so
+    # it can only ever name a facility that PS1 scored. PS2, PS3, PS4 and PS5
+    # reference facilities PS1 never saw, which is why they showed bare ids.
+    #
+    # This route serves the DIMENSION, not a rollup, so every tab can resolve
+    # any facility_id it holds. Additive: /ps1/station-summary is untouched and
+    # PS1's Depots tab is unaffected. Reversible by deleting this block.
+    #
+    # UNION, not a join. dim_device_station is the broad source; dim_station is
+    # a 17-row hand-seeded table from the PS2 run that occasionally has a name
+    # the other lacks. Preferring dim_device_station and falling back keeps one
+    # answer per id rather than two competing ones.
+    #
+    # regexp_replace collapses runs of whitespace: the source holds both
+    # "North Park" and "North  Park" (two spaces) for different ids, and
+    # untidied they sort apart and read as two different places.
+    if path == "/ps1/facilities":
+        return ok(rows(
+            "WITH d AS ("
+            "  SELECT facility_id,"
+            "         BTRIM(regexp_replace(facility_name, '\\s+', ' ', 'g')) AS nm,"
+            "         BTRIM(COALESCE(operator_name,''))                       AS op,"
+            "         COUNT(*)                                                AS n_devices"
+            "    FROM dim_device_station"
+            "   WHERE city_id=:c AND facility_id IS NOT NULL"
+            "     AND BTRIM(COALESCE(facility_name,'')) <> ''"
+            "   GROUP BY 1,2,3"
+            "), best AS ("
+            "  SELECT DISTINCT ON (facility_id) facility_id, nm, op, n_devices"
+            "    FROM d ORDER BY facility_id, n_devices DESC, nm"
+            "), seeded AS ("
+            "  SELECT facility_id,"
+            "         BTRIM(regexp_replace(station_name, '\\s+', ' ', 'g')) AS nm,"
+            "         BTRIM(COALESCE(operator,''))                           AS op"
+            "    FROM dim_station"
+            "   WHERE city_id=:c AND BTRIM(COALESCE(station_name,'')) <> ''"
+            ") "
+            "SELECT COALESCE(b.facility_id, s.facility_id)      AS facility_id,"
+            "       COALESCE(b.nm, s.nm)                        AS facility_name,"
+            "       NULLIF(COALESCE(b.op, s.op, ''), '')        AS operator_name,"
+            "       COALESCE(b.n_devices, 0)                    AS n_devices,"
+            "       CASE WHEN b.facility_id IS NOT NULL THEN 'dim_device_station'"
+            "            ELSE 'dim_station' END                 AS source "
+            "  FROM best b FULL OUTER JOIN seeded s ON s.facility_id = b.facility_id "
+            " ORDER BY 4 DESC, 2", c=city))
     if path == "/ps1/xw-facility":
         top = int((params or {}).get("top", 20))
         return ok(_xw("SELECT * FROM v_ps1_xw_facility WHERE city_id=:c "
@@ -2291,21 +2583,80 @@ def route(method, path, params, body):
             " n_prior_oos, rul_rank_in_type, n_devices_in_type, act_now,"
             " feature_asof_date "
             f"FROM v_ps5_device_rul WHERE {w} "
-            "ORDER BY act_now DESC, rul_standard_days ASC NULLS LAST LIMIT 3000", **kw))
+            "ORDER BY act_now DESC, rul_standard_days ASC NULLS LAST "
+            f"LIMIT {_clamp_int((params or {}).get('limit'), 3000, 1, 12000)}", **kw))
     if path == "/ps5/serial-rul":
         dt = (params or {}).get("device_type")
         w = "city_id=:c"; kw = {"c": city}
         if dt:
             w += " AND device_type=:d"; kw["d"] = str(dt).upper().strip()
+        # DISTINCT is not cosmetic. v_ps5_serial_dupes measures 3,823 duplicated
+        # (device_id, component_serial_nbr) keys on validators, up to 25 rows
+        # each, and reports max_component_types = max_risk_tiers =
+        # max_rul_values = 1 within every one of them -- the repetition is a
+        # roster fan-out, not a second reading of the part. DISTINCT can only
+        # ever drop rows that are equal on every selected column, so it removes
+        # the fan-out without being able to lose a real measurement. The grain
+        # audit at /ps5/serial-grain stays live so the underlying defect is
+        # still visible rather than papered over here.
         return ok(rows(
-            "SELECT device_type, device_id, component_serial_nbr, has_serial,"
+            "SELECT DISTINCT device_type, device_id, component_serial_nbr, has_serial,"
             " component_type_name, component_age_days, risk_tier, risk_score,"
             " expected_component_rul_days, predicted_median_survival_days,"
             " is_overdue, device_oos_failures_total, act_now, serial_source,"
             " feature_asof_date "
             f"FROM v_ps5_serial_rul WHERE {w} "
             "ORDER BY act_now DESC, expected_component_rul_days ASC NULLS LAST "
-            "LIMIT 3000", **kw))
+            f"LIMIT {_clamp_int((params or {}).get('limit'), 3000, 1, 12000)}", **kw))
+    # ---- THE DENOMINATORS -------------------------------------------------
+    # /ps5/device-rul and /ps5/serial-rul are ORDERED, CAPPED browse lists.
+    # Counting them gives the count of what was returned, not of what exists,
+    # and because both are ordered act_now DESC the truncated tail is the
+    # healthy end -- so a UI that counts the browse list overstates risk. That
+    # is the same trap that once put "600 of 600 devices need a work order" on
+    # the PS1 screen.
+    #
+    # These two routes aggregate in SQL over the WHOLE view. They are the only
+    # honest source of a PS5 total.
+    if path == "/ps5/summary":
+        return ok(rows(
+            "SELECT device_type,"
+            " COUNT(*) AS n_devices,"
+            " COUNT(*) FILTER (WHERE act_now) AS n_act_now,"
+            " COUNT(*) FILTER (WHERE is_overdue) AS n_overdue,"
+            " COUNT(*) FILTER (WHERE risk_band='CRITICAL') AS n_critical,"
+            " COUNT(*) FILTER (WHERE risk_band='HIGH') AS n_high,"
+            " COUNT(*) FILTER (WHERE risk_band='MEDIUM') AS n_medium,"
+            " COUNT(*) FILTER (WHERE risk_band='LOW') AS n_low,"
+            " ROUND(AVG(rul_standard_days)::numeric,1) AS mean_rul_days,"
+            " ROUND((PERCENTILE_CONT(0.5) WITHIN GROUP"
+            "        (ORDER BY rul_standard_days))::numeric,1) AS median_rul_days,"
+            " ROUND(MIN(rul_standard_days)::numeric,1) AS min_rul_days,"
+            " MAX(n_devices_in_type) AS n_devices_in_type,"
+            " MAX(feature_asof_date) AS feature_asof_date "
+            "FROM v_ps5_device_rul WHERE city_id=:c "
+            "GROUP BY device_type ORDER BY device_type", c=city))
+    if path == "/ps5/component-summary":
+        # COUNT(DISTINCT (device_id, component_serial_nbr)) rather than COUNT(*)
+        # for the fan-out reason documented on /ps5/serial-rul above. n_rows is
+        # carried alongside it so the size of the fan-out stays measurable from
+        # this route alone: n_rows > n_components IS the defect.
+        return ok(rows(
+            "SELECT device_type,"
+            " COUNT(DISTINCT (device_id, component_serial_nbr)) AS n_components,"
+            " COUNT(*) AS n_rows,"
+            " COUNT(DISTINCT device_id) AS n_devices,"
+            " COUNT(DISTINCT component_type_name) AS n_component_types,"
+            " COUNT(DISTINCT device_id) FILTER (WHERE act_now) AS n_devices_act_now,"
+            " COUNT(DISTINCT (device_id, component_serial_nbr))"
+            "   FILTER (WHERE act_now) AS n_components_act_now,"
+            " COUNT(DISTINCT (device_id, component_serial_nbr))"
+            "   FILTER (WHERE risk_tier='CRITICAL') AS n_components_critical,"
+            " COUNT(DISTINCT (device_id, component_serial_nbr))"
+            "   FILTER (WHERE has_serial IS NOT TRUE) AS n_components_no_serial,"
+            " MAX(feature_asof_date) AS feature_asof_date "
+            "FROM v_ps5_serial_rul WHERE city_id=:c "
+            "GROUP BY device_type ORDER BY device_type", c=city))
     if path == "/ps5/leaderboard":
         # sd travels WITH oot_cindex on purpose: a high concordance with a wide
         # fold-to-fold spread is not better than a steadier lower one, and the
@@ -2570,7 +2921,11 @@ def route(method, path, params, body):
     if path == "/ps1/device-360":
         dev = (params or {}).get("device_id", "")
         if not dev: return err(400, "device_id required")
-        return ok(_device_360(city, dev))
+        # A/B WITHOUT A REDEPLOY. ?parallel=1 forces the concurrent path,
+        # ?parallel=0 forces the sequential one; absent, D360_PARALLEL decides.
+        _pv = (params or {}).get("parallel")
+        _par = D360_PARALLEL_DEFAULT if _pv is None else str(_pv).strip() in ("1", "true", "yes")
+        return ok(_device_360_parallel(city, dev) if _par else _device_360(city, dev))
     if path == "/ps1/servicenow-stage" and method == "POST":
         d = body or {}; dev = d.get("device_id", "")
         if not dev: return err(400, "device_id required")
@@ -3390,6 +3745,91 @@ _EXPECTED = {
     "ps3_model_runs": ["city_id","run_id","run_kind","run_ts"],
 }
 
+# =====================================================================
+# catalog -- READ-ONLY live inventory of the whole database.
+#
+# `inspect` only covers PURGE_TABLES["ps1"] + ["ps3"], which is a small
+# slice. This walks information_schema and returns EVERY table and view
+# in `public` with its columns, types, nullability, primary key and live
+# row count -- i.e. what is actually in Aurora right now, as opposed to
+# what the migrations say should be.
+#
+#   aws lambda invoke --function-name cubic-mars-dashboard-api \
+#     --cli-binary-format raw-in-base64-out \
+#     --payload '{"action":"catalog"}' catalog.json
+#
+# Options:
+#   {"action":"catalog","counts":false}   skip row counts (much faster)
+#   {"action":"catalog","like":"ps5_"}    only names containing this
+#
+# Row counts are exact COUNT(*) per table and are the slow part. On a
+# wide database that can approach the Lambda timeout, so counts are
+# wrapped per-table and a failure degrades to a message on that table
+# rather than losing the whole response.
+# =====================================================================
+def catalog(evt):
+    c = conn()
+    like = (evt or {}).get("like") or ""
+    want_counts = (evt or {}).get("counts", True)
+
+    cols_by_table = {}
+    for tb, cn, dt, nul, dflt in c.run(
+        "SELECT table_name, column_name, "
+        "       COALESCE(character_maximum_length::text, "
+        "                numeric_precision::text, '') AS extra, "
+        "       is_nullable, COALESCE(column_default,'') "
+        "FROM information_schema.columns "
+        "WHERE table_schema='public' ORDER BY table_name, ordinal_position"):
+        cols_by_table.setdefault(tb, []).append(
+            {"column": cn, "size": dt, "nullable": nul == "YES", "default": dflt[:60]})
+
+    types_full = {}
+    for tb, cn, dt in c.run(
+        "SELECT table_name, column_name, data_type FROM information_schema.columns "
+        "WHERE table_schema='public'"):
+        types_full[(tb, cn)] = dt
+
+    pks = {}
+    for tb, cn in c.run(
+        "SELECT tc.table_name, kcu.column_name "
+        "FROM information_schema.table_constraints tc "
+        "JOIN information_schema.key_column_usage kcu "
+        "  ON tc.constraint_name = kcu.constraint_name "
+        " AND tc.table_schema = kcu.table_schema "
+        "WHERE tc.table_schema='public' AND tc.constraint_type='PRIMARY KEY' "
+        "ORDER BY tc.table_name, kcu.ordinal_position"):
+        pks.setdefault(tb, []).append(cn)
+
+    kinds = {}
+    for tb, kind in c.run(
+        "SELECT table_name, table_type FROM information_schema.tables "
+        "WHERE table_schema='public'"):
+        kinds[tb] = "view" if kind == "VIEW" else "table"
+
+    out = []
+    for tb in sorted(kinds):
+        if like and like not in tb:
+            continue
+        rec = {"name": tb, "kind": kinds[tb],
+               "n_columns": len(cols_by_table.get(tb, [])),
+               "primary_key": pks.get(tb, []),
+               "columns": [dict(x, type=types_full.get((tb, x["column"]), "?"))
+                           for x in cols_by_table.get(tb, [])]}
+        if want_counts and kinds[tb] == "table":
+            try:
+                rec["rows"] = int(c.run('SELECT COUNT(*) FROM "%s"' % tb)[0][0])
+            except Exception as e:
+                rec["rows"] = "count failed: " + str(e)[:60]
+        out.append(rec)
+
+    tabs = [o for o in out if o["kind"] == "table"]
+    empty = sorted(o["name"] for o in tabs if o.get("rows") == 0)
+    return ok({"action": "catalog", "read_only": True,
+               "n_tables": len(tabs), "n_views": len([o for o in out if o["kind"] == "view"]),
+               "empty_tables": empty,
+               "objects": out})
+
+
 def inspect(evt):
     c = conn()
     want = list(PURGE_TABLES["ps1"]) + list(PURGE_TABLES["ps3"])
@@ -3530,6 +3970,8 @@ def lambda_handler(event, context):
         return migrate(event)
     if isinstance(event, dict) and event.get("action") == "purge":
         return purge(event)
+    if isinstance(event, dict) and event.get("action") == "catalog":
+        return catalog(event)
     if isinstance(event, dict) and event.get("action") == "inspect":
         return inspect(event)
     if isinstance(event, dict) and event.get("action") == "recreate":

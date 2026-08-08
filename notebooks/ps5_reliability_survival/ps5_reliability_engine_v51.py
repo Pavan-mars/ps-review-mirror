@@ -67,15 +67,30 @@ CONFIG = {
     # device_event_enriched directly (same query gold.device_ps2_chains already uses for PS2's
     # cascade-day gate), so TVM/GATE/VALIDATOR all get the same genuine is_hardware_oos_event flag.
     "EVENT_DEFINITION": "hw_oos_set",
-    "EVENT_DEF_VERSION": "2026-07-24.v2",
+    "EVENT_DEF_VERSION": "2026-08-03.v7",
+    # Fail the run instead of publishing numbers built on the wrong events.
+    # The 2026-08-03 v5.2.3 run reported "filters: NONE APPLIED" on all three
+    # fleets and still produced champions, RUL and risk tiers. It must not be
+    # possible for that to happen quietly again.
+    "STRICT_EVENT_CONTRACT": True,
     "BUILD_INTERVALS_FROM_FAILURES": True,   # True: derive intervals+label+features from device_event_enriched (v2); False: use silver survival grain
     "FAILURE_EPISODE_DEDUP": "day",          # collapse same-day multi-row failures (array members / Set+relief) to one episode
     "HW_OOS_SET": {
         "require_oos": True,                 # PRIMARY: device_event_enriched.is_hardware_oos_event (dim_event_type, S07) -- already excludes
                                               # commanded/maintenance codes 106/110/151/208/519/1603/1604 at the source
         "fault_state_set_value": "Set",      # fault_state must be 'Set' (device GOES out of service), not 'Clear'
-        "require_device_fault": True,        # dim_failure_level.is_device_fault (== failure_level in the device-fault set)
-        "device_fault_levels": [1, 2, 3, 4, 5, 16],   # Metric-Category 2 = device faults
+        # 2026-08-03 (event_def_version 2026-08-03.v3): TURNED OFF to match PS1 exactly.
+        # PS1's label predicate is TWO clauses -- is_hardware_oos_event=TRUE AND
+        # EVENT_STATE_TYPE_NAME='Set' -- and nothing else. Verified: the label function is
+        # BYTE-IDENTICAL across the TVM/GATE/VALIDATOR notebooks (4010 chars, md5 c67f46424fdb),
+        # and device_category is a parameter, not a separate code path.
+        # A hardware-OOS 'Set' IS the failure -- the device is out of service at that instant.
+        # Gating again on is_device_fault therefore filters a set that is already device faults
+        # by definition: it can only DROP true failures and shrink the positive class relative
+        # to PS1. False keeps PS1 and PS5 counting the same events.
+        # Restore to True only with a written reason; it breaks PS1<->PS5 parity.
+        "require_device_fault": False,
+        "device_fault_levels": [1, 2, 3, 4, 5, 16],   # retained for reference; unused while require_device_fault=False
         "exclude_commanded_oos": True,       # maintenance_ledger.is_commanded_oos (operator-commanded)
         "exclude_maintenance_oos": True,     # is_maintenance_oos (151 maint-mode / 106 employee-logon windows)
         "require_chargeable": False,         # <-- CHANGED: any hardware OOS, NOT only the chargeable SLA subset
@@ -232,24 +247,65 @@ def _spark():
     except Exception: return None
 def _puri(t):
     p = t.split("."); return f"s3://{CONFIG['GOLD_BUCKET']}/chicago/{p[-2]}/{p[-1]}"
+_LOAD_T0 = {}
+
 def load_table(table, cat=None, catcol="mars_device_category", required=True, columns=None):
-    if "_SYNTH" in globals() and table in globals()["_SYNTH"]:
-        df = globals()["_SYNTH"][table].copy()
-        if cat and catcol in df.columns: df = df[df[catcol] == cat].copy()
-        if columns: df = df[[c for c in columns if c in df.columns]]
-        return df
+    # 2026-08-03.v5: the _SYNTH short-circuit is REMOVED.
+    #
+    # It used to sit here and return an in-memory frame whenever a caller had
+    # stashed one under globals()["_SYNTH"][table]. The v5.1 "wiring cell" used
+    # it to inject PS5_oos_spine_outputs/device_oos_episodes.parquet as the
+    # FAILURE_TABLE -- which silently bypassed silver.device_event_enriched and
+    # put GATE back on chargeable kpi_avail_enriched events. A bypass that
+    # invisible has no place next to a contract guard, so the mechanism is gone
+    # rather than merely unused. There is no synthetic path any more either.
+    import time as _time
+    _t0 = _time.time()
     sp = _spark(); path = _puri(table)
+
+    # -- v6 READ OPTIMISATION -------------------------------------------------
+    # The v5 run traced:
+    #     [read] device_event_enriched  29,396,298 rows  360.9s (parquet)
+    # ...all 76 columns, then coerce() walked every one of them. The read was
+    # 361s; coerce on 29.4M x 76 was the hour that followed.
+    #
+    # The failure table needs TWELVE columns and can push its primary predicate
+    # into the parquet reader, which prunes row groups before anything is
+    # materialised. Filters, dedup and the contract guard downstream are
+    # untouched -- identical predicate, identical episodes, identical result.
+    #
+    # Applies ONLY to the failure table. The nine ENRICH_SOURCES pass through
+    # unchanged: they are joined on different keys and need their own columns.
+    if columns is None and "device_event_enriched" in table:
+        columns = ["DEVICE_ID", "DEVICE_KEY", "mars_device_category",
+                   "transit_day", "EVENT_DTM", "EVENT_STATE_TYPE_NAME",
+                   "is_hardware_oos_event", "is_commanded_oos_event",
+                   "is_device_fault", "failure_level",
+                   "duration_to_clear_min", "COMPONENT_SERIAL_NBR"]
+        _pushdown = [("is_hardware_oos_event", "==", True)]
+    else:
+        _pushdown = None
+    # ------------------------------------------------------------------------
     try:
         if CONFIG["DATA_SOURCE"] in ("auto", "databricks_spark") and sp is not None:
             sdf = sp.table(table)
             if cat and catcol: sdf = sdf.filter(f"{catcol} = '{cat}'")
             if columns: sdf = sdf.select([c for c in columns if c in sdf.columns])
-            return sdf.toPandas()
+            _df = sdf.toPandas()
+            print(f"      [read] {table.rsplit('.',1)[-1]:34s} {len(_df):>10,} rows "
+                  f"{_time.time()-_t0:6.1f}s (spark)", flush=True)
+            return _df
         rk = {"storage_options": {"client_kwargs": {"region_name": CONFIG["S3_REGION"]}}} if path.startswith("s3") else {}
         flt = [(catcol, "==", cat)] if cat else None
+        if _pushdown:
+            flt = (flt or []) + _pushdown          # v6: prune row groups at the reader
         for attempt in ([{"filters": flt, "columns": columns}] if flt else []) + [{"columns": columns}, {}]:
             try:
-                return pd.read_parquet(path, **{k: v for k, v in attempt.items() if v is not None}, **rk)
+                _df = pd.read_parquet(path, **{k: v for k, v in attempt.items() if v is not None}, **rk)
+                print(f"      [read] {table.rsplit('.',1)[-1]:34s} {len(_df):>10,} rows "
+                      f"{_time.time()-_t0:6.1f}s (parquet, {len(_df.columns)} cols"
+                      f"{', pushdown' if attempt.get('filters') else ''})", flush=True)
+                return _df
             except Exception:
                 continue
         raise RuntimeError("all parquet read attempts failed")
@@ -551,6 +607,14 @@ def load_hw_oos_failures(cat):
     device_failures schema still score (never a silent pass-through: every filter that fires is logged)."""
     cfg = CONFIG["HW_OOS_SET"]
     f = load_table(CONFIG["FAILURE_TABLE"], cat=cat, catcol="mars_device_category", required=True)
+    # v6: column pruning must never remove a column the contract guard needs --
+    # a guard that cannot fire is worse than no guard, which is exactly how
+    # v5.2.3 published champions off unfiltered rows.
+    _need = [c for c in ("is_hardware_oos_event", "EVENT_STATE_TYPE_NAME") if c not in f.columns]
+    if _need:
+        raise RuntimeError(
+            f"EVENT CONTRACT VIOLATION: column pruning dropped {_need}. The guard "
+            f"could not fire. Present: {sorted(f.columns)}")
     f = coerce(f); n0 = len(f); applied = []
 
     # day grain: prefer transit_day (device_event_enriched's day column — matches PS2's own gate exactly)
@@ -607,6 +671,61 @@ def load_hw_oos_failures(cat):
     src = CONFIG["FAILURE_TABLE"].rsplit(".", 1)[-1]
     print(f"  [event=hw_oos_set] {src} {n0:,} -> {len(f):,} episodes ({f['DEVICE_ID'].nunique():,} devices) | "
           f"filters: {', '.join(applied) if applied else 'NONE APPLIED (columns absent — CONFIRM schema)'}")
+
+    # ---------------------------------------------------------------------
+    # EVENT CONTRACT ENFORCEMENT  (docs/OOS_EVENT_CONTRACT.md, 2026-08-03.v4)
+    #
+    # WHY THIS EXISTS. The v5.2.3 run printed "filters: NONE APPLIED" for TVM,
+    # GATE and VALIDATOR -- every row of silver.device_failures passed through
+    # as a hardware-OOS failure. GATE dropped 0 rows of 22,572; VALIDATOR 0 of
+    # 582,255. The run then published champions, Weibull fits, RUL estimates and
+    # CRITICAL risk tiers off that. A warning printed to stdout did not stop it.
+    # These raise instead.
+    # ---------------------------------------------------------------------
+    if CONFIG.get("STRICT_EVENT_CONTRACT", True):
+        # (a) the source must be the contracted silver table
+        if "device_event_enriched" not in CONFIG["FAILURE_TABLE"]:
+            raise RuntimeError(
+                f"EVENT CONTRACT VIOLATION: FAILURE_TABLE={CONFIG['FAILURE_TABLE']!r}. "
+                "The only valid hardware-OOS source is silver.device_event_enriched. "
+                "silver.device_failures carries CHARGEABLE availability events for TVM/GATE "
+                "(edw_availability_events, FAILURE_LEVEL>0 AND EXCLUDED=0) and drops "
+                "is_hardware_oos_event / fault_state from its materialized columns.")
+        # (b) both contract clauses must actually have fired
+        joined = " | ".join(applied)
+        if not applied:
+            raise RuntimeError(
+                f"EVENT CONTRACT VIOLATION: NO filters applied to {src}. Every source row "
+                f"({n0:,}) was accepted as a hardware-OOS failure. Refusing to model on this.")
+        if "is_hardware_oos_event" not in joined:
+            raise RuntimeError(
+                f"EVENT CONTRACT VIOLATION: primary flag is_hardware_oos_event never applied "
+                f"to {src}. Filters that did fire: {joined}")
+        if not any(k in joined for k in ("EVENT_STATE_TYPE_NAME", "fault_state", "FAULT_STATE")):
+            raise RuntimeError(
+                f"EVENT CONTRACT VIOLATION: state gate ('Set') never applied to {src}. "
+                f"Filters that did fire: {joined}")
+        # (c) a filter set that removes essentially nothing is the same failure,
+        #     wearing a different hat -- OOS Set events are a small minority of rows.
+        # v7: the >95% check needs the TRUE denominator. When a Spark pre-stage has
+        # already applied the contract, n0 is the count AFTER filtering, so kept is
+        # ~100% and this check would fire on a correct run. The pre-stage records
+        # what it started from; use that. If no pre-stage ran, nothing changes.
+        _pre = (globals().get("PS5_PRESTAGE") or {}).get((cat or "").upper())
+        if _pre:
+            kept = _pre["n_after"] / max(_pre["n_before"], 1)
+            _denom, _num, _how = _pre["n_before"], _pre["n_after"], "pre-staged in Spark"
+        else:
+            kept = len(f) / max(n0, 1)
+            _denom, _num, _how = n0, len(f), "filtered in pandas"
+        if kept > 0.95:
+            raise RuntimeError(
+                f"EVENT CONTRACT VIOLATION: filters kept {kept:.1%} of {src} "
+                f"({_denom:,} -> {_num:,}, {_how}). Hardware-OOS 'Set' onsets are a "
+                "minority of device events; keeping ~everything means the predicates "
+                "matched nothing. Confirm the schema before modelling.")
+        print(f"  [contract OK] {CONFIG['EVENT_DEF_VERSION']} | kept {kept:.2%} "
+              f"({_denom:,} -> {_num:,}, {_how}) | {joined}")
     return f
 
 def build_intervals_from_failures(f, cat):
@@ -1186,15 +1305,27 @@ def run_serial_grain(cat, out, shape, scale):
             "serial_feed": f"{sub}/{sub}_serial_reliability.csv", "serial_params": f"{sub}/{sub}_serial_params.json"}
 
 def main(synthetic=False):
+    # 2026-08-03.v5: synthetic runs are no longer supported. The smoke-test path
+    # existed to exercise the code without S3, but it shares a code path with the
+    # _SYNTH injection that bypassed the event contract. Removed together.
+    if synthetic:
+        raise RuntimeError(
+            "synthetic=True is removed in 2026-08-03.v5. PS5 runs LIVE against "
+            "silver.device_event_enriched only. There is no offline path.")
     os.environ.setdefault("AWS_REGION", "us-east-1")
     start_run_log(CONFIG["OUT_ROOT"])
     print(f"[env] lifelines={_HAS_LIFELINES} sksurv={_HAS_SKSURV} coxnet={_HAS_COXNET}")
     print("PS5 v5 RELIABILITY (event=hardware-OOS-Set) | scope:", CONFIG["DEVICE_SCOPE"], "| floor", CONFIG["CINDEX_FLOOR"],
           "| window:", CONFIG["WINDOW_MODE"])
-    if synthetic:
-        print("[MODE] SYNTHETIC -- pre-2024 recency-only block + 2024+ block with lifecycle+telemetry signal")
-        globals()["_SYNTH"] = make_synthetic()
-    results = [run_type(c, CONFIG["OUT_ROOT"]) for c in CONFIG["DEVICE_SCOPE"]]
+    # per-fleet with wall-clock, so progress is visible and a failure in fleet 3
+    # does not hide how long fleets 1 and 2 took.
+    import time as _t
+    results = []
+    for _i, _c in enumerate(CONFIG["DEVICE_SCOPE"], 1):
+        _s0 = _t.time()
+        print(f"\n{'#'*78}\n# FLEET {_i}/{len(CONFIG['DEVICE_SCOPE'])}: {_c}\n{'#'*78}", flush=True)
+        results.append(run_type(_c, CONFIG["OUT_ROOT"]))
+        print(f"# {_c} finished in {(_t.time()-_s0)/60:.1f} min", flush=True)
     print("\n" + "=" * 78); print(" PS5 v5 RELIABILITY SUMMARY"); print("=" * 78)
     for r in results:
         if r.get("modeled"):

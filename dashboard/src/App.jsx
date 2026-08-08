@@ -8,10 +8,7 @@ import LoginPage from './pages/LoginPage';
 import AdminConsole from './pages/AdminConsole';
 import ExecutiveOverview from './pages/ExecutiveOverview';
 import CityDashboard from './pages/CityDashboard';
-import PS1Overview from './v2/PS1Overview';
-import PS4Overview from './v2/PS4Overview';
-import PS2Overview from './v2/PS2Overview';
-import V2Shell from './v2/V2Shell';
+import V4Shell from './v4/V4Shell';
 
 function DashboardLayout({ children }) {
   return (
@@ -67,43 +64,13 @@ function App() {
               </ProtectedRoute>
             } />
 
-            {/* v2 preview. Additive: no existing route is altered. */}
-            <Route path="/v2/ps1" element={
+            {/* V4 -- the CURRENT Chicago dashboard: PS1-PS5, Device 360,
+                shared location + evidence modules. / and * both redirect here.
+                V2 and V3 were removed on 08-Aug-2026; see src/README.md. */}
+            <Route path="/v4" element={
               <ProtectedRoute>
                 <AdminLayout>
-                  <div style={{ padding: '22px 26px', background: '#FCFCFB', minHeight: '100vh' }}>
-                    <PS1Overview city="CHI" />
-                  </div>
-                </AdminLayout>
-              </ProtectedRoute>
-            } />
-
-            <Route path="/v2/ps4" element={
-              <ProtectedRoute>
-                <AdminLayout>
-                  <div style={{ padding: '22px 26px', background: '#FCFCFB', minHeight: '100vh' }}>
-                    <PS4Overview city="CHI" />
-                  </div>
-                </AdminLayout>
-              </ProtectedRoute>
-            } />
-
-            <Route path="/v2/ps2" element={
-              <ProtectedRoute>
-                <AdminLayout>
-                  <div style={{ padding: '22px 26px', background: '#FCFCFB', minHeight: '100vh' }}>
-                    <PS2Overview city="CHI" />
-                  </div>
-                </AdminLayout>
-              </ProtectedRoute>
-            } />
-
-            <Route path="/v2" element={
-              <ProtectedRoute>
-                <AdminLayout>
-                  <div style={{ padding: '22px 26px', background: '#FCFCFB', minHeight: '100vh' }}>
-                    <V2Shell city="CHI" />
-                  </div>
+                  <V4Shell city="CHI" />
                 </AdminLayout>
               </ProtectedRoute>
             } />
@@ -116,9 +83,15 @@ function App() {
             } />
 
             {/* Redirects */}
-            <Route path="/" element={<Navigate to="/dashboard/overview" replace />} />
+            {/* CLIENT ENTRY POINT.                              05-Aug-2026
+                "/" and the catch-all used to land on /dashboard/overview --
+                the old build. Chicago will be handed a bare ALB hostname with
+                no path, so the root MUST be the shipped dashboard or every
+                user sees the wrong product and nobody finds out until a
+                meeting. /dashboard/overview stays reachable by direct link. */}
+            <Route path="/" element={<Navigate to="/v4" replace />} />
             <Route path="/dashboard" element={<Navigate to="/dashboard/overview" replace />} />
-            <Route path="*" element={<Navigate to="/dashboard/overview" replace />} />
+            <Route path="*" element={<Navigate to="/v4" replace />} />
           </Routes>
         </FilterProvider>
       </AuthProvider>

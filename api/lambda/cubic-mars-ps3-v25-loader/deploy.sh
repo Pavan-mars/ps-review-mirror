@@ -25,7 +25,7 @@ ARTIFACT_BUCKET=cubic-mars-pm-s3-datalake-dev-artifacts-170202974600
 # ps3_replay_outputs for the V26 REPLAY run already in the bucket; switch to
 # ps3_outputs when the first PRODUCTION run lands. The notebook refuses any
 # other prefix tail, so these are the only two legal values.
-PS3_PREFIX=${PS3_PREFIX:-ps3_replay_outputs}
+PS3_PREFIX=${PS3_PREFIX:-chicago/ps3_outputs}
 
 ACCT=$(aws sts get-caller-identity --query Account --output text)
 SECRET_ARN=$(aws secretsmanager describe-secret --secret-id "$SECRET_NAME" --query ARN --output text)

@@ -206,6 +206,43 @@ disabled (`D360_PARALLEL=0`) because it gave no benefit. Real fix is
 `/ps1/facilities` FULL OUTER JOINs both — 18 facilities are named only by the
 seed table.
 
+
+### 5.7 Loader roles are prefix-fenced — an S3 move is also an IAM change
+
+Discovered 08-Aug-2026 while repointing PS3 v2.5. Each loader's inline policy
+grants `s3:ListBucket` on the bucket **with an `s3:prefix` condition**, and
+`s3:GetObject` on the prefix path only:
+
+```json
+{ "Action": ["s3:ListBucket"],
+  "Resource": "arn:aws:s3:::…-artifacts-…",
+  "Condition": {"StringLike": {"s3:prefix": ["ps3_outputs/*", "ps3_replay_outputs/*"]}} }
+```
+
+Move data to a new prefix and the loader gets `AccessDenied` on
+`ListObjectsV2` — with wording that reads as if the permission is missing
+entirely rather than scoped. This is least privilege behaving correctly, not
+a misconfiguration, and it means **every prefix migration needs the role
+policy extended before the repoint, not after.**
+
+Two mechanics worth knowing:
+
+- `survey()` builds `root = prefix.rstrip("/") + "/"`, so the request carries
+  `Prefix=chicago/ps3_outputs/`. IAM `StringLike` lets `*` match the empty
+  string, so a `chicago/ps3_outputs/*` condition matches it.
+- `aws iam put-role-policy` **replaces the named inline policy wholesale**.
+  Always send the complete document and back up the live one first. Same
+  failure mode as `aws lambda update-function-configuration --environment`.
+
+**PS2 has the same fence.** Check `cubic-mars-ps2-rds-loader`'s role before
+copying 709 objects to `chicago/ps2_outputs`, or the copy completes and the
+loader still cannot read it.
+
+Resolved for PS3 on 08-Aug-2026: `chicago/ps3_outputs/*` and
+`chicago/ps3_replay_outputs/*` added to both statements, old grants retained
+so rollback stays available.
+
+
 ---
 
 ## 6. Moving PS5 from CSV to Parquet
@@ -463,3 +500,41 @@ git diff --ignore-cr-at-eol --numstat | wc -l   # files with REAL changes
 
 Permanent fix, deferred to after go-live: add a `.gitattributes` with
 `* text=auto eol=lf`.
+
+### 10.7 PS3 v2.5 provenance — the dashboard is showing a REPLAY-labelled run
+
+Established 08-Aug-2026 and **not yet resolved**.
+
+`ps3_outputs` (the production prefix) held **zero objects**. The live loader
+was pointed at `ps3_replay_outputs` because `deploy.sh` overrode `handler.py`'s
+correct default. Aurora's PS3 v2.5 tables were confirmed to hold replay run
+`6a7002b0-a0fc-41f8-bb0f-1ad5a5358edf` — manifest row counts match the
+database exactly (54,239 / 54,239 / 2,806 / 366).
+
+**The numbers are sound.** `RUN_MODE` appears in seven places in the V26
+notebook — the prefix redirect, a healthcheck row, and five metadata fields.
+It never branches the computation. A PRODUCTION run of the same revision
+(`source_first_ps1_ps2_ps3_label_aligned_v26`) at the same
+`DATA_AS_OF_DATE=2026-04-11` produces the same figures. What is wrong is the
+label, not the data.
+
+State as of 08-Aug-2026:
+
+| | |
+|---|---|
+| `chicago/ps3_outputs` | holds a verified copy of run `6a7002b0` (21 objects, 9.3 MB) |
+| Loader IAM | extended, both prefixes granted |
+| Dry run from new prefix | **passes** — 20/20 tables, 117,377 rows, 0 errors |
+| Live `PS3_PREFIX` | parked back at `ps3_replay_outputs` |
+| Committed `deploy.sh` | sets `chicago/ps3_outputs` |
+
+Decision taken: re-run the notebook with `PS3_RUN_MODE=PRODUCTION` writing to
+`chicago/ps3_outputs`, rather than promote the replay run. The loader picks
+the newest **complete** run by `(computed_date, run_id)` — run ids are epoch
+prefixed — so a production run supersedes the copy automatically, and a
+partial one is skipped rather than half-loaded.
+
+Unrelated to provenance, and true of a production run too:
+`ps3_v25_prediction_explainability` holds **3 rows** across 2,806 devices.
+Per-episode explanations will be blank for effectively the whole estate.
+

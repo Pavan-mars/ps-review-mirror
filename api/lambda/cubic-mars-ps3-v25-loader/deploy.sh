@@ -22,10 +22,35 @@ SUBNETS="subnet-0830633f6cab1b8a1 subnet-01ad20b3b49bf59de subnet-0cd6e4bca78eaa
 RDS_HOST=cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com
 SECRET_NAME=cubic-mars-secret-rds-dev
 ARTIFACT_BUCKET=cubic-mars-pm-s3-datalake-dev-artifacts-170202974600
-# ps3_replay_outputs for the V26 REPLAY run already in the bucket; switch to
-# ps3_outputs when the first PRODUCTION run lands. The notebook refuses any
-# other prefix tail, so these are the only two legal values.
+
+# Every prefix this loader may ever be pointed at. This ONE list drives two
+# things that must never disagree: the IAM fence built in step [1/4], and the
+# guard immediately below. They drifted apart once already -- on 08-Aug the
+# default flipped to chicago/ps3_outputs while the fence below still listed
+# only the two unprefixed tails, so a re-run of this script would have
+# reverted the live policy and left the loader with AccessDenied on its first
+# ListObjectsV2. Generating the fence from the list is what stops that
+# recurring; adding a prefix here is the only edit a new location needs.
+#
+# The notebook refuses any prefix whose tail is not ps3_outputs or
+# ps3_replay_outputs, so those tails are fixed; only the city segment varies.
+PS3_ALLOWED_PREFIXES="ps3_outputs ps3_replay_outputs chicago/ps3_outputs chicago/ps3_replay_outputs"
 PS3_PREFIX=${PS3_PREFIX:-chicago/ps3_outputs}
+
+case " $PS3_ALLOWED_PREFIXES " in
+  *" $PS3_PREFIX "*) ;;
+  *) echo "!! PS3_PREFIX='$PS3_PREFIX' is not in PS3_ALLOWED_PREFIXES."; \
+     echo "!! Deploying would fence the role away from the prefix the loader reads."; \
+     echo "!! Add it to PS3_ALLOWED_PREFIXES above, or fix PS3_PREFIX."; exit 1 ;;
+esac
+
+# Build the IAM fence from PS3_ALLOWED_PREFIXES so the two cannot drift.
+PS3_LIST_PREFIXES=""; PS3_GET_ARNS=""
+for _p in $PS3_ALLOWED_PREFIXES; do
+  PS3_LIST_PREFIXES="$PS3_LIST_PREFIXES,\"$_p/*\""
+  PS3_GET_ARNS="$PS3_GET_ARNS,\"arn:aws:s3:::$ARTIFACT_BUCKET/$_p/*\""
+done
+PS3_LIST_PREFIXES="${PS3_LIST_PREFIXES#,}"; PS3_GET_ARNS="${PS3_GET_ARNS#,}"
 
 ACCT=$(aws sts get-caller-identity --query Account --output text)
 SECRET_ARN=$(aws secretsmanager describe-secret --secret-id "$SECRET_NAME" --query ARN --output text)
@@ -36,18 +61,22 @@ if ! aws iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
   NEW=1
 fi
 aws iam attach-role-policy --role-name "$ROLE" --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
-# Read-only on S3, and scoped to BOTH prefixes so flipping PS3_PREFIX from
-# replay to production needs no policy edit -- an edit that would otherwise be
-# made under time pressure on the day the first production run lands.
+# Read-only on S3, fenced to every prefix in PS3_ALLOWED_PREFIXES. put-role-policy
+# REPLACES the document, so this is the whole fence, not an addition to it --
+# which is exactly why it is generated from the list rather than restated here.
+# Verify after deploying with:
+#   aws iam simulate-principal-policy --policy-source-arn <role-arn> \
+#     --action-names s3:ListBucket --resource-arns arn:aws:s3:::$ARTIFACT_BUCKET \
+#     --context-entries "ContextKeyName=s3:prefix,ContextKeyValues=$PS3_PREFIX/,ContextKeyType=string"
+echo "   fencing to: $PS3_ALLOWED_PREFIXES"
 aws iam put-role-policy --role-name "$ROLE" --policy-name ps3-v25-loader-inline --policy-document "{
   \"Version\":\"2012-10-17\",\"Statement\":[
     {\"Effect\":\"Allow\",\"Action\":\"secretsmanager:GetSecretValue\",\"Resource\":\"$SECRET_ARN\"},
     {\"Effect\":\"Allow\",\"Action\":[\"s3:ListBucket\"],
      \"Resource\":\"arn:aws:s3:::$ARTIFACT_BUCKET\",
-     \"Condition\":{\"StringLike\":{\"s3:prefix\":[\"ps3_outputs/*\",\"ps3_replay_outputs/*\"]}}},
+     \"Condition\":{\"StringLike\":{\"s3:prefix\":[$PS3_LIST_PREFIXES]}}},
     {\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\"],
-     \"Resource\":[\"arn:aws:s3:::$ARTIFACT_BUCKET/ps3_outputs/*\",
-                   \"arn:aws:s3:::$ARTIFACT_BUCKET/ps3_replay_outputs/*\"]}]}"
+     \"Resource\":[$PS3_GET_ARNS]}]}"
 ROLE_ARN=arn:aws:iam::$ACCT:role/$ROLE
 
 echo ">> [2/4] security group"

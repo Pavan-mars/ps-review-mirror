@@ -45,9 +45,12 @@
 // which is backwards. They are shown separated and labelled, never ranked
 // alongside the others.
 //
-// DATA VINTAGE. computed_date 2026-04-11, run_mode REPLAY,
-// is_current_operational_score false. The status bar says all three. This is
-// not a live operational score and must never read as one.
+// DATA VINTAGE. computed_date 2026-04-11, run_mode PRODUCTION (run
+// 6a787954, loaded 09-Aug-2026), is_current_operational_score false. The
+// status bar says all three. The middle one changed on 09-Aug and the other
+// two did not: the source extract still ends 11 Apr 2026 and the notebook
+// hardcodes the operational flag off, so this is still a retrospective
+// analysis and must never read as a live operational score.
 // =====================================================================
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getObj, getRows } from './V4api';
@@ -1751,8 +1754,14 @@ function StatusBar({ feed }) {
   const s = (feed && feed.rows && feed.rows[0]) || null;
   if (!s) return null;
   const coherent = !!s.coherent;
-  const replay = String(s.run_mode || '').toUpperCase() === 'REPLAY'
-    || s.is_current_operational_score === false;
+  // Two distinct facts, and after 09-Aug-2026 they no longer coincide. The run
+  // is PRODUCTION, but is_current_operational_score is false by design: the
+  // notebook hardcodes it and pins DATA_AS_OF_DATE to 2026-04-11, because this
+  // is a retrospective analysis and not a live score. Collapsing both into one
+  // boolean was fine while every run was a replay; it now puts the word
+  // "Replay" on a production run.
+  const isReplay = String(s.run_mode || '').toUpperCase() === 'REPLAY';
+  const replay = isReplay || s.is_current_operational_score === false;
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
@@ -1762,8 +1771,8 @@ function StatusBar({ feed }) {
         {coherent ? 'All tables from one run' : `${s.tables}/${s.expected_tables} tables loaded`}
       </Badge>
       {replay && (
-        <Badge tone="warning" title="run_mode REPLAY, is_current_operational_score false">
-          Replay run, not a live score
+        <Badge tone="warning" title={`run_mode ${s.run_mode || 'unknown'}, is_current_operational_score ${String(s.is_current_operational_score)}`}>
+          {isReplay ? 'Replay run, not a live score' : 'Historical analysis, not a live score'}
         </Badge>
       )}
       <span style={{ fontSize: 12.6, color: INK_2 }}>

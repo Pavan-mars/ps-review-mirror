@@ -358,11 +358,14 @@ def load_run(evt):
         except Exception as e:
             tally[tb] = f"count failed: {str(e)[:80]}"
     return ok({"action": "load_run", "files": results, "rows_after": tally,
-               "note": "PS1 device/serial rows are VALIDATOR only. All three v3 notebooks write to the "
-                       "same unpartitioned gold path device_ps1_cross_wired_daily, so VALIDATOR "
-                       "(last to run) overwrote the 184,386 TVM and 107,110 GATE rows their logs "
-                       "report writing. ps1_explainability stays empty on purpose: the run emits "
-                       "fleet-average SHAP broadcast to every row, not per-row contributions."})
+               "note": "All three fleets load. The cross-wired export writes one object per fleet "
+                       "at chicago/device_ps1_cross_wired_daily/{gate|tvm|validator} -- the fleet is "
+                       "the object key, not a directory or a write partition, so listing the prefix "
+                       "shows three keys and no partition= segment. Verified live 09-Aug-2026: GATE, "
+                       "TVM and VALIDATOR all return rows. An earlier version of this note claimed "
+                       "VALIDATOR overwrote the other two; that collision was real once and is fixed. "
+                       "ps1_explainability stays empty on purpose: the run emits fleet-average SHAP "
+                       "broadcast to every row, not per-row contributions."})
 
 def rows(sql, **kw):
     c = conn(); res = c.run(sql, **kw); cols = [d["name"] for d in c.columns]

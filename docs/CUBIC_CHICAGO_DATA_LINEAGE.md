@@ -612,3 +612,101 @@ value inside the command** rather than depending on a file written earlier: a
 file saved from `--query 'Environment.Variables'` has no `Variables` wrapper and
 is rejected, while a malformed-but-valid document would apply silently.
 
+### 10.11 PS1 fleet coverage — CORRECTION (09-Aug-2026)
+
+An earlier note in `handler.py`, and this document repeating it, claimed **"PS1 device/serial
+rows are VALIDATOR only"** — that all three v3 notebooks wrote to one unpartitioned path and
+VALIDATOR overwrote 184,386 TVM and 107,110 GATE rows.
+
+**That is not the current state.** Verified live 09-Aug-2026:
+
+```
+$API/ps1/leaderboard?category=GATE       -> 15 rows
+$API/ps1/leaderboard?category=TVM        -> 15 rows
+$API/ps1/leaderboard?category=VALIDATOR  -> 15 rows
+
+s3://…-artifacts-…/chicago/device_ps1_cross_wired_daily/gate        1,690,617 B
+s3://…-artifacts-…/chicago/device_ps1_cross_wired_daily/tvm         1,129,455 B
+s3://…-artifacts-…/chicago/device_ps1_cross_wired_daily/validator   4,662,463 B
+```
+
+**The mechanism, since it defeats the obvious checks.** The fleet is the **object key**, not a
+directory and not a write partition:
+
+- grepping the notebook source finds `"chicago/device_ps1_cross_wired_daily"` — that is the
+  **base prefix**, with the fleet appended at write time. Reading it as a complete path is
+  what produced the wrong conclusion.
+- there is no `partition_cols` / `.write.partitionBy` on this export. Every `partitionBy` in
+  the PS1 notebooks is an **analytic window** (rolling 7/30/90-day features, facility and
+  array peers, feature-store dedup). Their absence on the write is not evidence of collision.
+- `aws s3 ls <prefix> --recursive` shows three keys and no `partition=` segment, which looks
+  unpartitioned to a keyword scan but is correctly fleet-separated.
+
+**The lesson, which cost real time:** a comment in deployed code is not evidence of live
+state. The note was accurate when written and became stale. Check the system.
+
+Related and still valid: `cubic-mars-ps1-rds-push` DELETEs `ps1_failure_predictions` on
+`(city_id, computed_date)`. Now that all three fleets genuinely load, that is a live hazard —
+two fleets sharing a `computed_date` means the second wipes the first. Fixed 08-Aug (commit
+`78c7118`, category-scoped delete); **not yet deployed**.
+
+**Freshness note:** those three objects are dated **29-Jul-2026**. The loaders run daily on
+EventBridge but the notebooks are manual, so the nightly load re-reads the same 29-Jul
+artifacts. PS1 on the dashboard is as-of 29-Jul, not today.
+
+### 10.12 PS3 episode grain — ruled correct (09-Aug-2026)
+
+Contract `2026-08-03.v3` §6.2 binds PS3 to **calendar day**, `DISTINCT(DEVICE_ID,
+failure_date)`, "identical to PS1", so a PS3 row joins 1:1 to a PS1 failure-day row.
+
+PS3 v2.5 does **not** do that. It sessionises on raw event timestamps:
+
+```python
+gap_seconds  = PS1_OOS_EPISODE_GAP_DAYS * 86400        # 3 days = 259,200 s
+_new_episode = when(prior is null, 1)
+               .when(event_timestamp - prior > gap_seconds, 1).otherwise(0)
+oos_episode_id = sha2(category | device_id | episode_number)
+```
+
+Independently measured on the contract population (Databricks, 09-Aug):
+
+| | rows |
+|---|---|
+| PS1 grain — `DISTINCT(DEVICE_ID, failure_date)` | **967,981** |
+| PS3 published — sessionised episodes | **54,239** |
+
+**Ruled by PK, 09-Aug-2026: PS3 is correct as built.** Root cause operates on a causal
+*episode* — a 3-day cluster of OOS events on one device is one thing that went wrong, not
+seventeen. PS1 uses device-day because it joins ServiceNow, which is mapped at device-day.
+A PS3 episode maps 1:N to PS1 days; that is a clean relationship, not a broken join.
+
+**Action: amend the contract, not the code.** §3 and §6.2 should record PS3's grain as
+gap-sessionised episode (3-day window), with the 1:N mapping to PS1 stated explicitly.
+
+Verified alongside this: all three PS1 notebooks carry a byte-identical
+`attach_hardware_oos_label()` (`md5 4875190b5bd4`) using pure `.distinct()` on
+`(DEVICE_ID, to_date(EVENT_DTM))` — no sessionisation. PS1's grain is exactly what the
+contract says it is.
+
+### 10.13 PS3 contract compliance — independently verified (09-Aug-2026)
+
+Re-derived from `mars_dev.silver.device_event_enriched` in Databricks, not taken from the
+run's self-report:
+
+| Stage | Rows |
+|---|---|
+| `is_hardware_oos_event = TRUE`, in window | 30,288,947 |
+| `+ UPPER(TRIM(EVENT_STATE_TYPE_NAME)) = 'SET'` | 15,110,018 |
+| `+ fleet in (GATE, TVM, VALIDATOR)` | 15,019,419 |
+| `+ dim_device.is_current = TRUE` | **7,612,916** |
+
+The run's `ps3_oos_source_audit` claimed 15,019,419 scanned, 7,406,503 removed by
+`is_current`, 7,612,916 selected. **All three reproduce exactly**, as does the device count
+(2,806). No forbidden filter is applied — confirmed both by source inspection and by the
+count matching.
+
+Two apparent failures in the first verification pass were **the test's fault, not PS3's**:
+`ps3_facility_rollup` (366) is keyed by facility × category, and `ps3_serial_reliability`
+(2,762) by serial × device × category — comparing them against distinct-facility (213) and
+distinct-serial (1,079) counts was comparing different grains.
+

@@ -467,6 +467,18 @@ def rows(sql, **kw):
     c = conn(); res = c.run(sql, **kw); cols = [d["name"] for d in c.columns]
     return [dict(zip(cols, r)) for r in res]
 
+# PS1 fleet naming, 2026-08-10. The 13-Jul seed tables (ps1_failure_summary,
+# ps1_leaderboard) spell the fleets as display names -- 'TVM', 'Gates'. Every
+# table written by a notebook since -- ps1_model_performance, ps1_confusion,
+# ps1_feature_importance, ps1_cross_wired_daily -- spells them as codes:
+# 'TVM', 'GATE', 'VALIDATOR'. Nothing reconciled the two, which is why the
+# coverage note in PS1FailurePredictionTab.jsx resorts to matching on the
+# first three characters. One map, used by every route that has to cross that
+# boundary, so the reconciliation is stated once instead of guessed at N times.
+_PS1_DISPLAY = {"GATE": "Gates", "TVM": "TVM", "VALIDATOR": "Validator"}
+_PS1_CATEGORY = {"GATES": "GATE", "GATE": "GATE", "TVM": "TVM",
+                 "VALIDATOR": "VALIDATOR", "VALIDATORS": "VALIDATOR"}
+
 # Query-string integers reach here as strings and may be absent, blank, or
 # hostile. Clamped rather than trusted: an unbounded LIMIT from the URL is a
 # denial-of-service on a 34,612-row table, and a negative OFFSET is a 500.
@@ -2182,11 +2194,108 @@ def route(method, path, params, body):
             "ORDER BY betweenness DESC", c=city, s=sc))
     if path == "/ps2/conditional":
         return ok(rows("SELECT sub_a,sub_b,window_bucket,p_b_given_a FROM ps2_conditional_prob WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_conditional_prob WHERE city_id=:c) ORDER BY p_b_given_a DESC", c=city))
-    # ---- PS1 failure prediction (run 20260713_0905; NOT promoted) ----
+    # ---- PS1 model scorecard ----
+    #
+    # 2026-08-10 -- ps1_failure_summary RETIRED as the source of this route.
+    #
+    # WHAT IT WAS SERVING. Two rows, TVM and Gates, hand-seeded on 13-Jul-2026
+    # out of a console log by sql/04 (since moved to sql/manual/). quality_gate
+    # FAIL, promoted false, and target = 'will_fail_3d' -- a label name that
+    # exists nowhere in this system; the column the models are actually trained
+    # on is will_hardware_oos_3d. VALIDATOR was absent entirely. No loader has
+    # ever written to that table, so there was no refresh path: every day it
+    # aged by one and nothing could correct it. A dashboard panel reading it
+    # showed a four-week-old failure verdict as the current state of PS1.
+    #
+    # WHAT REPLACES IT. ps1_model_performance, written by the 26-Jul sklearn run
+    # through sql/load/, carrying all three fleets, quality_gate PASS, promoted
+    # true, and the real target column. ps1_confusion supplies accuracy, n_test,
+    # n_test_pos, the base rate and the operating point from the run's own
+    # TP/FP/TN/FN rather than from a literal typed into a seed file.
+    #
+    # THE COLUMN CONTRACT IS PRESERVED EXACTLY, because two live consumers read
+    # these names: dashboard/src/data/api.js:apiPS1Summary and the legacy
+    # PS1FailurePredictionTab. Columns the new source genuinely does not have --
+    # Brier, calibrated AUC, top-k, MAP, n_train, SageMaker registration,
+    # overfit_flag -- are returned as null and are NOT back-filled from the
+    # retired row. A null reads as "not measured". A stale number reads as fact.
+    #
+    # THE RETIRED TABLE IS NOT DROPPED AND NOT PURGED. If ps1_model_performance
+    # holds nothing for a city, this route falls back to it and says so in
+    # source_table, so no city that has not been re-run yet goes dark. That
+    # fallback is the reversibility of this change: delete the mp branch and the
+    # 13-Jul behaviour returns byte for byte.
     if path == "/ps1/summary":
-        return ok(rows("SELECT device,champion_model,test_auc,test_ap,test_accuracy,test_f1,test_precision,test_recall,op_threshold,op_fleet_pct,op_precision,op_recall,op_f2,recall_floor,quality_gate,promoted,brier_raw,brier_cal,auc_cal,prec_at_k,rec_at_k,lift_at_k,map_score,mlflow_version,sm_registered,endpoint_name,overfit_flag,n_train,n_test,n_test_pos,base_rate_pct,target,run_id FROM ps1_failure_summary WHERE city_id=:c "
-                       # champion-first: promoted models, then strongest test AUC.
-                       "ORDER BY promoted DESC, test_auc DESC NULLS LAST, device", c=city))
+        mp = rows("SELECT device_category,model_name,algorithm,test_auc,test_ap,test_f1,"
+                  "test_prec,test_rec,decision_threshold,quality_gate,promoted,endpoint_name,"
+                  "mlflow_version,n_features,recall_floor,base_rate_pct,target_col,"
+                  "label_revision,run_id,computed_date "
+                  "FROM ps1_model_performance WHERE city_id=:c AND computed_date="
+                  "(SELECT MAX(computed_date) FROM ps1_model_performance WHERE city_id=:c)",
+                  c=city)
+        if mp:
+            conf = {str(r["device_category"]): r for r in rows(
+                "SELECT device_category,tp,fp,tn,fn FROM ps1_confusion WHERE city_id=:c "
+                "AND computed_date=(SELECT MAX(computed_date) FROM ps1_confusion WHERE city_id=:c)",
+                c=city)}
+            out = []
+            for r in mp:
+                cat = str(r.get("device_category") or "")
+                cm  = conf.get(cat) or {}
+                tp = fp = tn = fn = None
+                if all(cm.get(k) is not None for k in ("tp", "fp", "tn", "fn")):
+                    tp, fp, tn, fn = int(cm["tp"]), int(cm["fp"]), int(cm["tn"]), int(cm["fn"])
+                n       = (tp + fp + tn + fn) if tp is not None else None
+                pos     = (tp + fn) if tp is not None else None
+                flagged = (tp + fp) if tp is not None else None
+                # The confusion matrix IS the operating point: it was computed at
+                # decision_threshold, so precision and recall read off it are the
+                # operating precision and recall, not a second set of numbers.
+                acc  = round((tp + tn) / n, 6) if n else None
+                op_p = round(tp / flagged, 6) if flagged else None
+                op_r = round(tp / pos, 6) if pos else None
+                op_f2 = (round(5.0 * op_p * op_r / (4.0 * op_p + op_r), 6)
+                         if op_p and op_r else None)
+                out.append({
+                    "device": _PS1_DISPLAY.get(cat, cat), "device_category": cat,
+                    "champion_model": r.get("model_name") or r.get("algorithm"),
+                    "algorithm": r.get("algorithm"),
+                    "test_auc": r.get("test_auc"), "test_ap": r.get("test_ap"),
+                    "test_accuracy": acc, "test_f1": r.get("test_f1"),
+                    "test_precision": r.get("test_prec"), "test_recall": r.get("test_rec"),
+                    "op_threshold": r.get("decision_threshold"),
+                    "op_fleet_pct": round(100.0 * flagged / n, 2) if n else None,
+                    "op_precision": op_p, "op_recall": op_r, "op_f2": op_f2,
+                    "recall_floor": r.get("recall_floor"),
+                    "quality_gate": r.get("quality_gate"), "promoted": r.get("promoted"),
+                    # Not measured by the run that wrote ps1_model_performance.
+                    # Null on purpose -- see the note above this route.
+                    "brier_raw": None, "brier_cal": None, "auc_cal": None,
+                    "prec_at_k": None, "rec_at_k": None, "lift_at_k": None,
+                    "map_score": None, "sm_registered": None, "overfit_flag": None,
+                    "n_train": None,
+                    "n_test": n, "n_test_pos": pos,
+                    "base_rate_pct": (r.get("base_rate_pct") if r.get("base_rate_pct") is not None
+                                      else (round(100.0 * pos / n, 2) if n else None)),
+                    "n_features": r.get("n_features"),
+                    "mlflow_version": r.get("mlflow_version"),
+                    "endpoint_name": r.get("endpoint_name"),
+                    "target": r.get("target_col"), "label_revision": r.get("label_revision"),
+                    "run_id": r.get("run_id"), "as_of_date": r.get("computed_date"),
+                    "source_table": "ps1_model_performance + ps1_confusion",
+                })
+            # champion-first: promoted models, then strongest test AUC.
+            out.sort(key=lambda x: (x.get("promoted") is not True,
+                                    -(_num(x.get("test_auc")) or 0.0),
+                                    str(x.get("device"))))
+            return ok(out)
+        legacy = rows("SELECT device,champion_model,test_auc,test_ap,test_accuracy,test_f1,test_precision,test_recall,op_threshold,op_fleet_pct,op_precision,op_recall,op_f2,recall_floor,quality_gate,promoted,brier_raw,brier_cal,auc_cal,prec_at_k,rec_at_k,lift_at_k,map_score,mlflow_version,sm_registered,endpoint_name,overfit_flag,n_train,n_test,n_test_pos,base_rate_pct,target,run_id,as_of_date FROM ps1_failure_summary WHERE city_id=:c "
+                      "ORDER BY promoted DESC, test_auc DESC NULLS LAST, device", c=city)
+        for r in legacy:
+            r["device_category"] = _PS1_CATEGORY.get(str(r.get("device") or "").upper())
+            r["source_table"] = ("ps1_failure_summary -- RETIRED 2026-08-10, shown only "
+                                 "because ps1_model_performance has no row for this city")
+        return ok(legacy)
     if path == "/ps1/leaderboard":
         # 2026-07-26 -- was ORDER BY device,lb_rank, which put the *non*-champion
         # top-AUC row first and buried the deployed champion (Gates: CatBoost at
@@ -2202,12 +2311,40 @@ def route(method, path, params, body):
         # device's leaderboard so each model is judged against the bar it must clear,
         # and carry base_rate_pct too -- that is the number that makes a high
         # accuracy readable (Gates base rate 0.54% => 99.46% is the do-nothing score).
+        #
+        # 2026-08-10 -- second reader of ps1_failure_summary, repointed with the
+        # route above. ps1_model_performance carries recall_floor and
+        # base_rate_pct (sql/16 added both), so the floor a model is judged
+        # against now comes from the same run that produced the model.
+        #
+        # The dict is keyed by BOTH spellings -- 'GATE' and 'Gates' -- because
+        # ps1_leaderboard.device is a display name and
+        # ps1_model_performance.device_category is a code. Keying on one and
+        # looking up with the other is what silently returned {} here before,
+        # and a missing floor does not raise: it simply means no model is ever
+        # judged below floor. A gate that cannot fail is not a gate.
+        floors = {}
         try:
-            floors = {str(x["device"]): x for x in rows(
-                "SELECT device,recall_floor,base_rate_pct,quality_gate FROM ps1_failure_summary "
-                "WHERE city_id=:c", c=city)}
+            for x in rows("SELECT device_category,recall_floor,base_rate_pct,quality_gate "
+                          "FROM ps1_model_performance WHERE city_id=:c AND computed_date="
+                          "(SELECT MAX(computed_date) FROM ps1_model_performance WHERE city_id=:c)",
+                          c=city):
+                cat = str(x.get("device_category") or "")
+                floors[cat] = x
+                floors[_PS1_DISPLAY.get(cat, cat)] = x
         except Exception:
             floors = {}
+        if not floors:
+            # Fallback to the retired table, same reversibility rule as /ps1/summary.
+            try:
+                for x in rows("SELECT device,recall_floor,base_rate_pct,quality_gate "
+                              "FROM ps1_failure_summary WHERE city_id=:c", c=city):
+                    dev = str(x.get("device") or "")
+                    floors[dev] = x
+                    cat = _PS1_CATEGORY.get(dev.upper())
+                    if cat: floors[cat] = x
+            except Exception:
+                floors = {}
         for r in lb:
             f = floors.get(str(r.get("device")), {})
             rf, rec = _num(f.get("recall_floor")), _num(r.get("rec"))
@@ -2295,7 +2432,11 @@ def route(method, path, params, body):
                 out.append({"table": tbl, "error": str(e)[:160]})
         return ok(out)
     if path == "/ps1/model-performance":
-        mp = rows("SELECT device_category,model_name,algorithm,decision_threshold,mlflow_version,endpoint_name,n_features,quality_gate,promoted,computed_date,test_auc,test_ap,test_f1,test_prec,test_rec FROM ps1_model_performance WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps1_model_performance WHERE city_id=:c)", c=city)
+        # 2026-08-10 -- target_col, label_revision, recall_floor, base_rate_pct and
+        # run_id were added to this table by sql/16 in July and have never been
+        # served. A scorecard that cannot say which label it was scored against,
+        # or what bar it had to clear, is not a scorecard. They are returned now.
+        mp = rows("SELECT device_category,model_name,algorithm,decision_threshold,mlflow_version,endpoint_name,n_features,quality_gate,promoted,computed_date,test_auc,test_ap,test_f1,test_prec,test_rec,target_col,label_revision,recall_floor,base_rate_pct,run_id FROM ps1_model_performance WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps1_model_performance WHERE city_id=:c)", c=city)
         # 2026-07-26 -- accuracy is now COMPUTED from the real confusion matrix
         # rather than hardcoded (the old {"TVM": 0.7033, "GATE": 0.9950} literal
         # was removed) or left NULL. ps1_confusion holds the run's actual
@@ -2347,8 +2488,28 @@ def route(method, path, params, body):
                         # 1.0000 / val AUC 1.0000) and drawing them next to the
                         # held-out numbers on a client dashboard reads as model
                         # quality when it is memorisation. Held-out test metrics only.
-                        # The overfit signal is still served, as the boolean
-                        # ps1_failure_summary.overfit_flag on /ps1/summary.
+                        # 2026-08-10 -- that overfit signal used to be described here as
+                        # "still served on /ps1/summary as ps1_failure_summary.overfit_flag".
+                        # It is not. /ps1/summary no longer reads that table and returns
+                        # overfit_flag as null, because ps1_model_performance does not
+                        # record one. Train/val AUC are the raw material for that flag and
+                        # they are deliberately withheld, so PS1 currently has NO served
+                        # overfit signal. Saying so is the honest state; the fix is for the
+                        # notebook to write the flag, not for this route to infer it.
+                        #
+                        # Provenance, added 2026-08-10. sql/16 put these five columns on
+                        # the table in July and nothing has ever served them.
+                        # base_rate_pct above is the DERIVED majority-class accuracy, so
+                        # the recorded column is returned under its own name rather than
+                        # overwriting it -- two different numbers, two different names.
+                        "target": r.get("target_col"), "target_col": r.get("target_col"),
+                        "label_revision": r.get("label_revision"),
+                        "recall_floor": r.get("recall_floor"),
+                        "recall_floor_met": (None if r.get("recall_floor") is None
+                                                     or r.get("test_rec") is None
+                                             else _num(r["test_rec"]) >= _num(r["recall_floor"])),
+                        "base_rate_pct_recorded": r.get("base_rate_pct"),
+                        "run_id": r.get("run_id"),
                         "s3_metrics": {"test_auc": r["test_auc"], "test_ap": r["test_ap"], "test_f1": r["test_f1"],
                                        "test_prec": r["test_prec"], "test_rec": r["test_rec"]}})
         # champion-first ordering for the model cards / registry table
@@ -2443,9 +2604,21 @@ def route(method, path, params, body):
         return ok(_xw("SELECT * FROM v_ps1_shap_importance WHERE city_id=:c "
                       "AND importance_rank <= :t "
                       "ORDER BY device_type, importance_rank", c=city, t=top))
+    # 2026-08-10. sql/50 changed this view from "omit the fleet" to "publish the
+    # fleet, withhold the conclusion". GATE was never absent from
+    # ps1_cross_wired_daily; it simply had fewer than 30 device-days on one side
+    # of the coordinated-station-failure split, and sql/34's WHERE clause turned
+    # that into a fleet the panel had never heard of.
+    #
+    # ORDER BY critical_lift DESC alone would now bury the insufficient fleets
+    # among the low-lift ones with no signal that they are different. Sufficient
+    # fleets rank first by lift; the rest follow ordered by how close they came,
+    # so "GATE, 6 of the 30 device-days needed" is a readable statement of what
+    # is missing rather than a blank.
     if path == "/ps1/xw-causation":
         return ok(_xw("SELECT * FROM v_ps1_xw_causation WHERE city_id=:c "
-                      "ORDER BY critical_lift DESC", c=city))
+                      "ORDER BY sufficient_data DESC, critical_lift DESC NULLS LAST, "
+                      "min_cell DESC, device_type", c=city))
     # ---- LOCATION DIMENSION -------------------------------------------
     # 2026-08-06. THE NAMES WERE ALWAYS THERE; NOTHING SERVED THEM.
     #

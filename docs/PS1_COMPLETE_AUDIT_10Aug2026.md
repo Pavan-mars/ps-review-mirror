@@ -198,7 +198,17 @@ had no serial rows — a partial load describing itself as complete.
 Also a label inconsistency: this route says **"Gates"**, every other route says
 **"GATE"**. Any client grouping across routes sees two fleets.
 
-**Fix:** repoint to `v_ps1_xw_summary`; normalise the label.
+**Fix:** ~~repoint to `v_ps1_xw_summary`~~; normalise the label.
+
+> **CORRECTION, 10-Aug-2026 — the fix above was WRONG. Do not act on it.**
+> `v_ps1_xw_summary` is a per-fleet ROW-COUNT reconciliation of the cross-wired
+> load. It carries no AUC, no threshold, no quality gate and no promotion
+> decision. Repointing a model scorecard at it would have replaced stale metrics
+> with no metrics. The correct replacement is **`ps1_model_performance` +
+> `ps1_confusion`**, which hold the 26-Jul sklearn run for all three fleets.
+> Implemented in `sql/51` and the `/ps1/summary` route — see handover §9.
+> The label normalisation half of the fix stands, and is done: `_PS1_DISPLAY` /
+> `_PS1_CATEGORY` in `handler.py`. NOT YET APPLIED to Aurora.
 
 ### 2.7 OPEN — P3: /ps1/serial-predictions shows one fleet
 
@@ -316,7 +326,7 @@ calls 27 routes and is still routed from `CityDashboard.jsx`.
 | 2 | Make `ps1-rds-push` transactional (copy the xw-loader pattern) | handler.py | low | 2.5 |
 | 3 | Per-category `MAX(computed_date)` in `/ps1/crosstab` and `device-360` | dashboard-api | low | 2.3 |
 | 4 | Repoint the five empty routes to their named views | dashboard-api | low | 2.4 |
-| 5 | Repoint `/ps1/summary` to `v_ps1_xw_summary`; normalise "Gates" → "GATE" | dashboard-api | low | 2.6 |
+| 5 | ~~Repoint `/ps1/summary` to `v_ps1_xw_summary`~~ **WRONG — see the correction in 2.6.** Repoint to `ps1_model_performance` + `ps1_confusion`; normalise "Gates" → "GATE". Code written, NOT applied — handover §9 | dashboard-api | low | 2.6 |
 | 6 | Decide serial-grain history: keep latest-date, or migrate the PK | schema | medium | 2.8 |
 | 7 | Reconcile `n_devices_scored` / `n_flagged` | handler.py | low | 2.9 |
 | 8 | Retire the stale `ps1_staging` CSV | S3 | low | 2.10 |

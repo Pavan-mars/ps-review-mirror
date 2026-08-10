@@ -190,3 +190,59 @@ retrying. `git checkout --` fails; use `git show HEAD:<path> > <path>`.
 All datalake buckets are VERSIONED [M 10-Aug] — a delete leaves a marker and is
 restorable. That is the safety net for the S3 cleanup, but do not rely on
 version archaeology as the recovery plan: copy to an archive prefix first.
+
+---
+
+## 8. PATH B DISABLED FOR PS1 -- 10-Aug-2026 11:55Z
+
+`cubic-mars-ps1-rds-push` and everything it feeds is retired. PS1 now runs on
+PATH A only (artifacts -> ps1-xw-loader -> ps1_cross_wired_daily -> the xw-*
+routes and v_ps1_predictions_xw).
+
+WHY, measured not asserted. Path B never once delivered all three fleets. Its
+entire load history, from ml_batch_load_audit:
+
+    ps1_20260726   ps1_failure_predictions   9,260 read ->  4,217 loaded
+    ps1_demo_v2    ps1_failure_predictions   9,260 read ->  4,217 loaded
+    ps1_20260810   ps1_failure_predictions 184,386 read -> 45,681 loaded
+    ps1_20260810   ps1_serial_predictions  184,386 read ->  1,897 loaded
+
+Four PS1 loads ever. One of them is named `ps1_demo_v2`. ps1_serial_predictions
+has exactly ONE audited load in its history. GATE has NEVER had a prediction row
+in that table. A complete Path B would hold 357,727 rows (GATE 80,720 + TVM
+45,681 + VALIDATOR 231,326); it holds 47,603, which is 13%.
+
+Root cause: all three PS1 notebooks write the SAME gold key
+chicago/gold/device_ps1_cross_wired_daily, so each fleet overwrites the last. No
+PS1 notebook uses partition_cols. Path A works because it writes one key per
+fleet.
+
+WHAT WAS CHANGED (both reversible, nothing deleted):
+  1. put-function-concurrency --reserved-concurrent-executions 0
+     Blocks BOTH invocation paths at once: the 06:15 cron AND the S3
+     ObjectCreated trigger on chicago/gold/device_ps1_cross_wired.
+  2. disable-rule cubic-mars-ps1-daily-push
+
+WHAT WAS DELIBERATELY NOT CHANGED:
+  * The S3 bucket notification on the gold bucket. Left ARMED on purpose. If a
+    notebook still writes to that prefix, S3 will try to invoke and fail loudly
+    as a throttle, which is a SIGNAL that something still feeds the dead path.
+    Removing the notification would make the same event silent. It is also the
+    only entry on that bucket, so removing it would have been safe: this was a
+    choice, not a constraint.
+  * The three tables. ps1_failure_predictions (47,603), ps1_serial_predictions
+    (6,004) and ps1_inference_runs (7) keep every row. They stop changing.
+
+RESTORE, if ever needed. Concurrency was 1, NOT unset. Restore to 1; do NOT use
+delete-function-concurrency, which removes the reservation entirely:
+
+    aws lambda put-function-concurrency --function-name cubic-mars-ps1-rds-push \
+      --reserved-concurrent-executions 1 --region us-east-1
+    aws events enable-rule --name cubic-mars-ps1-daily-push --region us-east-1
+
+Snapshot and UNDO.txt: ~/pathB_disable_20260810T115519Z/ in CloudShell.
+
+STILL OPEN. Five routes still read the now-frozen Path B tables and will serve
+13%-complete data indefinitely: /ps1/crosstab, /ps1/device-360 (its PS1 block,
+handler.py:685), /ps1/serial-predictions, /ps1/coverage, /ps1/runs. They need
+repointing to Path A or retiring. Not done here.

@@ -5,6 +5,53 @@
 # Idempotent. Resource IDs mirror api/lambda/cubic-mars-dashboard-api/deploy.sh.
 # =====================================================================
 set -euo pipefail
+
+# =====================================================================
+#  PATH B IS DISABLED. THIS SCRIPT WILL NOT RUN WITHOUT AN EXPLICIT OPT-IN.
+#  Added 2026-08-10.
+#
+#  WHY THIS GUARD EXISTS. On 10-Aug-2026 at 11:55Z the PS1 legacy path was
+#  deliberately switched off: cubic-mars-ps1-daily-push was DISABLED and this
+#  function was throttled to reserved concurrency 0. The decision is recorded
+#  in docs/CUBIC_CHICAGO_HANDOVER_10Aug2026.md section 8.
+#
+#  This script used to undo half of that silently. Two lines did it:
+#     step 6   put-rule ... --state ENABLED     <- re-enables the daily cron
+#     step 7   put-bucket-notification-config   <- re-arms the S3 trigger
+#  Anyone running this for an unrelated reason -- to fix the pandas layer, to
+#  redeploy after a code change -- would have walked away believing they had
+#  changed nothing, while the console showed the rule ENABLED again.
+#
+#  Reserved concurrency 0 would still have throttled the invocations, so no
+#  bad data would have loaded. That is luck, not design, and it depends on a
+#  second setting this script never checks.
+#
+#  TO REVIVE PATH B ON PURPOSE:  PATHB_REVIVE=1 bash deploy.sh
+#  Reviving also requires restoring concurrency by hand -- see the footer.
+# =====================================================================
+if [ "${PATHB_REVIVE:-0}" != "1" ]; then
+  cat <<'REFUSE'
+REFUSING TO RUN.
+
+  cubic-mars-ps1-rds-push is the PS1 LEGACY loader (Path B). It was disabled
+  on 2026-08-10 at 11:55Z. Running this script re-enables its EventBridge rule
+  and re-arms the S3 trigger on the gold bucket.
+
+  Path A -- cubic-mars-ps1-xw-loader -- is the live PS1 loader and is
+  unaffected by this script. If you came here to fix PS1, you almost certainly
+  want that one instead.
+
+  If you genuinely intend to bring Path B back:
+
+      PATHB_REVIVE=1 bash deploy.sh
+
+  Read docs/PS1_STATUS_10Aug2026_EOD.md section 2 first. Path B has never
+  once held all three fleets and holds zero GATE rows.
+REFUSE
+  exit 2
+fi
+echo "!! PATHB_REVIVE=1 -- deliberately reviving the PS1 legacy path"
+
 REGION=us-east-1
 FN=cubic-mars-ps1-rds-push
 ROLE=cubic-mars-ps1-rds-push-role-dev
@@ -164,8 +211,16 @@ echo "   Lambda ready"
 
 echo ">> [6/7] EventBridge daily schedule (06:15 UTC)"
 RULE=cubic-mars-ps1-daily-push
+# 2026-08-10. Was --state ENABLED, which silently undid the 11:55Z disable.
+# The rule is still CREATED so the wiring is complete and reviewable, but it is
+# created switched OFF. Turning it on is now a separate, deliberate, auditable
+# act rather than a side effect of running a deploy script.
+RULE_STATE=DISABLED
+[ "${PATHB_ENABLE_SCHEDULE:-0}" = "1" ] && RULE_STATE=ENABLED
 aws events put-rule --name $RULE --schedule-expression "cron(15 6 * * ? *)" \
-  --description "Daily PS1 gold -> Aurora push" --state ENABLED >/dev/null
+  --description "Daily PS1 gold -> Aurora push (DISABLED 2026-08-10, Path B retired)" \
+  --state $RULE_STATE >/dev/null
+echo "   rule state: $RULE_STATE  (PATHB_ENABLE_SCHEDULE=1 to arm the cron)"
 aws lambda add-permission --function-name "$FN" --statement-id ${RULE}-invoke \
   --action lambda:InvokeFunction --principal events.amazonaws.com \
   --source-arn arn:aws:events:$REGION:$ACCT:rule/$RULE >/dev/null 2>&1 || true
@@ -192,12 +247,43 @@ cat > /tmp/notif.json <<JSON
   "Events":["s3:ObjectCreated:*"],
   "Filter":{"Key":{"FilterRules":[{"Name":"prefix","Value":"chicago/gold/device_ps1_cross_wired"}]}}}]}
 JSON
-aws s3api put-bucket-notification-configuration --bucket $GOLD_BUCKET \
-  --notification-configuration file:///tmp/notif.json 2>/dev/null \
-  && echo "   S3 trigger set" \
-  || echo "   [warn] S3 notification not set (existing config would be overwritten, or no permission) — the EventBridge schedule still works"
+# 2026-08-10. This overwrites the ENTIRE bucket notification configuration --
+# put-bucket-notification-configuration is a REPLACE, not an append -- and it
+# re-arms a trigger on a path that feeds the retired loader. It is now opt-in.
+if [ "${PATHB_ARM_S3_TRIGGER:-0}" = "1" ]; then
+  echo "   [!] replacing the gold bucket notification configuration"
+  aws s3api put-bucket-notification-configuration --bucket $GOLD_BUCKET \
+    --notification-configuration file:///tmp/notif.json 2>/dev/null \
+    && echo "   S3 trigger set" \
+    || echo "   [warn] S3 notification not set (no permission, or existing config)"
+else
+  echo "   S3 trigger NOT armed (PATHB_ARM_S3_TRIGGER=1 to arm it)"
+  echo "   Existing configuration on $GOLD_BUCKET left exactly as it is."
+fi
 
 echo
 echo "DONE. Smoke test:"
 echo "  aws lambda invoke --function-name $FN --cli-binary-format raw-in-base64-out \\"
 echo "    --payload '{\"dry_run\":true}' /tmp/ps1.json && cat /tmp/ps1.json | head -c 1500"
+
+# =====================================================================
+#  IF YOU REVIVED PATH B, YOU ARE NOT DONE.
+#
+#  This script does NOT touch reserved concurrency, on purpose -- it is the
+#  last brake and it should not be released by a deploy script either. After
+#  PATHB_REVIVE=1, the function is deployed but still throttled to 0. To
+#  actually let it run:
+#
+#      aws lambda put-function-concurrency --function-name cubic-mars-ps1-rds-push \
+#        --reserved-concurrent-executions 1 --region us-east-1
+#
+#  It was 1 before the disable, NOT unset. Do not use
+#  delete-function-concurrency -- that removes the reservation entirely and is
+#  not the state this function was in.
+#
+#  And before any of that, satisfy yourself that Path B has a data source at
+#  all. As of 2026-08-10 NOTHING IN THIS REPOSITORY WRITES
+#  chicago/gold/device_ps1_cross_wired_daily. cross_wired_daily_job.py only
+#  READS it, as a legacy fallback. A revived loader with no producer will load
+#  whatever stale object is still sitting there.
+# =====================================================================

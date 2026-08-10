@@ -233,6 +233,134 @@ def describe(df):
     return {c: str(df[c].dtype) for c in df.columns}
 
 
+# ---------------------------------------------------------------------------
+# SOURCE FRESHNESS  (added 2026-08-10)
+#
+# THE PROBLEM THIS SOLVES. chicago/device_ps1_cross_wired_daily/ has held the
+# same three objects since 2026-07-29. The 06:40 cron reads them, rewrites the
+# same 786,525 rows, and reports success. It has reported success every morning
+# for twelve days while loading nothing new, and there is no way to tell that
+# from the report -- a re-load of identical bytes and a genuine daily refresh
+# produce the same "total_rows_loaded": 786525.
+#
+# That is CORRECT behaviour today: the programme's data stops at 2026-04-11 and
+# the incremental dump has not landed. It stops being correct the moment daily
+# ingestion starts, and nobody will notice the day it silently doesn't.
+#
+# A green run must therefore say WHICH of the two things happened. head_object
+# is a metadata call -- no body, no transfer cost -- so this is cheap enough to
+# do on every action including the read-only ones.
+#
+# The comparison is against the ETag recorded on the last SUCCESSFUL load in
+# ml_batch_load_audit.s3_source, encoded as "<key>@<etag>". ETag beats
+# LastModified here: re-uploading identical content changes the timestamp but
+# not the ETag, and it is content equality we care about.
+# ---------------------------------------------------------------------------
+def head_sources(slugs):
+    """Metadata only, no download. Returns {slug: {...}} and never raises."""
+    out = {}
+    for slug in slugs:
+        key = f"{PREFIX}/{slug}"
+        try:
+            h = s3.head_object(Bucket=BUCKET, Key=key)
+            lm = h["LastModified"]
+            age = (dt.datetime.now(dt.timezone.utc) - lm).total_seconds() / 86400.0
+            out[slug] = {
+                "key": key,
+                "etag": str(h.get("ETag", "")).strip('"'),
+                "last_modified": lm.isoformat(),
+                "age_days": round(age, 2),
+                "bytes": int(h.get("ContentLength") or 0),
+            }
+        except Exception as e:
+            out[slug] = {"key": key, "error": f"{type(e).__name__}: {e}"}
+    return out
+
+
+def last_loaded_etags(conn, slugs):
+    """{slug: etag} from the most recent SUCCESSFUL load audit row per slug."""
+    got = {}
+    for slug in slugs:
+        try:
+            r = conn.run(
+                "SELECT s3_source FROM ml_batch_load_audit "
+                "WHERE city_id = :c AND ps_id = 'PS1' AND status = 'success' "
+                "  AND s3_source LIKE :k "
+                "ORDER BY loaded_at DESC LIMIT 1",
+                c=CITY_ID, k=f"%{PREFIX}/{slug}@%")
+            if r and r[0][0] and "@" in str(r[0][0]):
+                got[slug] = str(r[0][0]).rsplit("@", 1)[1]
+        except Exception:
+            pass          # table missing or unreadable -> simply unknown
+    return got
+
+
+def freshness_verdict(heads, previous):
+    """Turn metadata + history into something a human can act on."""
+    per, unchanged, fresh, unknown, unreadable = {}, 0, 0, 0, 0
+    for slug, h in sorted(heads.items()):
+        if h.get("error"):
+            per[slug] = {"state": "UNREADABLE", "detail": h["error"]}
+            unreadable += 1
+            continue
+        prev = previous.get(slug)
+        if prev is None:
+            state = "NO_PRIOR_LOAD"
+            unknown += 1
+        elif prev == h["etag"]:
+            state = "UNCHANGED"
+            unchanged += 1
+        else:
+            state = "CHANGED"
+            fresh += 1
+        per[slug] = {"state": state, "age_days": h.get("age_days"),
+                     "last_modified": h.get("last_modified"),
+                     "etag": h.get("etag"), "previous_etag": prev}
+    # UNREADABLE dominates everything. A fleet whose object cannot be read is
+    # the most serious thing on this report, and the first version of this
+    # function let two healthy fleets outvote one missing one -- it announced
+    # "genuinely new data for every fleet" while GATE was absent from S3.
+    # Caught by scenario 5 of the test, not by reading the code.
+    if unreadable:
+        missing = sorted(k for k, v in per.items() if v["state"] == "UNREADABLE")
+        verdict = ("SOURCE UNREADABLE for " + ", ".join(missing).upper() +
+                   " -- that fleet's object could not be read from S3 at all. "
+                   "Any total below is missing it. Fix this before reading "
+                   "anything else on this report.")
+    elif unchanged and not fresh:
+        verdict = ("SOURCE UNCHANGED -- this is a re-load of bytes already in the "
+                   "database, not new data. Rows loaded is NOT evidence of freshness.")
+    elif fresh and not unchanged:
+        verdict = "SOURCE CHANGED -- genuinely new data for every fleet."
+    elif fresh and unchanged:
+        verdict = ("MIXED -- some fleets moved and some did not. Check per-fleet "
+                   "state below before trusting any cross-fleet total.")
+    else:
+        verdict = ("NO PRIOR LOAD RECORDED -- cannot say whether this is new data. "
+                   "The next run will be able to.")
+    return {"per_fleet": per, "n_unchanged": unchanged, "n_changed": fresh,
+            "n_unknown": unknown, "n_unreadable": unreadable, "verdict": verdict,
+            "source_prefix": f"s3://{BUCKET}/{PREFIX}/"}
+
+
+def write_load_audit(conn, slug, heads, rows_read, rows_loaded, run_id, status, err=None):
+    """One lineage row per fleet. s3_source carries '<key>@<etag>'."""
+    h = heads.get(slug) or {}
+    src = h.get("key") or f"{PREFIX}/{slug}"
+    if h.get("etag"):
+        src = f"{src}@{h['etag']}"
+    try:
+        conn.run(
+            "INSERT INTO ml_batch_load_audit "
+            "(city_id, ps_id, run_id, target_table, s3_source, rows_read, "
+            " rows_loaded, status, error_text) "
+            "VALUES (:c,'PS1',:r,'ps1_cross_wired_daily',:s,:rr,:rl,:st,:e)",
+            c=CITY_ID, r=run_id, s=src[:300], rr=int(rows_read),
+            rl=int(rows_loaded), st=status, e=(str(err)[:2000] if err else None))
+    except Exception as e:
+        print(f"[warn] load-audit row not written for {slug}: {type(e).__name__}: {e}")
+
+
 def shape_rows(df, device_type, asof, run_id, limit=None):
     """DataFrame -> list of tuples in TARGET_COLS order."""
     lower = {c.lower(): c for c in df.columns}
@@ -536,11 +664,34 @@ def lambda_handler(event, context):
     report = {"action": action, "bucket": BUCKET, "prefix": PREFIX,
               "city_id": CITY_ID, "run_id": run_id, "files": {}, "errors": {}}
 
+    # ---- freshness: read-only, no download, no write. Answers the one
+    # question a green cron cannot: did the source actually move?
+    #     aws lambda invoke ... --payload '{"action":"freshness"}'
+    if action == "freshness":
+        heads = head_sources(want)
+        prev = {}
+        try:
+            c = connect()
+            try:
+                prev = last_loaded_etags(c, want)
+            finally:
+                c.close()
+        except Exception as e:
+            report["errors"]["__db__"] = f"{type(e).__name__}: {e}"
+        report["source_freshness"] = freshness_verdict(heads, prev)
+        report["note"] = "freshness: nothing was read from S3 bodies and nothing was written"
+        print(json.dumps(report))
+        return report
+
     # verify touches no S3 and writes nothing -- return before the parquet reads.
     if action == "verify":
         return verify(report)
     if action == "audit":
         return audit(report, tuple(event.get("prefixes", ["ps1", "ps2", "ps3", "dim"])))
+
+    # Metadata first -- one head_object per fleet, no body. Used for the
+    # freshness verdict and for the lineage row written after the load.
+    heads = head_sources([x for x in want if x in TYPES])
 
     frames = {}
     for slug in want:
@@ -571,6 +722,16 @@ def lambda_handler(event, context):
         report["total_rows_in_s3"] = sum(
             f.get("rows_in_s3", 0) for f in report["files"].values())
         report["expected"] = EXPECTED
+        prev_dry = {}
+        try:
+            _c = connect()
+            try:
+                prev_dry = last_loaded_etags(_c, [x for x in want if x in TYPES])
+            finally:
+                _c.close()
+        except Exception:
+            pass
+        report["source_freshness"] = freshness_verdict(heads, prev_dry)
         report["note"] = "dry_run: nothing was written"
         return report
 
@@ -578,6 +739,10 @@ def lambda_handler(event, context):
     # Report it. A silent database mismatch is what made the first load fail.
     report["connected_to"] = dict(CONN_INFO)
     total = 0
+
+    # Read the PREVIOUS load's ETags before this run writes anything, so the
+    # comparison is against history rather than against ourselves.
+    prev_etags = last_loaded_etags(conn, [x for x in want if x in TYPES])
     try:
         conn.run("BEGIN")
         for slug, df in frames.items():
@@ -618,11 +783,34 @@ def lambda_handler(event, context):
             pass
         report["errors"]["__transaction__"] = f"{type(e).__name__}: {e}"
     finally:
+        # Lineage, written AFTER the transaction resolves so status is the truth
+        # and not an intention. Outside the transaction on purpose: a failed load
+        # must still leave a record that it was attempted. This loader wrote no
+        # audit row at all before 2026-08-10, which is why nobody could tell that
+        # twelve consecutive "successful" runs had loaded the same bytes.
+        try:
+            txn_failed = "__transaction__" in report.get("errors", {})
+            for _slug in [x for x in want if x in TYPES]:
+                _f = report.get("files", {}).get(_slug) or {}
+                _rr = int(_f.get("rows_in_s3") or 0)
+                _rl = int(_f.get("rows_loaded") or 0)
+                if txn_failed:
+                    _st, _er = "failed", report["errors"]["__transaction__"]
+                elif _slug in report.get("errors", {}):
+                    _st, _er = "failed", report["errors"][_slug]
+                elif _rl and _rl == _rr:
+                    _st, _er = "success", None
+                else:
+                    _st, _er = "partial", f"rows_read={_rr} rows_loaded={_rl}"
+                write_load_audit(conn, _slug, heads, _rr, _rl, run_id, _st, _er)
+        except Exception as _e:
+            print(f"[warn] load-audit block failed: {type(_e).__name__}: {_e}")
         try:
             conn.close()
         except Exception:
             pass
 
+    report["source_freshness"] = freshness_verdict(heads, prev_etags)
     report["total_rows_loaded"] = total
     report["expected"] = EXPECTED
     print(json.dumps({k: v for k, v in report.items() if k != "files"}))

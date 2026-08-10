@@ -52,18 +52,40 @@ echo "   SG=$SG"
 # That is what killed step 3/6 of deploy_e2e.sh on 26-Jul. Passing the FULL ARN as
 # --layer-name resolves a layer owned by another account, and an unresolved layer
 # now aborts instead of deploying something broken.
+# 10-Aug-2026 FIX. The 26-Jul change above passed the full ARN as --layer-name,
+# but list-layer-versions STILL fails on another account's layer: it needs
+# lambda:ListLayerVersions on that resource, which AWS's public layers do not
+# grant. So this script could never resolve the layer and always hit the abort
+# below -- while ps2, ps3, ps4, ps1-xw and dim all deploy fine, because they use
+# get-layer-version-by-arn, which public layers DO allow. PS1 was the only
+# loader using list-layer-versions alone, and the only one that could not deploy.
+#
+# Resolve by ARN first (pinned to :29, the version every other deployed loader
+# is running, so PS1 does not silently drift onto a different one), then fall
+# back to the newest version, then to the old list call. LAYER_ARN can be set in
+# the environment to override all of it.
 echo ">> [3/7] AWS SDK for pandas layer (supplies pyarrow)"
 AWS_SDK_PANDAS_ACCT=336392948345
-LAYER_ARN=""; RUNTIME=""
-for PYV in 312 311; do
-  CAND=$(aws lambda list-layer-versions \
-           --layer-name arn:aws:lambda:$REGION:$AWS_SDK_PANDAS_ACCT:layer:AWSSDKPandas-Python$PYV \
-           --region $REGION --query 'LayerVersions[0].LayerVersionArn' \
-           --output text 2>/dev/null || echo None)
-  if [ -n "$CAND" ] && [ "$CAND" != "None" ]; then
-    LAYER_ARN="$CAND"; RUNTIME="python3.${PYV:1}"; break
-  fi
-done
+PINNED_LAYER_VERSION=${PINNED_LAYER_VERSION:-29}
+LAYER_ARN="${LAYER_ARN:-}"; RUNTIME="${RUNTIME:-}"
+if [ -n "$LAYER_ARN" ]; then
+  RUNTIME="${RUNTIME:-python3.12}"
+  echo "   using LAYER_ARN from the environment"
+else
+  for PYV in 312 311; do
+    BASE=arn:aws:lambda:$REGION:$AWS_SDK_PANDAS_ACCT:layer:AWSSDKPandas-Python$PYV
+    if aws lambda get-layer-version-by-arn --arn "$BASE:$PINNED_LAYER_VERSION" \
+         --region $REGION --query LayerVersionArn --output text >/dev/null 2>&1; then
+      LAYER_ARN="$BASE:$PINNED_LAYER_VERSION"; RUNTIME="python3.${PYV:1}"; break
+    fi
+    CAND=$(aws lambda list-layer-versions --layer-name "$BASE" \
+             --region $REGION --query 'LayerVersions[0].LayerVersionArn' \
+             --output text 2>/dev/null || echo None)
+    if [ -n "$CAND" ] && [ "$CAND" != "None" ]; then
+      LAYER_ARN="$CAND"; RUNTIME="python3.${PYV:1}"; break
+    fi
+  done
+fi
 if [ -z "$LAYER_ARN" ]; then
   echo "!! Could not resolve the AWSSDKPandas layer in $REGION -- refusing to deploy."
   exit 1

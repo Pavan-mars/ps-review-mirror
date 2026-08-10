@@ -98,3 +98,14 @@ PS5_reliability_v5_outputs/
 # Notebook HTML exports (nbconvert); keep docs/ HTML tracked
 **/PS2_SerialGrain*.html
 **/PS4_FaultClustering*_output_*.html
+
+# --- SageMaker Studio scratch (added 10-Aug-2026) -------------------------
+# Studio is an execution workspace, not a git working copy. These are the
+# artefacts a run leaves behind there; the same data already lives in S3.
+# Committing them from Studio is how V22-V25 ended up staged as deletions.
+PS3_V2?_outputs/
+PS3_sql_outputs/
+PS3_taxonomy_outputs/
+catboost_info/
+Untitled*.ipynb
+*.ipynb.invalid

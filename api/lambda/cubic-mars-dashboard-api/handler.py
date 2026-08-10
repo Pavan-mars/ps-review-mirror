@@ -125,6 +125,102 @@ def _migrate_run(st):
             conn().run(st); return None
         except Exception as e2:
             return e2
+# ---------------------------------------------------------------------------
+# apply_sql  (added 2026-08-10)
+#
+# Apply ONE named file from sql/, and nothing else.
+#
+# WHY THIS EXISTS. migrate() applies a hardcoded list of sql/01 - sql/25 on
+# every deploy. The repo carries 46 files. Everything from 26 upward -- which
+# includes sql/34 (the PS1 cross-wired tables and views), sql/35 (the label
+# onset views), sql/36 and sql/37 (v_ps1_predictions_xw, which /ps1/predictions
+# reads) -- is NOT in that list. There has been no way to apply a NEW migration
+# without also re-running 25 old ones, and two of those write data:
+#
+#   sql/08_ps2_run_backfill.sql       DELETEs and re-INSERTs hardcoded PS2 rows
+#                                     for computed_date 2026-07-14
+#   sql/18_purge_ps3_bridge_test_rows DELETEs ps3_severity_predictions rows
+#
+# Adding a PS1 index should not put PS2 data at risk. This action makes the unit
+# of application one reviewed file.
+#
+# WHAT IT WILL NOT DO. It takes a FILE NAME, never SQL. The name must match the
+# sql/ convention -- digits, underscore, word characters, .sql -- so there is no
+# path traversal, no glob, and nothing from the event body reaches the database.
+# The only thing it can run is a file that was reviewed and packaged into the
+# deployment artifact.
+#
+#   aws lambda invoke ... --payload '{"action":"apply_sql","file":"49_ps1_xw_unique_index.sql","dry_run":true}'
+#   aws lambda invoke ... --payload '{"action":"apply_sql","file":"49_ps1_xw_unique_index.sql"}'
+#
+# dry_run returns the statements that WOULD run, split exactly as execution
+# would split them, and touches nothing.
+#
+# Per-statement behaviour, error tolerance and dead-socket handling are migrate's
+# -- it reuses split_sql and _migrate_run rather than reimplementing them, so the
+# two cannot drift apart.
+# ---------------------------------------------------------------------------
+def apply_sql(evt):
+    global _CONN_TIMEOUT, _conn
+    evt = evt or {}
+    name = str(evt.get("file") or "").strip()
+    if not re.fullmatch(r"[0-9]{2,3}_[A-Za-z0-9_]+\.sql", name):
+        return {"statusCode": 400, "body": json.dumps({
+            "error": "file must be a bare sql/ filename such as "
+                     "49_ps1_xw_unique_index.sql -- no paths, no SQL",
+            "got": name[:120]})}
+    here = os.path.dirname(__file__)
+    path = os.path.join(here, "sql", name)
+    if not os.path.exists(path):
+        return {"statusCode": 404, "body": json.dumps({
+            "error": "not packaged in this deployment", "file": name,
+            "available": sorted(os.listdir(os.path.join(here, "sql")))[:60]})}
+
+    text  = open(path).read()
+    stmts = split_sql(text)
+    head  = [s.strip().splitlines()[0][:100] if s.strip() else "" for s in stmts]
+
+    if evt.get("dry_run"):
+        return {"statusCode": 200, "body": json.dumps({
+            "apply_sql": {"file": name, "dry_run": True,
+                          "statements": len(stmts), "first_lines": head}}, default=str)}
+
+    # DDL needs the longer socket timeout, and a FRESH connection so the new
+    # value actually takes effect -- a cached socket keeps the timeout it was
+    # built with. Restored before returning. Same reasoning as migrate().
+    _prev = _CONN_TIMEOUT
+    _CONN_TIMEOUT = 180
+    try: _conn.close()
+    except Exception: pass
+    _conn = None
+    conn()
+
+    applied = tolerated = failed = 0
+    errs, reconnects = [], 0
+    for st in stmts:
+        _e = _migrate_run(st)
+        if _e is None:
+            applied += 1
+        else:
+            msg = str(_e).lower()
+            if any(t in msg for t in _OK):
+                tolerated += 1
+            else:
+                failed += 1
+                if any(t in msg for t in _DEAD):
+                    reconnects += 1
+                if len(errs) < 8:
+                    errs.append(str(_e)[:300])
+    _CONN_TIMEOUT = _prev
+    out = {"file": name, "statements": len(stmts), "applied": applied,
+           "tolerated": tolerated, "failed": failed, "errors": errs,
+           "first_lines": head}
+    if reconnects:
+        out["dead_socket_after_retry"] = reconnects
+    return {"statusCode": 200 if failed == 0 else 500,
+            "body": json.dumps({"apply_sql": out}, default=str)}
+
+
 def migrate(_evt):
     here = os.path.dirname(__file__); results = {}
     # Longer socket timeout for DDL, and a FRESH connection so the new value
@@ -4021,6 +4117,8 @@ def lambda_handler(event, context):
         return recreate(event)
     if isinstance(event, dict) and event.get("action") == "load_run":
         return load_run(event)
+    if isinstance(event, dict) and event.get("action") == "apply_sql":
+        return apply_sql(event)
     rc = (event or {}).get("requestContext", {}).get("http", {})
     method = rc.get("method", "GET"); path = event.get("rawPath", "/")
     params = event.get("queryStringParameters") or {}

@@ -189,19 +189,57 @@ def build_rows(table, city, run_id, computed_date, gold_s3):
     # ---- serial grain (equal-split attribution)
     ser_rows = []
     if col["matched_serial_nbr"]:
-        keep = {}
+        # THE DEDUP KEY MUST BE THE PRIMARY KEY. ps1_serial_predictions_pkey is
+        # (city_id, run_id, device_id, matched_serial_nbr) -- there is no date in
+        # it. This used to key on (device, serial, DAY), so a source carrying the
+        # same device+serial on several days produced one row per day, all with
+        # the same run_id, and the second INSERT violated the key. The source is
+        # device_ps1_cross_wired_DAILY: multi-day is the normal shape, so this
+        # failed on every real file, not an edge case.
+        #
+        # Collapse to the LATEST prediction_date per device, then keep that day's
+        # serials. One row per (device, serial), and the equal-split weights
+        # still sum to exactly 1.0 because every surviving serial shares one day.
+        #
+        # The key is built from the TRUNCATED values, because those are what the
+        # constraint sees -- two serials differing only past character 64 collide
+        # in the table even though they differ in the source.
+        latest_day = {}
         for i in range(table.num_rows):
             if ser[i] is None:
                 continue
-            keep.setdefault((dev[i], str(ser[i]), day[i]), i)
-        # count DISTINCT serials per device-day so the weights sum to exactly 1.0
+            d = dev[i]
+            if d not in latest_day or day[i] > latest_day[d]:
+                latest_day[d] = day[i]
+
+        keep, dropped_older, dropped_dup = {}, 0, 0
+        for i in range(table.num_rows):
+            if ser[i] is None:
+                continue
+            if day[i] != latest_day[dev[i]]:
+                dropped_older += 1
+                continue
+            k = (dev[i][:40], str(ser[i])[:64])
+            if k in keep:
+                dropped_dup += 1
+                continue
+            keep[k] = i
+        if dropped_older:
+            warn.append(f"serial grain: kept only each device's latest prediction_date; "
+                        f"{dropped_older:,} row(s) on earlier dates dropped because the "
+                        f"table's primary key has no date column")
+        if dropped_dup:
+            warn.append(f"serial grain: {dropped_dup:,} duplicate (device, serial) pair(s) "
+                        f"collapsed after truncation to the key's column widths")
+        # count DISTINCT serials per device so the weights sum to exactly 1.0
         counts = {}
-        for (d, s, dy) in keep:
-            counts[(d, dy)] = counts.get((d, dy), 0) + 1
-        for (d, s, dy), i in keep.items():
-            w = round(1.0 / counts[(d, dy)], 5)
+        for (d, s) in keep:
+            counts[d] = counts.get(d, 0) + 1
+        for (d, s), i in keep.items():
+            dy = day[i]
+            w = round(1.0 / counts[d], 5)
             ser_rows.append(dict(
-                city_id=city, run_id=run_id, device_id=d[:40], matched_serial_nbr=s[:64],
+                city_id=city, run_id=run_id, device_id=d, matched_serial_nbr=s,
                 device_category=(str(cat[i]) if cat[i] is not None else None),
                 component_type=(str(ctype[i])[:48] if ctype[i] is not None else None),
                 component_age_days=(round(cage[i], 2) if cage[i] is not None else None),

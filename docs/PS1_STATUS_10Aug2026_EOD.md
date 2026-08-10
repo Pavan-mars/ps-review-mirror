@@ -91,7 +91,14 @@ simultaneously — it holds zero GATE rows. [M am]
 
 Three objects = one per fleet, matching the loader's one-key-per-fleet read. [V]
 
-> **Finding S-1 — the "daily" PS1 load has had nothing new to load since 29-Jul.**
+> **Finding S-1 — FIXED 10-Aug, commit `6b78b20`.** The loader now reports a
+> per-fleet freshness verdict (`UNCHANGED` / `CHANGED` / `NO_PRIOR_LOAD` /
+> `UNREADABLE`) by comparing each object's ETag against the last successful
+> load recorded in `ml_batch_load_audit`, and writes the lineage row it never
+> wrote before. New read-only action: `{"action":"freshness"}`. Original
+> finding, for the record:
+>
+> **The "daily" PS1 load has had nothing new to load since 29-Jul.**
 > The source objects are static. The 06:40 cron re-reads the same three files
 > every morning and rewrites the same 786,525 rows. This is **correct given the
 > 11-Apr-2026 data cutoff**, not a fault — but it means a green daily run proves
@@ -291,9 +298,9 @@ Ordered by what I would do first, not by severity alone.
 
 | # | Finding | Evidence | Fix | Effort |
 |---|---|---|---|---|
-| **1** | **L-2: `ps1-rds-push/deploy.sh` re-enables the Path B rule and re-arms the S3 trigger** | [V] | Guard + `--state DISABLED` + assert concurrency 0 | 10 min |
+| ~~1~~ | ~~L-2: `ps1-rds-push/deploy.sh` re-enables the Path B rule~~ **FIXED 10-Aug, commit `6b78b20`** — refuses without `PATHB_REVIVE=1` (verified: exits before the first aws call), rule created `DISABLED`, S3 trigger opt-in | [V] | done | done |
 | **2** | Scorecard + causation fixes committed but **not applied** — `/ps1/summary` still serves the 13-Jul seed, GATE still absent from causation | [V] | `tooling/ps1_retire_apply.sh` with `APPLY=1` | 30 min |
-| **3** | **2.2: the gold export overwrites fleets** — root cause of four separate symptoms | [M am] | `partition_cols=['device_category']` in cell 24 of the three notebooks | notebook change |
+| ~~3~~ | ~~2.2: the gold export overwrites fleets~~ **REFUTED 10-Aug evening.** Cell 24 already writes one prefix per fleet; nothing in the repo writes the gold key at all. **Do not change the notebooks.** See audit 2.2 correction | [V] | none — the defect does not exist | — |
 | **4** | 5 routes read frozen Path B tables and will serve 13%-complete data indefinitely | [M am] | Repoint to Path A views, or retire the routes | half day |
 | **5** | **2.3: `MAX(computed_date)` hides fleets** — per-fleet loads at different dates mean only the newest fleet is visible | [M am] | Per-category `MAX` in `/ps1/crosstab` and `/ps1/device-360` | 1 hour |
 | **6** | **G-2: no drift detection** between deployed Lambda code and the repo | [V] | Scheduled diff job, all loaders | 2 hours |
@@ -307,10 +314,19 @@ Ordered by what I would do first, not by severity alone.
 | **14** | VALIDATOR has no `recall_floor` — gated on nothing | [V] | Parked by your decision 10-Aug | — |
 | **15** | D-1: API Gateway `auth=NONE` | [M 05:48Z] | Programme-level, not PS1's to fix | go-live blocker |
 
-**#3 is the highest-leverage single change.** The morning audit traced findings
-2.2, 2.3, 2.6 and 2.7 to one root cause: the notebook writes one gold key per
-run rather than one per fleet, so each fleet's export overwrites the last. Fix
-the `partition_cols` and four symptoms stop being possible.
+> **The "one root cause behind four symptoms" claim is withdrawn.** The morning
+> audit tied 2.2, 2.3, 2.6 and 2.7 to a single notebook defect. That defect does
+> not exist — cell 24 already partitions by fleet, which is why Path A carries
+> all three. The four symptoms are therefore **not** known to share a cause, and
+> each needs its own diagnosis.
+>
+> **NEW OPEN QUESTION, replacing it: what produced Path B's source object?**
+> Nothing in this repository writes `chicago/gold/device_ps1_cross_wired_daily`.
+> Something did once — the object exists and Path B loaded 47,603 rows from it.
+> Until that producer is identified, reviving Path B would load whatever stale
+> object is still sitting there, and "why does Path B have zero GATE rows"
+> stays unanswered. Not urgent while Path B is disabled; blocking if it is ever
+> revived.
 
 ---
 

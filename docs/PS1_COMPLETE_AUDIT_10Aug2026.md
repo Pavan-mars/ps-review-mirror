@@ -135,8 +135,59 @@ The loader's own note confirms it at read time:
 **Consequence [M]:** `ps1_failure_predictions` holds TVM 45,681 + VALIDATOR
 1,922 and **has never held a GATE row** (`/ps1/coverage`).
 
-**Fix:** `partition_cols=['device_category']` in cell 24 of each fleet notebook,
-OR one key per fleet as path A already does. Path A proves the second works.
+**Fix:** ~~`partition_cols=['device_category']` in cell 24 of each fleet
+notebook~~
+
+> ### CORRECTION, 10-Aug-2026 evening — THIS ENTIRE FINDING WAS WRONG. Do not act on it.
+>
+> I read cell 24 of all three fleet notebooks. **It already writes one prefix
+> per fleet**, with an explicit Python loop rather than the `partition_cols`
+> keyword: [V]
+>
+> ```python
+> for _cat in sorted(comp_preds_df["device_category"].dropna().unique()):
+>     _slug  = str(_cat).strip().lower()
+>     _cat_df = comp_preds_df[comp_preds_df["device_category"] == _cat]
+>     _out   = f"{ps1_xw_base}/{_slug}/"
+>     _cat_df.to_parquet(_out, index=False, storage_options=S3_OPTS)
+> ```
+>
+> The cell's own header says so: *"Write ServiceNow-ready parquet to S3
+> (GATE / TVM / VALIDATOR separate prefixes)"*. **This is exactly why Path A
+> is healthy with all three fleets.** Adding `partition_cols` here would have
+> modified a working export to fix a defect it does not have.
+>
+> **And the gold key nothing writes.** No notebook and no script in this
+> repository writes `s3://<gold>/chicago/gold/device_ps1_cross_wired_daily`.
+> Searched every notebook and every `.py` for a write referencing the gold
+> bucket or that key: zero hits. The only reference is
+> `notebooks/cross_wired_daily_job.py:278`, which **reads** it and names the
+> variable `ps1_xw_legacy_bases` — a fallback for fleets missing from the
+> artifacts path. [V]
+>
+> So Path B's source object is produced by nothing that still exists in this
+> codebase. **That, not `partition_cols`, is why Path B is 13% complete.**
+>
+> **HOW I GOT THIS WRONG, because the mechanism matters more than the error.**
+> The morning check was a grep for the string `partition_cols`, which returned
+> "False" for all six notebooks. That much is true — none of them uses the
+> keyword. I then inferred, without checking, that they must therefore all
+> write one shared key and overwrite each other. They do not; a loop achieves
+> the same thing.
+>
+> Worse, I quoted this as corroboration:
+>
+> > *"ONLY ONE device_category present (TVM) — the notebook's CELL 24 writes
+> > without partition_cols, so each run overwrites the previous category."*
+>
+> That sentence is not a measurement. It is a **hypothesis written into a code
+> comment** at `api/lambda/cubic-mars-ps1-rds-push/handler.py:274` and repeated
+> in that function's `README.md:65`, by whoever built Path B. I cited a comment
+> asserting a cause as evidence for that cause. Circular, and it survived
+> because the conclusion sounded right.
+>
+> **The real reason Path B holds zero GATE rows is still unknown** and is now
+> a genuine open question rather than a solved one — see the status document.
 
 ### 2.3 OPEN — P1: fleets hide each other via MAX(computed_date)
 
@@ -322,7 +373,7 @@ calls 27 routes and is still routed from `CityDashboard.jsx`.
 
 | # | Fix | Where | Risk | Addresses |
 |---|-----|-------|------|-----------|
-| 1 | `partition_cols=['device_category']` (or one key per fleet) in cell 24 of the three fleet notebooks | notebooks | low | root cause of 2.2, 2.3, 2.6, 2.7 |
+| 1 | ~~`partition_cols=['device_category']` in cell 24~~ **REFUTED 10-Aug evening — cell 24 already writes one prefix per fleet. See the correction in 2.2. Do not change the notebooks.** | — | — | — |
 | 2 | Make `ps1-rds-push` transactional (copy the xw-loader pattern) | handler.py | low | 2.5 |
 | 3 | Per-category `MAX(computed_date)` in `/ps1/crosstab` and `device-360` | dashboard-api | low | 2.3 |
 | 4 | Repoint the five empty routes to their named views | dashboard-api | low | 2.4 |

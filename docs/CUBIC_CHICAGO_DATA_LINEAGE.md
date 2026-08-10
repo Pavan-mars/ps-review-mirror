@@ -710,3 +710,43 @@ Two apparent failures in the first verification pass were **the test's fault, no
 (2,762) by serial × device × category — comparing them against distinct-facility (213) and
 distinct-serial (1,079) counts was comparing different grains.
 
+
+### 10.14 Data vintage — the April 2026 cutoff is BY DESIGN (10-Aug-2026)
+
+`mars_dev.silver.device_event_enriched` ends at **2026-04-11 17:51:34**, with
+123,466 rows on 11-Apr and none after it. Measured 10-Aug-2026, that is a
+121-day gap. It is NOT a broken pipeline, a failed ingestion or a defect.
+
+Chicago holds a historical dump through 11-Apr-2026. Every PS1-PS5 model is
+trained and scored on that dump. The programme sequence, per PK 10-Aug-2026:
+
+  1. historical dump to 11-Apr-2026   <-- WE ARE HERE
+  2. incremental dump delivers the balance, models are refreshed against it
+  3. daily ingestion commences; the daily loaders start seeing new data
+
+Anyone auditing this chain will notice the gap and reach for the wrong
+conclusion, so state it plainly wherever vintage appears.
+
+WHAT THIS MEANS IN PRACTICE
+
+* `is_current_operational_score = false` on PS3 is HONEST, not a bug. The
+  scores describe the estate as of 11-Apr-2026, and the V4 status bar says so
+  ("Source extract ends 11 Apr 2026"). Do not suppress that badge.
+* `PS3_DATA_AS_OF_DATE` is an environment variable, not a hardcoded pin
+  (`os.environ["PS3_DATA_AS_OF_DATE"] = "2026-04-11"` in the run-config cell
+  of PS3_V26_PRODUCTION.ipynb). When stage 2 lands, moving the as-of is a
+  one-line change. `is_current_operational_score`, by contrast, IS hardcoded
+  False in three places in the notebook and must become computed from the
+  as-of recency before any run can honestly claim to be current.
+* Daily EventBridge crons (dim 05:45, ps1 06:15, ps1-xw 06:40, ps2 07:10,
+  ps4 07:10, ps5 07:20, ps4-v3 Mon 08:00) currently re-run against a static
+  source. Their outputs are correspondingly static -- e.g.
+  `chicago/device_ps1_cross_wired_daily/` last changed 29-Jul-2026 despite a
+  daily schedule. Confirm each is SUCCEEDING rather than silently erroring:
+  a job that has been failing since April and a job that correctly finds
+  nothing new look identical from the S3 timestamps alone.
+* Endpoint work (PS3, PS4) should be BUILT and validated against the
+  historical dump now, so it is ready when stage 3 begins -- but no endpoint
+  can produce current inference before the data does.
+
+DO NOT record this gap as staleness, an incident, or a go-live blocker.

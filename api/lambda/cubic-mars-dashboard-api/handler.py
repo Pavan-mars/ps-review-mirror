@@ -2418,9 +2418,26 @@ def route(method, path, params, body):
         return ok(_xw("SELECT * FROM v_ps1_xw_performance_onset WHERE city_id=:c "
                       "ORDER BY device_type", c=city))
     if path == "/ps1/xw-chronic":
-        top = int((params or {}).get("top", 20))
-        return ok(_xw("SELECT * FROM v_ps1_xw_chronic_devices WHERE city_id=:c "
-                      "ORDER BY total_days_out DESC LIMIT :t", c=city, t=top))
+        # 10-Aug-2026 FIX. Same defect as /ps1/xw-act-now above: ranked across
+        # the whole fleet with a LIMIT. TVM dominates total_days_out, so all 20
+        # rows were TVM. MEASURED 10-Aug: 20/20 rows TVM.
+        # `top` now means top-N PER FLEET.
+        try:
+            per_type = max(1, min(500, int((params or {}).get("top") or 20)))
+        except (TypeError, ValueError):
+            per_type = 20
+        return ok(_xw("""WITH ranked AS (
+                  SELECT v.*, ROW_NUMBER() OVER (
+                           PARTITION BY v.device_type
+                           ORDER BY v.total_days_out DESC NULLS LAST
+                         ) AS fleet_rank
+                  FROM v_ps1_xw_chronic_devices v
+                  WHERE v.city_id = :c
+                )
+                SELECT * FROM ranked
+                WHERE fleet_rank <= :t
+                ORDER BY device_type, total_days_out DESC NULLS LAST""",
+                c=city, t=per_type))
     # ---- sql/36: state framing -----------------------------------------
     if path == "/ps1/xw-flag-reason":
         return ok(_xw("SELECT * FROM v_ps1_xw_flag_reason WHERE city_id=:c "
@@ -2429,12 +2446,35 @@ def route(method, path, params, body):
         return ok(_xw("SELECT * FROM v_ps1_xw_state_mix WHERE city_id=:c "
                       "ORDER BY device_type, ps1_risk_tier, device_state", c=city))
     if path == "/ps1/xw-act-now":
-        top = int((params or {}).get("top", 100))
-        # IN_SPELL first: a device down now outranks one whose window opened
-        # today, and both outrank anything already back in service.
-        return ok(_xw("SELECT * FROM v_ps1_xw_act_now WHERE city_id=:c "
-                      "ORDER BY (device_state = 'IN_SPELL') DESC, "
-                      "ps1_fail_prob DESC LIMIT :t", c=city, t=top))
+        # 10-Aug-2026 FIX. This ranked across the WHOLE fleet with a LIMIT.
+        # VALIDATOR probabilities sit near 0.99997, so all 100 returned rows were
+        # VALIDATOR and GATE devices needing action were invisible. MEASURED
+        # 10-Aug: 100/100 rows VALIDATOR.
+        #
+        # This is the identical mistake fixed in /ps1/predictions on 26-Jul; the
+        # fix was applied there and never generalised. `top` now means top-N
+        # PER FLEET, matching how /ps1/predictions treats `limit`.
+        #
+        # IN_SPELL first WITHIN each fleet: a device down now outranks one whose
+        # window opened today, and both outrank anything already back in service.
+        try:
+            per_type = max(1, min(500, int((params or {}).get("top") or 100)))
+        except (TypeError, ValueError):
+            per_type = 100
+        return ok(_xw("""WITH ranked AS (
+                  SELECT v.*, ROW_NUMBER() OVER (
+                           PARTITION BY v.device_type
+                           ORDER BY (v.device_state = 'IN_SPELL') DESC,
+                                    v.ps1_fail_prob DESC NULLS LAST
+                         ) AS fleet_rank
+                  FROM v_ps1_xw_act_now v
+                  WHERE v.city_id = :c
+                )
+                SELECT * FROM ranked
+                WHERE fleet_rank <= :t
+                ORDER BY device_type,
+                         (device_state = 'IN_SPELL') DESC,
+                         ps1_fail_prob DESC NULLS LAST""", c=city, t=per_type))
     if path == "/ps1/table-status":
         return ok(_xw("SELECT * FROM v_ps1_table_status ORDER BY table_name"))
     if path == "/ps1/feature-importance":

@@ -21,10 +21,12 @@ DELETE FROM ps1_risk_trend         WHERE city_id='CHI' AND computed_date=DATE '2
 DELETE FROM ps1_leaderboard        WHERE city_id='CHI' AND as_of_date=DATE '2026-07-26';
 DELETE FROM ps1_inference_runs     WHERE city_id='CHI' AND run_id='ps1_20260726';
 
-INSERT INTO ps1_model_performance (city_id, device_category, model_name, algorithm, train_auc, train_ap, train_f1, val_auc, val_ap, val_f1, test_auc, test_ap, test_f1, test_prec, test_rec, decision_threshold, mlflow_version, endpoint_name, n_features, quality_gate, promoted, computed_date) VALUES
-  ('CHI', 'GATE', 'chicago-ps1-3d-gate-failure', 'spark_xgb_optuna', NULL, NULL, NULL, NULL, NULL, NULL, 0.8868, 0.9495, 0.8707, 0.7710, 0.9999, 0.1349, 'v2', 'chicago-ps1-3d-gate-failure-v1', 67, 'PASS', TRUE, '2026-07-26'),
-  ('CHI', 'TVM', 'chicago-ps1-3d-tvm-failure', 'spark_xgb_optuna', NULL, NULL, NULL, NULL, NULL, NULL, 0.9106, 0.9852, 0.9762, 0.9539, 0.9995, 0.0255, 'v2', 'chicago-ps1-3d-tvm-failure-v1', 67, 'PASS', TRUE, '2026-07-26'),
-  ('CHI', 'VALIDATOR', 'chicago-ps1-3d-validator-failure', 'spark_xgb_optuna', NULL, NULL, NULL, NULL, NULL, NULL, 0.9956, 0.9909, 0.9825, 0.9705, 0.9948, 0.4513, 'v2', 'chicago-ps1-3d-validator-failure-v1', 43, 'PASS', TRUE, '2026-07-26');
+-- 2026-08-11. Same omission as the sklearn load, same fix. See
+-- sql/load/ps1_sklearn_20260726.sql for the full reasoning.
+INSERT INTO ps1_model_performance (city_id, device_category, model_name, algorithm, train_auc, train_ap, train_f1, val_auc, val_ap, val_f1, test_auc, test_ap, test_f1, test_prec, test_rec, decision_threshold, mlflow_version, endpoint_name, n_features, quality_gate, promoted, computed_date, run_id, target_col, label_revision, recall_floor) VALUES
+  ('CHI', 'GATE', 'chicago-ps1-3d-gate-failure', 'spark_xgb_optuna', NULL, NULL, NULL, NULL, NULL, NULL, 0.8868, 0.9495, 0.8707, 0.7710, 0.9999, 0.1349, 'v2', 'chicago-ps1-3d-gate-failure-v1', 67, 'PASS', TRUE, '2026-07-26', 'ps1_20260726', 'will_hardware_oos_3d', 'R7-1', 0.70),
+  ('CHI', 'TVM', 'chicago-ps1-3d-tvm-failure', 'spark_xgb_optuna', NULL, NULL, NULL, NULL, NULL, NULL, 0.9106, 0.9852, 0.9762, 0.9539, 0.9995, 0.0255, 'v2', 'chicago-ps1-3d-tvm-failure-v1', 67, 'PASS', TRUE, '2026-07-26', 'ps1_20260726', 'will_hardware_oos_3d', 'R7-1', 0.80),
+  ('CHI', 'VALIDATOR', 'chicago-ps1-3d-validator-failure', 'spark_xgb_optuna', NULL, NULL, NULL, NULL, NULL, NULL, 0.9956, 0.9909, 0.9825, 0.9705, 0.9948, 0.4513, 'v2', 'chicago-ps1-3d-validator-failure-v1', 43, 'PASS', TRUE, '2026-07-26', 'ps1_20260726', 'will_hardware_oos_3d', 'R7-1', NULL);
 
 INSERT INTO ps1_leaderboard (city_id, device, model, auc, ap, f1, prec, rec, lb_rank, is_champion, note, as_of_date) VALUES
   ('CHI', 'GATE', 'spark_xgb_optuna', 0.886809, 0.949459, NULL, NULL, NULL, 1, TRUE, 'champion; val_auc 0.880305; ECE 0.1013; thr 0.1349', '2026-07-26'),

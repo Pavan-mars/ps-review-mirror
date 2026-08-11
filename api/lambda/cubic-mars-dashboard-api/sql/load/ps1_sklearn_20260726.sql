@@ -47,10 +47,26 @@ INSERT INTO ps1_leaderboard (city_id, device, model, auc, ap, f1, prec, rec, lb_
   ('CHI', 'VALIDATOR', 'catboost', 0.994735, 0.987085, 0.983450, 0.974364, 0.992708, 4, FALSE, 'MCC 0.9728; bal-acc 0.9880; acc 0.9870 vs maj 0.6109', '2026-07-26'),
   ('CHI', 'VALIDATOR', 'sgd_elasticnet', 0.986379, 0.968481, 0.976047, 0.966319, 0.985973, 5, FALSE, 'MCC 0.9606; bal-acc 0.9820; acc 0.9811 vs maj 0.6109', '2026-07-26');
 
-INSERT INTO ps1_model_performance (city_id, device_category, model_name, algorithm, train_auc, train_ap, train_f1, val_auc, val_ap, val_f1, test_auc, test_ap, test_f1, test_prec, test_rec, decision_threshold, mlflow_version, endpoint_name, n_features, quality_gate, promoted, computed_date) VALUES
-  ('CHI', 'TVM', 'chicago-ps1-3d-tvm-failure', 'hist_gradient_boosting', NULL, NULL, NULL, NULL, NULL, NULL, 0.904008, 0.983508, 0.976885, 0.960429, 0.993914, 4.948419e-01, 'v3-sklearn', 'chicago-ps1-3d-tvm-failure-v1', NULL, 'PASS', TRUE, '2026-07-26'),
-  ('CHI', 'GATE', 'chicago-ps1-3d-gate-failure', 'xgboost', NULL, NULL, NULL, NULL, NULL, NULL, 0.896146, 0.948575, 0.915127, 0.893707, 0.937600, 0.648467, 'v3-sklearn', 'chicago-ps1-3d-gate-failure-v1', NULL, 'PASS', TRUE, '2026-07-26'),
-  ('CHI', 'VALIDATOR', 'chicago-ps1-3d-validator-failure', 'xgboost', NULL, NULL, NULL, NULL, NULL, NULL, 0.995581, 0.990287, 0.983067, 0.972708, 0.993650, 0.604953, 'v3-sklearn', 'chicago-ps1-3d-validator-failure-v1', NULL, 'PASS', TRUE, '2026-07-26');
+-- 2026-08-11. THE FIVE COLUMNS THIS INSERT USED TO OMIT.
+-- sql/16 added target_col, label_revision, recall_floor, base_rate_pct and run_id
+-- to ps1_model_performance in July. This statement named 22 columns and none of
+-- them, so every row it wrote had NULL provenance: the scorecard could not state
+-- which label it was scored against, and nothing could tell whether the endpoint
+-- served this run or a different one. sql/52, sql/53 and sql/54 all exist to
+-- repair rows this one statement wrote incomplete. Naming them here is the fix;
+-- those three are the cleanup.
+--
+-- base_rate_pct is deliberately still NOT set. /ps1/summary derives it from
+-- ps1_confusion's own TP/FP/TN/FN, and a second stored copy can drift away from
+-- the confusion matrix it is supposed to describe. One source, derived on read.
+--
+-- recall_floor is the policy from sql/16's header -- TVM 0.80, GATE 0.70 -- and
+-- VALIDATOR is NULL because no VALIDATOR floor is documented anywhere in this
+-- programme. That NULL is a pending decision, not an omission.
+INSERT INTO ps1_model_performance (city_id, device_category, model_name, algorithm, train_auc, train_ap, train_f1, val_auc, val_ap, val_f1, test_auc, test_ap, test_f1, test_prec, test_rec, decision_threshold, mlflow_version, endpoint_name, n_features, quality_gate, promoted, computed_date, run_id, target_col, label_revision, recall_floor) VALUES
+  ('CHI', 'TVM', 'chicago-ps1-3d-tvm-failure', 'hist_gradient_boosting', NULL, NULL, NULL, NULL, NULL, NULL, 0.904008, 0.983508, 0.976885, 0.960429, 0.993914, 4.948419e-01, 'v3-sklearn', 'chicago-ps1-3d-tvm-failure-v1', NULL, 'PASS', TRUE, '2026-07-26', 'ps1_sklearn_20260726', 'will_hardware_oos_3d', 'R7-1', 0.80),
+  ('CHI', 'GATE', 'chicago-ps1-3d-gate-failure', 'xgboost', NULL, NULL, NULL, NULL, NULL, NULL, 0.896146, 0.948575, 0.915127, 0.893707, 0.937600, 0.648467, 'v3-sklearn', 'chicago-ps1-3d-gate-failure-v1', NULL, 'PASS', TRUE, '2026-07-26', 'ps1_sklearn_20260726', 'will_hardware_oos_3d', 'R7-1', 0.70),
+  ('CHI', 'VALIDATOR', 'chicago-ps1-3d-validator-failure', 'xgboost', NULL, NULL, NULL, NULL, NULL, NULL, 0.995581, 0.990287, 0.983067, 0.972708, 0.993650, 0.604953, 'v3-sklearn', 'chicago-ps1-3d-validator-failure-v1', NULL, 'PASS', TRUE, '2026-07-26', 'ps1_sklearn_20260726', 'will_hardware_oos_3d', 'R7-1', NULL);
 
 INSERT INTO ps1_confusion (city_id, device_category, tp, fp, tn, fn, computed_date) VALUES
   ('CHI', 'TVM', 36746, 1514, 2114, 225, '2026-07-26'),

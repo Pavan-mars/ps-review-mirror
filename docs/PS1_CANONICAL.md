@@ -24,7 +24,12 @@
 **Two standing caveats, stated once:**
 
 1. The 05:48Z inventory **predates** the Path B repair, the 11:55Z Path B disable, and the afternoon dashboard-api redeploy. Anything about `cubic-mars-ps1-rds-push` or `cubic-mars-dashboard-api` from that snapshot is stale by design.
-2. **Deployed and applied 2026-08-11 05:17Z** via `tooling/ps1_go_live.sh`: the
+2. **PS1 IS FULLY DEPLOYED AND APPLIED as of 2026-08-11 06:54Z.** Nothing
+   committed remains un-run. Verified end state on all three fleets:
+   `target=will_hardware_oos_3d`, `run_id=ps1_sklearn_20260726`,
+   `serving=ps1_20260726`, `serving_run_kind=train`,
+   **`serving_matches_scorecard=false`** — E-1 correctly disclosed.
+   Original go-live note: **deployed and applied 2026-08-11 05:17Z** via `tooling/ps1_go_live.sh`: the
    dashboard-api code through commit `bcb22da`, plus `sql/50` (4/4 statements) and
    `sql/51` (6/6), plus the xw-loader freshness build. `/ps1/summary` now serves
    `ps1_model_performance + ps1_confusion`; GATE is on the causation panel.
@@ -446,6 +451,51 @@ because a disabled rule never fires, so there is nothing to throttle.
 > manufactures alarm. Any metric assertion spanning a state change must be windowed
 > to one side of it. `ps1_verify_state.sh` [U9] should query from the disable
 > timestamp forward, not a rolling 3 days.
+
+### 8.8 The sql/52 -> 53 -> 54 chain, and what it cost  [V][T]
+
+Three migrations to fill five columns. Each failure was mine, each was different,
+and the sequence is worth keeping because the second and third were caused by the
+fix for the first.
+
+| File | Result | What went wrong |
+|---|---|---|
+| `sql/52` | 5 of 6 applied | Selected `label_revision` FROM `ps1_inference_runs`. That column does not exist there — sql/16 added it to `ps1_model_performance` and `ps1_failure_summary` only. `42703`. |
+| `sql/53` | 6 of 6 applied, **wrong answer** | Backfilled `run_id` from "latest train run per endpoint". Two runs landed on 2026-07-26; the Spark run at 16:40 beat the sklearn run at 12:00. Sklearn metrics got the Spark run_id, the serving lookup agreed with itself, and the API asserted **`matches=true`** — the exact claim E-1 exists to prevent. |
+| `sql/54` | 5 of 5 applied, **correct** | Discriminated on `mlflow_version`, which each load stamped into the row alongside its own run_id. `matches` returns **false**, as it should. |
+
+**Failure 1 — a fixture built from an assumption cannot falsify it.** `sql/52`
+was tested against PostgreSQL 16.13 and reported zero failures. The fixture table
+was hand-written from what the schema was *assumed* to be, and included a column
+the real table lacks. The test proved the SQL was consistent with an invention.
+**Fix: generate fixtures by extracting `CREATE TABLE` text out of the migration
+files.** `sql/53` and `sql/54` were tested that way; both runs print the real
+column list and assert the absent column before doing anything else.
+
+**Failure 2 — "the latest X" is not "the X that produced this row".** They
+coincide only under an assumption nobody stated: one training run per endpoint
+per day. Two runs on one date broke it. The query never asked which run wrote the
+row, and nothing in the result looked wrong — every fleet returned a plausible
+run_id and the comparison came back green.
+
+**Failure 3, the serious one — a confident wrong value is worse than a NULL.**
+Before `sql/53`, `run_id` was NULL and the API said *unverified*, which was true.
+After `sql/53` it said *matches=true*, which was false. The column looked
+healthier and the system became less honest. This codebase has argued all day
+that a null reads "not measured" while a stale or wrong number reads as fact —
+and then a migration written to improve provenance did precisely the thing being
+argued against, within the hour.
+
+**What stopped it:** the AFTER probe printed `run_id=ps1_20260726` where
+`ps1_sklearn_20260726` was expected. One field, off by a prefix. Had the script
+printed only `matches`, it would have shown `true` and looked like success.
+**Print the inputs to a verdict, not only the verdict.**
+
+`sql/54` also adds `v_ps1_serving_gap`, which states the E-1 gap in the DATA
+layer so it cannot be erased by a handler bug — which is exactly how it was
+erased. And it labels its own limit: `serving_run_id` is the latest *registered*
+train run, a proxy. Registration is not deployment; only `DescribeEndpointConfig`
+observes what an endpoint actually runs.
 
 ## 9. RECURRING FAILURE PATTERNS — check these first, on every problem statement
 

@@ -42,8 +42,8 @@ echo "== PS1 run_id CORRECTION $STAMP  mode=$([ "$APPLY" = 1 ] && echo APPLY || 
 [ -n "${UPLOAD:-}" ] && [ -f "$UPLOAD" ] || die "no ps1_runidfix_*.zip in \$HOME -- set UPLOAD=/path/to/zip"
 echo "   using upload: $UPLOAD"
 unzip -l "$UPLOAD" 2>/dev/null | grep -q "54_ps1_run_id_correction.sql" \
-  || die "that zip does NOT contain sql/53 -- wrong bundle"
-echo "   contains sql/53: yes"
+  || die "that zip does NOT contain sql/54 -- wrong bundle"
+echo "   contains sql/54: yes"
 show "BEFORE"
 
 U=$(aws lambda get-function --function-name $FN --region $REGION --query 'Code.Location' --output text) || die "cannot read $FN"
@@ -69,7 +69,7 @@ echo "   sql/ staged:"; ls -1 "$WORK/pkg/sql/" | grep -E '^5[0-9]' | sed 's/^/  
 ( cd "$WORK/pkg" && zip -qr "$WORK/d.zip" . ) || die "cannot rezip"
 aws lambda update-function-code --function-name $FN --region $REGION --zip-file "fileb://$WORK/d.zip" --query LastModified --output text || die "deploy failed"
 aws lambda wait function-updated --function-name $FN --region $REGION
-echo "   package updated (code unchanged; sql/53 added)"
+echo "   package updated (code unchanged; sql/54 added)"
 
 for M in dry_run apply; do
   P='{"action":"apply_sql","file":"54_ps1_run_id_correction.sql"'

@@ -467,6 +467,98 @@ def rows(sql, **kw):
     c = conn(); res = c.run(sql, **kw); cols = [d["name"] for d in c.columns]
     return [dict(zip(cols, r)) for r in res]
 
+
+# ===========================================================================
+# WRITE GUARD  (added 2026-08-10)
+#
+# WHAT THIS API ACTUALLY EXPOSES. Both HTTP API Gateways in this account carry
+# AuthorizationType NONE on their $default route. Of the 117 routes here, three
+# are not read-only, and all three are reachable by anyone who has the URL:
+#
+#   POST  /ps1/servicenow-stage    INSERT INTO servicenow_staging
+#   POST  /ps3/servicenow-stage    INSERT INTO servicenow_staging
+#   PATCH /ps4/alerts/{id}         UPDATE ps4_anomaly_alerts SET status=...
+#
+# The reads are a data-disclosure question. These three are different in kind:
+#
+#   * servicenow_staging is a QUEUE THAT BECOMES REAL WORK ORDERS. Its own
+#     response says "Wire Robin's ServiceNow endpoint to submit." An open write
+#     path into it means anonymous callers can author incidents attributed to
+#     any device_id, and the day that queue is wired to live ServiceNow those
+#     become real tickets dispatched to real technicians.
+#   * payload_json is TEXT with no cap. One caller in a loop is an unbounded
+#     write into Aurora -- a disk-fill denial of service that costs the
+#     attacker nothing.
+#   * PATCH /ps4/alerts/{id} lets an anonymous caller mark any anomaly alert
+#     'resolved'. Silencing an alert is worse than reading one.
+#
+# WHAT THIS GUARD IS AND IS NOT. It is defence in depth, NOT the fix. The fix
+# is authorization at the gateway -- a JWT authorizer, IAM auth, or a WAF --
+# and that is an architecture decision plus an AWS change, not a code change.
+# This bounds the blast radius in the meantime, and it is deliberately built so
+# that turning it on cannot break the running dashboard:
+#
+#   MUTATION_TOKEN unset  -> tokens NOT required. Behaviour unchanged. Caps and
+#                            quotas still apply. This is today's state.
+#   MUTATION_TOKEN set    -> mutating routes additionally require a matching
+#                            x-cubic-token header. Reads are never affected.
+#
+# A token shipped inside a public React bundle is not a secret, so this is a
+# speed bump against casual and automated abuse, not a defence against a
+# determined attacker who has read the JavaScript. Said plainly here so nobody
+# reads this block and concludes the API is secured.
+# ===========================================================================
+MUTATION_TOKEN     = os.environ.get("MUTATION_TOKEN", "").strip()
+MAX_PAYLOAD_BYTES  = int(os.environ.get("MAX_PAYLOAD_BYTES", "16384"))
+STAGE_QUOTA_PER_HR = int(os.environ.get("STAGE_QUOTA_PER_HR", "200"))
+_DEVICE_ID_RE      = re.compile(r"^[A-Za-z0-9_.:-]{1,30}$")
+
+
+def _hdr(evt_headers, name):
+    """HTTP header lookup, case-insensitively -- API Gateway lowercases, curl may not."""
+    if not evt_headers:
+        return ""
+    low = {str(k).lower(): v for k, v in evt_headers.items()}
+    return str(low.get(name.lower(), "") or "")
+
+
+def write_guard(headers, *, payload=None, device_id=None, city=None, quota_check=False):
+    """Returns None when the write may proceed, else a ready-to-return error."""
+    if MUTATION_TOKEN:
+        supplied = _hdr(headers, "x-cubic-token")
+        # Constant-time compare: a length-or-prefix leak here would let a caller
+        # discover the token a character at a time.
+        import hmac
+        if not supplied or not hmac.compare_digest(supplied, MUTATION_TOKEN):
+            return err(401, "this endpoint requires a valid x-cubic-token header")
+
+    if device_id is not None and not _DEVICE_ID_RE.match(str(device_id)):
+        return err(400, "device_id must be 1-30 chars of letters, digits, _ . : or -")
+
+    if payload is not None:
+        try:
+            size = len(json.dumps(payload, default=str).encode("utf-8"))
+        except Exception:
+            return err(400, "payload is not JSON-serialisable")
+        if size > MAX_PAYLOAD_BYTES:
+            return err(413, f"payload is {size} bytes; the limit is {MAX_PAYLOAD_BYTES}. "
+                            f"servicenow_staging.payload_json is unbounded TEXT and an "
+                            f"unauthenticated caller must not be able to fill it")
+
+    if quota_check:
+        try:
+            n = conn().run("SELECT COUNT(*) FROM servicenow_staging "
+                           "WHERE city_id = :c AND created_at > NOW() - INTERVAL '1 hour'",
+                           c=city)[0][0]
+            if int(n) >= STAGE_QUOTA_PER_HR:
+                return err(429, f"{n} incidents already staged for this city in the last hour; "
+                                f"the ceiling is {STAGE_QUOTA_PER_HR}. Nothing was written. "
+                                f"Raise STAGE_QUOTA_PER_HR if this is legitimate volume")
+        except Exception as e:
+            # Never fail a legitimate write because the quota probe broke.
+            print(f"[warn] staging quota check failed, allowing the write: {type(e).__name__}: {e}")
+    return None
+
 # PS1 fleet naming, 2026-08-10. The 13-Jul seed tables (ps1_failure_summary,
 # ps1_leaderboard) spell the fleets as display names -- 'TVM', 'Gates'. Every
 # table written by a notebook since -- ps1_model_performance, ps1_confusion,
@@ -1934,7 +2026,7 @@ def _ps3_v25_route(path, params, city):
            % (cols, table, " AND ".join(where), order, limit, offset))
     return ok(rows(sql, **kw))
 
-def route(method, path, params, body):
+def route(method, path, params, body, headers=None):
     city = q((params or {}).get("city", CITY))
     _v25 = _ps2_v25_route(path, params, city)
     if _v25 is not None: return _v25
@@ -2460,8 +2552,50 @@ def route(method, path, params, body):
             "SELECT device_category,tp,fp,tn,fn FROM ps1_confusion WHERE city_id=:c "
             "AND computed_date=(SELECT MAX(computed_date) FROM ps1_confusion WHERE city_id=:c)",
             c=city)}
+        # E-1. Which run is each endpoint actually serving? ps1_inference_runs
+        # records endpoint_name per device_category; if its run_id differs from
+        # the run that produced the scorecard row, the panel and the endpoint
+        # disagree and the reader must be told.
+        _serving_match = {}
+        try:
+            for _s in rows("SELECT DISTINCT ON (device_category) device_category, run_id, "
+                           "endpoint_name FROM ps1_inference_runs WHERE city_id=:c "
+                           "ORDER BY device_category, run_ts DESC", c=city):
+                _serving_match[_s["device_category"]] = {
+                    "serving_run_id": _s.get("run_id"),
+                    "endpoint_name": _s.get("endpoint_name"),
+                    "matches": None, "caveat": None}
+        except Exception as _e:
+            print(f"[warn] serving-match probe failed: {type(_e).__name__}: {_e}")
         out = []
         for r in mp:
+            # A category with NO ps1_inference_runs row at all must not fall
+            # through as a silent None. An absent record and a verified match
+            # are different findings and the panel has to be able to tell them
+            # apart -- the same failure this morning's causation view had, where
+            # a missing fleet and a fleet with no signal looked identical.
+            _sm = _serving_match.setdefault(r["device_category"], {
+                "serving_run_id": None, "endpoint_name": None,
+                "matches": None,
+                "caveat": ("No ps1_inference_runs row exists for this fleet, so there is "
+                           "NO RECORD of any endpoint serving it. The link between this "
+                           "scorecard and any deployed endpoint is unverified and must not "
+                           "be presented as serving performance.")})
+            if _sm.get("serving_run_id") is not None or _sm.get("endpoint_name") is not None:
+                _same = (_sm["serving_run_id"] is not None and r.get("run_id") is not None
+                         and str(_sm["serving_run_id"]) == str(r.get("run_id")))
+                _sm["matches"] = _same if _sm["serving_run_id"] and r.get("run_id") else None
+                if _sm["matches"] is False:
+                    _sm["caveat"] = (
+                        f"The scorecard below describes run {r.get('run_id')}. The endpoint "
+                        f"{_sm['endpoint_name']} was last recorded serving run "
+                        f"{_sm['serving_run_id']}. These metrics are NOT what that endpoint "
+                        f"would return. Re-register the model or stop quoting these numbers "
+                        f"as serving performance.")
+                elif _sm["matches"] is None:
+                    _sm["caveat"] = ("Cannot determine which run this endpoint is serving -- "
+                                     "run_id is missing on one side. Treat the link between "
+                                     "this scorecard and the endpoint as UNVERIFIED.")
             _acc = _base = _n = _prev = None
             cm = conf.get(r["device_category"])
             if cm and all(cm.get(k) is not None for k in ("tp", "fp", "tn", "fn")):
@@ -2510,6 +2644,27 @@ def route(method, path, params, body):
                                              else _num(r["test_rec"]) >= _num(r["recall_floor"])),
                         "base_rate_pct_recorded": r.get("base_rate_pct"),
                         "run_id": r.get("run_id"),
+                        # ---- E-1, 2026-08-10: THE ENDPOINT IS NOT SERVING THIS MODEL.
+                        # sql/load/ps1_sklearn_20260726.sql says so in a comment:
+                        #   "chicago-ps1-3d-{gate,tvm,validator}-failure-v1 are still
+                        #    serving the SPARK champion. Until those are re-registered,
+                        #    this scorecard describes the selected model, not the one
+                        #    answering inference calls."
+                        # A comment in a migration file is not a disclosure. Anyone
+                        # reading AUC 0.9040 on this panel reasonably assumes that is
+                        # what the endpoint would return. It is not, and the gap has
+                        # been open since 2026-07-26.
+                        #
+                        # serving_matches_scorecard is derived, not asserted: the run
+                        # that produced THIS row is compared against the run recorded
+                        # for the endpoint in ps1_inference_runs. Unknown stays
+                        # unknown -- None means "could not determine", never "fine".
+                        "serving_matches_scorecard": _serving_match.get(
+                            r["device_category"], {}).get("matches"),
+                        "serving_run_id": _serving_match.get(
+                            r["device_category"], {}).get("serving_run_id"),
+                        "serving_caveat": _serving_match.get(
+                            r["device_category"], {}).get("caveat"),
                         "s3_metrics": {"test_auc": r["test_auc"], "test_ap": r["test_ap"], "test_f1": r["test_f1"],
                                        "test_prec": r["test_prec"], "test_rec": r["test_rec"]}})
         # champion-first ordering for the model cards / registry table
@@ -3226,7 +3381,24 @@ def route(method, path, params, body):
     if path.startswith("/ps4/alerts/") and method == "PATCH":
         aid = path.rsplit("/", 1)[-1]; new = (body or {}).get("status")
         if new not in ("active", "investigating", "acknowledged", "resolved"): return err(400, "bad status")
-        conn().run("UPDATE ps4_anomaly_alerts SET status=:s, acknowledged_at=CASE WHEN :s='acknowledged' THEN NOW() ELSE acknowledged_at END, resolved_at=CASE WHEN :s='resolved' THEN NOW() ELSE resolved_at END WHERE id=CAST(:i AS uuid)", s=new, i=aid)
+        # Marking an alert 'resolved' silences it. That is a more damaging
+        # anonymous write than any read on this API.
+        _blocked = write_guard(headers)
+        if _blocked: return _blocked
+        # 2026-08-10 -- THIS ROUTE HAS NEVER WORKED. PostgreSQL could not deduce a
+        # type for :s, which appears once as an assignment to a VARCHAR column and
+        # twice compared against a text literal:
+        #     42P08 inconsistent types deduced for parameter $1
+        #           text versus character varying
+        # Every PATCH against this route has returned a 500. Found while testing
+        # the write guard below, not by reading the code -- the SQL looks fine.
+        # Explicit casts on both sides resolve the deduction.
+        conn().run("UPDATE ps4_anomaly_alerts SET status=CAST(:s AS varchar), "
+                   "acknowledged_at=CASE WHEN CAST(:s AS text)='acknowledged' THEN NOW() "
+                   "ELSE acknowledged_at END, "
+                   "resolved_at=CASE WHEN CAST(:s AS text)='resolved' THEN NOW() "
+                   "ELSE resolved_at END "
+                   "WHERE id=CAST(:i AS uuid)", s=new, i=aid)
         return ok({"id": aid, "status": new})
     if path == "/overview/summary":
         return err(501, "v_executive_summary deferred to Phase 2 (needs PS1/PS3/PS4 tables)")
@@ -3241,6 +3413,9 @@ def route(method, path, params, body):
     if path == "/ps1/servicenow-stage" and method == "POST":
         d = body or {}; dev = d.get("device_id", "")
         if not dev: return err(400, "device_id required")
+        _blocked = write_guard(headers, payload=d.get("payload", {}), device_id=dev,
+                               city=city, quota_check=True)
+        if _blocked: return _blocked
         import uuid as _uuid
         sid = str(_uuid.uuid4()); pl = d.get("payload", {})
         conn().run("INSERT INTO servicenow_staging(id,city_id,device_id,device_category,short_description,payload_json,status,created_at) VALUES(CAST(:i AS uuid),:c,:d,:cat,:sd,:p,'staged',NOW())",
@@ -3689,6 +3864,10 @@ def route(method, path, params, body):
         dev = d.get("device_id", "")
         if not dev:
             return err(400, "device_id required")
+        _blocked = write_guard(headers, payload=d.get("payload", {}), device_id=dev,
+                               city=city, quota_check=True)
+        if _blocked:
+            return _blocked
         import uuid as _uuid
         sid = str(_uuid.uuid4())
         conn().run(
@@ -4300,6 +4479,6 @@ def lambda_handler(event, context):
         try: body = json.loads(event["body"])
         except Exception: body = {}
     try:
-        return route(method, path, params, body)
+        return route(method, path, params, body, event.get("headers") or {})
     except Exception as e:
         return err(500, str(e)[:300])

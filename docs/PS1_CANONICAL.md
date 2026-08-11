@@ -24,7 +24,12 @@
 **Two standing caveats, stated once:**
 
 1. The 05:48Z inventory **predates** the Path B repair, the 11:55Z Path B disable, and the afternoon dashboard-api redeploy. Anything about `cubic-mars-ps1-rds-push` or `cubic-mars-dashboard-api` from that snapshot is stale by design.
-2. **Nothing committed after `9222ccd` has been deployed or applied.** All of §5's code fixes are in git and tested; none is running in AWS. `/ps1/summary` is still serving the 13-Jul seed in production right now.
+2. **Deployed and applied 2026-08-11 05:17Z** via `tooling/ps1_go_live.sh`: the
+   dashboard-api code through commit `bcb22da`, plus `sql/50` (4/4 statements) and
+   `sql/51` (6/6), plus the xw-loader freshness build. `/ps1/summary` now serves
+   `ps1_model_performance + ps1_confusion`; GATE is on the causation panel.
+   **Still NOT deployed:** commit `cafecac` — `sql/52` and the run_kind fix — which
+   is why `target_col` and `run_id` are still NULL (§8.5).
 
 ---
 
@@ -279,12 +284,13 @@ Result: first full PS1 load since 26-Jul — 45,681 device-day + 1,897 serial ro
 
 | # | Issue | Evidence | Fix | Effort |
 |---|---|---|---|---|
-| 1 | **Nothing from `93a92e3`…`c9089ea` is deployed or applied.** `/ps1/summary` still serves the 13-Jul seed; GATE still absent from causation | [V] | `ps1_retire_apply.sh APPLY=1`, then redeploy dashboard-api and xw-loader | 1 hr |
+| ~~1~~ | ~~Nothing is deployed~~ **DONE 2026-08-11 05:17Z.** `/ps1/summary` serves 3 fleets from `ps1_model_performance`; GATE is on the causation panel at min_cell=19 | [M 11-Aug] | done | done |
+| **1b** | **`cafecac` not deployed** — `target_col`, `recall_floor`, `run_id` NULL on every `ps1_model_performance` row, so the scorecard cannot state its label and the serving comparison cannot compute | [M 11-Aug] | `tooling/ps1_provenance_fix.sh APPLY=1` | 15 min |
 | 2 | 5 routes read frozen Path B tables — 13% complete, indefinitely | [M am] | Repoint to Path A views, or retire | half day |
 | 3 | `MAX(computed_date)` hides fleets in `/ps1/crosstab` and `/ps1/device-360` | [M am] | Per-category `MAX` | 1 hr |
 | 4 | 3 routes empty — tables have no S3 source | [M am] | Notebooks must export, or retire the routes | notebook change |
 | 5 | **D-1 proper: gateway `auth=NONE`** — §5.8 only bounds it | [M 05:48Z] | JWT authorizer / IAM auth / WAF — **architecture decision** | PK call |
-| 6 | **E-1 proper: endpoints serve the Spark champion** — §5.9 only discloses it | [V] | Re-register the sklearn models, or stop presenting them as serving | PK call |
+| 6 | **E-1 CONFIRMED: 0 invocations in 14 days on all three endpoints**, and they serve the Spark champion while the dashboard shows sklearn | [M 11-Aug] | Re-register the sklearn models and wire inference, or stop the endpoints. **Now a measured cost decision, not a hypothesis** | PK call |
 | 7 | `ps1-rds-push` not transactional — pg8000 autocommits, partial loads commit as `success` | [M am] | Copy the xw-loader pattern — **only if Path B is revived** | 2 hr |
 | 8 | `ps1_leaderboard` model rows still the 13-Jul seed; only the floor *source* was repointed | [V] | Repoint or retire | half day |
 | 9 | `n_devices_scored` 470 vs `n_flagged` 176,644 — at least one is wrong | [M am] | Reconcile | 1 hr |
@@ -311,23 +317,135 @@ Claimed as the root cause of four symptoms and the top fix. Cell 24 **already wr
 
 ---
 
-## 8. UNKNOWNS — and the one script that closes them
+## 8. MEASURED — the unknowns, closed 2026-08-11 05:56Z  [M 11-Aug 05:56Z]
 
-Run `tooling/ps1_verify_state.sh` (read-only). Nine open items:
+`tooling/ps1_verify_state.sh` and `tooling/lambda_drift_check.sh`, both read-only.
+Report: `~/ps1_verify_20260811T055644Z/report.txt`.
 
-1. Current `ps1-rds-push` config — layer, `GOLD_KEY`, reserved concurrency
-2. Current state of `cubic-mars-ps1-daily-push`
-3. Whether the S3 ObjectCreated trigger is still armed
-4. Current `dashboard-api` deployed package
-5. **SageMaker invocation counts** — E-1's cost decision hinges on this
-6. Live row counts for every table in §3.6
-7. Whether `recall_floor` / `target_col` are populated on the live `ps1_model_performance` rows
-8. **GATE's real `min_cell`** — the 6 in my tests was a fixture, not Chicago
-9. Whether last night's crons ran, and with what result
+### 8.1 Path B: repairs survived, and it is genuinely off
 
-Then run `tooling/lambda_drift_check.sh` — it will answer the same drift question for PS2–PS5 in one shot.
+| Check | Result | Verdict |
+|---|---|---|
+| layer | `AWSSDKPandas-Python312:29` | **OK** |
+| `GOLD_KEY` | `chicago/gold/device_ps1_cross_wired_daily` | **OK — parquet, not the CSV** |
+| reserved concurrency | **0** | throttled |
+| `cubic-mars-ps1-daily-push` | **DISABLED** | as intended |
+| `cubic-mars-ps1-xw-daily-load` | **ENABLED** | as intended |
 
----
+`ps1-rds-push` LastModified **2026-08-10 07:57:07Z** — which fixes the timeline the
+05:48Z inventory could not: the layer and GOLD_KEY repairs landed at 07:57Z,
+two hours after that snapshot, and the disable followed at 11:55Z.
+
+**The S3 ObjectCreated trigger is STILL ARMED** — `ps1-cross-wired-push` on prefix
+`chicago/gold/device_ps1_cross_wired` → `cubic-mars-ps1-rds-push`. Deliberate per
+handover §8, as a loud signal if a notebook still writes to the dead prefix.
+Concurrency 0 means it would throttle rather than load. Confirm the intent still holds.
+
+### 8.2 E-1 CONFIRMED — three endpoints, zero traffic
+
+```
+chicago-ps1-3d-tvm-failure-v1         InService   invocations_14d = 0.0
+chicago-ps1-3d-gate-failure-v1        InService   invocations_14d = 0.0
+chicago-ps1-3d-validator-failure-v1   InService   invocations_14d = 0.0
+```
+
+Three endpoints InService since 24-Jul with **no traffic at all in 14 days**. This
+was [U] and is now measured. It is a **cost decision, not a defect** — but it must
+be a decision. Combined with §5.9 (no PS1 code path invokes them) and the fact that
+they serve the Spark champion while the dashboard shows the sklearn run, the honest
+options are: re-register the sklearn models and wire real-time inference, or stop
+the endpoints until PS1 actually serves.
+
+### 8.3 Path A is exact, to the row
+
+```
+GATE       107,110    TVM  184,483    VALIDATOR  494,932
+TOTAL      786,525    = EXPECTED      last_day = 2026-04-11 on all three
+```
+
+`ps1_failure_summary` now reports `retired=True, superseded_by=ps1_model_performance`
+— sql/51 applied and visible in the catalog.
+
+### 8.4 GATE's real numbers — the shortfall is far starker than the fixture
+
+| fleet | n_chain | n_no_chain | lift | sufficient | min_cell |
+|---|---:|---:|---:|:-:|---:|
+| VALIDATOR | 170,337 | 324,595 | **12.257** | true | 170,337 |
+| TVM | 2,220 | 182,263 | 1.105 | true | 2,220 |
+| **GATE** | **19** | 107,091 | — | **false** | **19** |
+
+**This is the finding sql/50 was built to make visible.** GATE has 107,091
+device-days with no coordinated station failure and **19** with one. Nineteen. The
+old view's `WHERE n_chain >= 30` deleted the fleet rather than reporting that
+number, and a reader concluded PS1 had no GATE model.
+
+The substantive result: **coordinated station failures raise the VALIDATOR CRITICAL
+rate more than twelvefold, on 170k device-days each side.** TVM moves 1.105 — nothing.
+GATE cannot be assessed, because GATE devices are almost never in one. That is three
+different answers, and only one of them was visible before today.
+
+### 8.5 Still NULL — sql/52 is written but NOT applied  [V]
+
+`target_col`, `recall_floor`, `run_id` are NULL on all three
+`ps1_model_performance` rows. The scorecard cannot state its label and the
+serving comparison cannot be computed. `sql/52` + the corrected handler fix this;
+`tooling/ps1_provenance_fix.sh` applies them. **Not yet run.**
+
+### 8.6 Drift sweep — the estate is cleaner than feared
+
+**9 MATCH · 2 DRIFT · 1 NO-REPO-SRC · 0 ERROR**
+
+| Function | Verdict | Assessment |
+|---|---|---|
+| `cubic-mars-dashboard-api` | DRIFT −1,559 | **Benign.** Deployed = `bcb22da` (264,727), repo = `cafecac` (266,286). Repo newer because the provenance fix was committed after the go-live. Closes on the next deploy. |
+| `cubic-mars-ps3-v2-loader` | DRIFT −871 | **Benign — the entire difference is a docstring.** The diff has ZERO `+` lines; 15 deletions, all the `cell()` comment. The int-coercion fix is present in both. Functionally identical. |
+| `cubic-mars-ps2-rds-push` | NO-REPO-SRC | **Real.** Deployed with no source in this repo. Open item 8, now measured. |
+| 9 others | MATCH | dim-loader, ps1-rds-push, ps1-xw-loader, ps2-rds-loader, ps3-rc-loader, ps3-v25-loader, ps4-rds-loader, ps4-v3-loader, ps5-rds-loader |
+
+Also confirmed by absence: **`cubic-mars-ps3-inference` is in the repo but NOT
+deployed** (open item 9), and `ps5_daily_scorer` has no deployed counterpart.
+
+**The xw-loader was the outlier, not the pattern.** Yesterday's evidence suggested
+systemic drift; the measurement says nine of twelve match exactly and both
+divergences are harmless.
+
+> **A METHOD NOTE, because I got this wrong twice in one hour.** From the −871 byte
+> delta I concluded ps3-v2-loader was "worse than a skipped deploy" and that "871
+> bytes is not a typo fix". Both were inferences from a size number, and the diff
+> refuted them. A byte delta says *something* differs; it cannot say *what*. The
+> preserve-then-read discipline caught it. Read the diff before assigning a cause.
+
+### 8.7 The last unknown — CLOSED. Path B has not run since the disable  [M 11-Aug]
+
+```
+aws cloudwatch get-metric-statistics --metric-name Invocations \
+  --dimensions Name=FunctionName,Value=cubic-mars-ps1-rds-push \
+  --start-time 2026-08-10T12:00:00Z ...
+
+|   GetMetricStatistics  |
++--------+---------------+
+|  Label |  Invocations  |
++--------+---------------+        <-- EMPTY. Zero datapoints.
+```
+
+**Zero invocations of `cubic-mars-ps1-rds-push` since 2026-08-10 12:00Z.** The
+disable holds. The EventBridge rule is off, and the still-armed S3 trigger has not
+fired either, because nothing has written to `chicago/gold/device_ps1_cross_wired`
+since. Path B is not merely configured off — it is measurably idle.
+
+**Why the 3-day aggregate looked alarming and was not.** `ps1-rds-push` over 3 days
+read Invocations 14, Errors 11, Throttles 0, against an EXPECT line of
+"Throttles>0 or Invocations=0". Neither held, so it read as a failed disable.
+**The EXPECT line was wrong, not the disable.** The 3-day window spans the 11:55Z
+cutover, so those invocations are pre-disable crons plus the morning repair, and the
+11 errors match the missing-layer period that ended at 07:57Z. Throttles is 0
+because a disabled rule never fires, so there is nothing to throttle.
+
+> **The lesson is about the check, not the system.** An EXPECT line that cannot
+> distinguish "working" from "broken" is worse than no EXPECT line, because it
+> manufactures alarm. Any metric assertion spanning a state change must be windowed
+> to one side of it. `ps1_verify_state.sh` [U9] should query from the disable
+> timestamp forward, not a rolling 3 days.
 
 ## 9. RECURRING FAILURE PATTERNS — check these first, on every problem statement
 
@@ -344,12 +462,25 @@ Then run `tooling/lambda_drift_check.sh` — it will answer the same drift quest
 
 ---
 
-## 10. ORDER OF WORK
+## 10. ORDER OF WORK — updated 2026-08-11 after measurement
 
-1. **Run both scripts** — `ps1_verify_state.sh`, then `lambda_drift_check.sh`. Do not fix anything until §8 is measured.
-2. **Push the 4 commits.**
-3. **Apply and deploy** §6 item 1 — this is the largest single gap between what is written and what is running.
-4. **Decide** §6 items 5 and 6 — gateway auth, and whether the endpoints get re-registered or retired.
-5. Then Path B route repointing, `MAX(computed_date)`, and the rest.
+**Done:** both sweeps run (§8) · go-live deployed and applied 05:17Z · every one of
+the nine unknowns closed.
+
+1. **Apply `tooling/ps1_provenance_fix.sh`** (`sql/52` + the run_kind fix). This is
+   now the only gap between what is committed and what is running, and it is what
+   makes `target_col` and `run_id` non-NULL. 15 minutes.
+2. **Push the outstanding commits.** Production code living in one place is the
+   failure `73df05d` had to repair.
+3. **Decide E-1** — measured at 0 invocations over 14 days. Re-register the sklearn
+   models and wire inference, or stop the endpoints. Either is defensible; the
+   default of paying for three idle endpoints is not.
+4. **Decide D-1** — gateway `auth=NONE` with three writable routes. §5.8 bounds the
+   blast radius; it does not close it.
+5. **Fix `ps1_verify_state.sh` [U9]** to window from the disable timestamp rather
+   than a rolling 3 days — see §8.7. A check that manufactures false alarms will be
+   ignored, and then it protects nothing.
+6. Then the 5 Path B routes, `MAX(computed_date)`, and `ps2-rds-push`'s missing
+   source (§8.6).
 
 Once 1–4 are closed, PS1 is done and PS2 gets the same treatment.

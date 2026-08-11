@@ -2770,10 +2770,40 @@ def route(method, path, params, body, headers=None):
     # fleets rank first by lift; the rest follow ordered by how close they came,
     # so "GATE, 6 of the 30 device-days needed" is a readable statement of what
     # is missing rather than a blank.
+    #
+    # ORDER-INDEPENDENT, added 2026-08-10 evening. This route and sql/50 are
+    # deployed by two separate mechanisms -- update-function-code for the code,
+    # apply_sql for the view -- and there is no way to make those atomic. If the
+    # code lands first, sufficient_data and min_cell do not exist yet and the
+    # ORDER BY raises 42703, dark-screening the panel for the length of the gap.
+    #
+    # Rather than depend on an operator getting the order right every time, the
+    # route detects which view is installed and adapts. The new ordering when
+    # sql/50 is applied; the old one when it is not, plus an explicit marker so
+    # the panel can say WHY GATE is missing instead of simply not drawing it.
+    # Deploy-then-apply and apply-then-deploy now both work, in either order.
     if path == "/ps1/xw-causation":
-        return ok(_xw("SELECT * FROM v_ps1_xw_causation WHERE city_id=:c "
-                      "ORDER BY sufficient_data DESC, critical_lift DESC NULLS LAST, "
-                      "min_cell DESC, device_type", c=city))
+        try:
+            _has50 = bool(rows(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='v_ps1_xw_causation' AND column_name='sufficient_data'"))
+        except Exception:
+            _has50 = False
+        if _has50:
+            return ok(_xw("SELECT * FROM v_ps1_xw_causation WHERE city_id=:c "
+                          "ORDER BY sufficient_data DESC, critical_lift DESC NULLS LAST, "
+                          "min_cell DESC, device_type", c=city))
+        _legacy = _xw("SELECT * FROM v_ps1_xw_causation WHERE city_id=:c "
+                      "ORDER BY critical_lift DESC", c=city)
+        for _r in (_legacy if isinstance(_legacy, list) else []):
+            _r["sufficient_data"] = None
+            _r["min_cell"] = None
+            _r["schema_note"] = ("sql/50 is NOT applied to this database. This view still "
+                                 "OMITS any fleet with fewer than 30 device-days on either "
+                                 "side of the split, so a fleet missing from this list may "
+                                 "exist and simply be under-observed. Apply "
+                                 "50_ps1_xw_causation_all_fleets.sql to tell the two apart.")
+        return ok(_legacy)
     # ---- LOCATION DIMENSION -------------------------------------------
     # 2026-08-06. THE NAMES WERE ALWAYS THERE; NOTHING SERVED THEM.
     #

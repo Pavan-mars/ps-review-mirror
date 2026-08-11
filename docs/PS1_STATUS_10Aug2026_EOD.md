@@ -1,3 +1,7 @@
+> **SUPERSEDED by `docs/PS1_CANONICAL.md` (10-Aug-2026 EOD).** Kept for the
+> reasoning trail (interim EOD snapshot). Two findings in this document were later REFUTED — see
+> the corrections marked in place, and section 7 of the canonical document.
+
 # PS1 — COMPLETE STATUS, end of 10-Aug-2026
 
 Supersedes `PS1_COMPLETE_AUDIT_10Aug2026.md` (written this morning) wherever the

@@ -2558,12 +2558,23 @@ def route(method, path, params, body, headers=None):
         # disagree and the reader must be told.
         _serving_match = {}
         try:
+            # run_kind MATTERS AND THE FIRST VERSION IGNORED IT.
+            # ps1_inference_runs mixes two kinds of row: run_kind='train', written
+            # when a model is produced and registered, and run_kind='batch_score',
+            # written by a loader every time it scores. Taking the latest row of
+            # ANY kind reported the most recent SCORING run as the model the
+            # endpoint serves. Caught on the live deploy: TVM came back as
+            # ps1_20260810 -- a batch_score row written by Path B this morning --
+            # while GATE and VALIDATOR correctly showed ps1_sklearn_20260726.
+            # A scoring run is not a served model. Only 'train' rows answer this.
             for _s in rows("SELECT DISTINCT ON (device_category) device_category, run_id, "
-                           "endpoint_name FROM ps1_inference_runs WHERE city_id=:c "
+                           "endpoint_name, run_kind FROM ps1_inference_runs "
+                           "WHERE city_id=:c AND run_kind = 'train' "
                            "ORDER BY device_category, run_ts DESC", c=city):
                 _serving_match[_s["device_category"]] = {
                     "serving_run_id": _s.get("run_id"),
                     "endpoint_name": _s.get("endpoint_name"),
+                    "serving_run_kind": _s.get("run_kind"),
                     "matches": None, "caveat": None}
         except Exception as _e:
             print(f"[warn] serving-match probe failed: {type(_e).__name__}: {_e}")
@@ -2593,9 +2604,13 @@ def route(method, path, params, body, headers=None):
                         f"would return. Re-register the model or stop quoting these numbers "
                         f"as serving performance.")
                 elif _sm["matches"] is None:
-                    _sm["caveat"] = ("Cannot determine which run this endpoint is serving -- "
-                                     "run_id is missing on one side. Treat the link between "
-                                     "this scorecard and the endpoint as UNVERIFIED.")
+                    _which = ("ps1_model_performance.run_id is NULL for this fleet"
+                              if r.get("run_id") is None
+                              else "ps1_inference_runs has no train-kind run_id for this fleet")
+                    _sm["caveat"] = (f"Cannot determine which run this endpoint is serving: "
+                                     f"{_which}. Treat the link between this scorecard and the "
+                                     f"endpoint as UNVERIFIED. Apply sql/52 to backfill the "
+                                     f"provenance columns the sql/load INSERT omitted.")
             _acc = _base = _n = _prev = None
             cm = conf.get(r["device_category"])
             if cm and all(cm.get(k) is not None for k in ("tp", "fp", "tn", "fn")):
@@ -2663,6 +2678,11 @@ def route(method, path, params, body, headers=None):
                             r["device_category"], {}).get("matches"),
                         "serving_run_id": _serving_match.get(
                             r["device_category"], {}).get("serving_run_id"),
+                        # run_kind is published, not implied: a reader must be able
+                        # to see that the comparison used a 'train' row and not a
+                        # scoring run, without trusting that the query got it right.
+                        "serving_run_kind": _serving_match.get(
+                            r["device_category"], {}).get("serving_run_kind"),
                         "serving_caveat": _serving_match.get(
                             r["device_category"], {}).get("caveat"),
                         "s3_metrics": {"test_auc": r["test_auc"], "test_ap": r["test_ap"], "test_f1": r["test_f1"],

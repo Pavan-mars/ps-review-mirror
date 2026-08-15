@@ -1,0 +1,238 @@
+
+=== ps1_read_docker_and_model.sh  20260815T060658Z  region=us-east-1 ===
+
+=== U-A  docker/ directory ===
+docker/ not found. Are you at the repo root? pwd=/home/cloudshell-user/ps1
+
+=== U-B  endpoint chicago-ps1-3d-gate-failure-v1 ===
+  status        : InService
+  config        : chicago-ps1-3d-gate-failure-v1
+  created       : 2026-07-24T07:49:47.655000+00:00
+  last modified : 2026-07-24T07:53:33.465000+00:00
+  image         : 683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3
+  image kind    : MANAGED-DLC
+  model data    : s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/sagemaker/ps1-3d/gate/spark-model-v1/model.tar.gz
+  env SAGEMAKER_PROGRAM           : inference.py
+  env SAGEMAKER_SUBMIT_DIRECTORY  : s3://sagemaker-us-east-1-170202974600/sagemaker-scikit-learn-2026-07-24-07-49-45-421/sourcedir.tar.gz
+  env SAGEMAKER_REGION            : us-east-1
+
+=== U-B  endpoint chicago-ps1-3d-tvm-failure-v1 ===
+  status        : InService
+  config        : chicago-ps1-3d-tvm-failure-v1
+  created       : 2026-07-24T07:42:43.190000+00:00
+  last modified : 2026-07-24T07:46:13.833000+00:00
+  image         : 683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3
+  image kind    : MANAGED-DLC
+  model data    : s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/sagemaker/ps1-3d/tvm/spark-model-v1/model.tar.gz
+  env SAGEMAKER_PROGRAM           : inference.py
+  env SAGEMAKER_SUBMIT_DIRECTORY  : s3://sagemaker-us-east-1-170202974600/sagemaker-scikit-learn-2026-07-24-07-42-41-346/sourcedir.tar.gz
+  env SAGEMAKER_REGION            : us-east-1
+
+=== U-B  endpoint chicago-ps1-3d-validator-failure-v1 ===
+  status        : InService
+  config        : chicago-ps1-3d-validator-failure-v1
+  created       : 2026-07-24T09:30:09.123000+00:00
+  last modified : 2026-07-24T09:33:50.243000+00:00
+  image         : 683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3
+  image kind    : MANAGED-DLC
+  model data    : s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/sagemaker/ps1-3d/validator/spark-model-v1/model.tar.gz
+  env SAGEMAKER_PROGRAM           : inference.py
+  env SAGEMAKER_SUBMIT_DIRECTORY  : s3://sagemaker-us-east-1-170202974600/sagemaker-scikit-learn-2026-07-24-09-30-07-216/sourcedir.tar.gz
+  env SAGEMAKER_REGION            : us-east-1
+
+Endpoint capture written to tooling/out/endpoint_capture/ -- COMMIT THIS DIRECTORY.
+tooling/ps1_cleanup.sh will refuse to delete any endpoint whose
+capture files are not present.
+
+=== U-B  model.tar.gz contents ===
+
+--- s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/sagemaker/ps1-3d/gate/spark-model-v1/model.tar.gz ---
+  size: 788K
+  members:
+    ps1_gate_xgb.json
+    ps1_gate_meta.joblib
+    ps1_gate_threshold.joblib
+    requirements.txt
+    inference.py
+
+  inference.py in archive  : YES
+  ps1_*_meta.joblib        : no   <- feature contract
+  ps1_*_threshold.joblib   : YES
+
+  VERDICT: NO ps1_*_meta.joblib in the archive.
+           The feature contract is not travelling with the model.
+           Without it, nothing can state which columns -- or in
+           which order -- this model was trained on, and
+           FEATURE_COLS is computed at run time from whatever
+           columns happen to exist (cell 8). STOP. Re-derive the
+           serving contract from DescribeModel before writing any
+           scoring job.
+
+  --- DECISION-1 residual check ---
+  The archive is self-contained, so docker/requirements.txt is NOT
+  in the serving path and its pins do not gate this decision.
+  The only requirement on the DLC image is that model_fn's lazy
+  import succeeds for the branch this model uses:
+      model_type=xgboost  -> import xgboost
+      model_type=lightgbm -> import lightgbm
+      model_type=catboost -> from catboost import CatBoostClassifier
+  (model_type is printed in the feature-contract block above.)
+
+  A missing library fails at CONTAINER START, loudly -- which is the
+  good failure. The dangerous one is C-3, and no image check finds
+  it: reindex(columns=feature_cols, fill_value=0.0) turns an ABSENT
+  feature into a plausible 0.0 and returns a confident wrong answer.
+  The scoring job must assert column presence BEFORE serialising.
+  See DECISION-8 in docs/PS1_DAILY_INFERENCE_DESIGN.md.
+
+--- s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/sagemaker/ps1-3d/tvm/spark-model-v1/model.tar.gz ---
+  size: 68K
+  members:
+    ps1_tvm_xgb.json
+    ps1_tvm_meta.joblib
+    ps1_tvm_threshold.joblib
+    requirements.txt
+    inference.py
+
+  inference.py in archive  : YES
+  ps1_*_meta.joblib        : YES   <- feature contract
+  ps1_*_threshold.joblib   : YES
+
+  --- feature contract (extracting ps1_*_meta.joblib) ---
+    joblib not installed in CloudShell: pip install joblib --quiet
+
+  VERDICT: EXPECTED STATE. The archive is self-contained -- model
+           file, feature contract, threshold and handler travel
+           together, exactly as cell 22 builds it.
+
+           => DECISION-1: managed DLC is sufficient. ECR is not
+              required for PS1. cubic-pdm/mars-ps1 can be retired.
+           => The scoring job should LOAD this same meta and honour
+              feature_cols, rather than recomputing a feature list.
+
+  --- inference.py as deployed ---
+  import os, joblib
+  import numpy as np
+  import pandas as pd
+  
+  def _impute(df, cols, medians):
+      out = df.copy()
+      for c in cols:
+          if c in out.columns and c in medians:
+              out[c] = out[c].astype(float).fillna(medians[c])
+      return out
+  
+  def model_fn(model_dir):
+      meta = joblib.load(os.path.join(model_dir, "ps1_tvm_meta.joblib"))
+      thresh = joblib.load(os.path.join(model_dir, "ps1_tvm_threshold.joblib"))
+      bundle = {"meta": meta, "threshold": float(thresh), "model": None}
+      mtype = meta["model_type"]
+      mf = os.path.join(model_dir, meta["model_file"])
+      if mtype == "xgboost":
+          import xgboost as xgb
+          b = xgb.Booster()
+          b.load_model(mf)
+          bundle["model"] = b
+      elif mtype == "lightgbm":
+          import lightgbm as lgb
+          bundle["model"] = lgb.Booster(model_file=mf)
+      else:
+          from catboost import CatBoostClassifier
+          m = CatBoostClassifier()
+          m.load_model(mf)
+          bundle["model"] = m
+      return bundle
+  
+  def _predict_proba(bundle, df):
+      meta = bundle["meta"]
+      cols = meta["feature_cols"]
+      X = _impute(df, cols, meta.get("medians", {})).reindex(columns=cols, fill_value=0.0).astype(float).values
+      mtype = meta["model_type"]
+      if mtype == "xgboost":
+          import xgboost as xgb
+          return bundle["model"].predict(xgb.DMatrix(X, feature_names=cols))
+      if mtype == "lightgbm":
+          return bundle["model"].predict(X)
+      return bundle["model"].predict_proba(X)[:, 1]
+  
+  def predict_fn(input_data, bundle):
+      if not isinstance(input_data, pd.DataFrame):
+          input_data = pd.DataFrame(input_data, columns=bundle["meta"]["feature_cols"])
+      return _predict_proba(bundle, input_data).tolist()
+  
+  def input_fn(request_body, content_type):
+      if content_type == "application/json":
+          import json
+          data = json.loads(request_body)
+          return pd.DataFrame([data]) if isinstance(data, dict) else pd.DataFrame(data)
+      if content_type == "text/csv":
+          from io import StringIO
+          return pd.read_csv(StringIO(request_body))
+      raise ValueError("Unsupported content type: " + str(content_type))
+  
+  def output_fn(prediction, accept):
+      import json
+      return json.dumps(prediction), "application/json"
+
+  NOTE: this is generated from _INF_TEMPLATE in cell 22. It is NOT
+  docker/inference_ps1.py. Do not diff them expecting a match --
+  they are two different serving paths and only this one is live.
+
+  --- DECISION-1 residual check ---
+  The archive is self-contained, so docker/requirements.txt is NOT
+  in the serving path and its pins do not gate this decision.
+  The only requirement on the DLC image is that model_fn's lazy
+  import succeeds for the branch this model uses:
+      model_type=xgboost  -> import xgboost
+      model_type=lightgbm -> import lightgbm
+      model_type=catboost -> from catboost import CatBoostClassifier
+  (model_type is printed in the feature-contract block above.)
+
+  A missing library fails at CONTAINER START, loudly -- which is the
+  good failure. The dangerous one is C-3, and no image check finds
+  it: reindex(columns=feature_cols, fill_value=0.0) turns an ABSENT
+  feature into a plausible 0.0 and returns a confident wrong answer.
+  The scoring job must assert column presence BEFORE serialising.
+  See DECISION-8 in docs/PS1_DAILY_INFERENCE_DESIGN.md.
+
+--- s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/sagemaker/ps1-3d/validator/spark-model-v1/model.tar.gz ---
+  size: 124K
+  members:
+    ps1_validator_xgb.json
+    ps1_validator_meta.joblib
+    ps1_validator_threshold.joblib
+    requirements.txt
+    inference.py
+
+  inference.py in archive  : YES
+  ps1_*_meta.joblib        : no   <- feature contract
+  ps1_*_threshold.joblib   : no
+
+  VERDICT: NO ps1_*_meta.joblib in the archive.
+           The feature contract is not travelling with the model.
+           Without it, nothing can state which columns -- or in
+           which order -- this model was trained on, and
+           FEATURE_COLS is computed at run time from whatever
+           columns happen to exist (cell 8). STOP. Re-derive the
+           serving contract from DescribeModel before writing any
+           scoring job.
+
+  --- DECISION-1 residual check ---
+  The archive is self-contained, so docker/requirements.txt is NOT
+  in the serving path and its pins do not gate this decision.
+  The only requirement on the DLC image is that model_fn's lazy
+  import succeeds for the branch this model uses:
+      model_type=xgboost  -> import xgboost
+      model_type=lightgbm -> import lightgbm
+      model_type=catboost -> from catboost import CatBoostClassifier
+  (model_type is printed in the feature-contract block above.)
+
+  A missing library fails at CONTAINER START, loudly -- which is the
+  good failure. The dangerous one is C-3, and no image check finds
+  it: reindex(columns=feature_cols, fill_value=0.0) turns an ABSENT
+  feature into a plausible 0.0 and returns a confident wrong answer.
+  The scoring job must assert column presence BEFORE serialising.
+  See DECISION-8 in docs/PS1_DAILY_INFERENCE_DESIGN.md.
+
+=== done -- transcript at tooling/out/ps1_model_contract_20260815T060658Z.txt ===
+Nothing was created, modified or deleted by this script.

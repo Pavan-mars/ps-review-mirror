@@ -1,0 +1,27 @@
+{
+    "EndpointName": "chicago-ps1-3d-gate-failure-v1",
+    "EndpointArn": "arn:aws:sagemaker:us-east-1:170202974600:endpoint/chicago-ps1-3d-gate-failure-v1",
+    "EndpointConfigName": "chicago-ps1-3d-gate-failure-v1",
+    "ProductionVariants": [
+        {
+            "VariantName": "AllTraffic",
+            "DeployedImages": [
+                {
+                    "SpecifiedImage": "683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3",
+                    "ResolvedImage": "683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn@sha256:82bed6e5a382c1132589c5d12f352df53498535c9ced1c4d00148699bf61caa1",
+                    "ResolutionTime": "2026-07-24T07:49:48.275000+00:00"
+                }
+            ],
+            "CurrentWeight": 1.0,
+            "DesiredWeight": 1.0,
+            "CurrentInstanceCount": 1,
+            "DesiredInstanceCount": 1
+        }
+    ],
+    "EndpointStatus": "InService",
+    "CreationTime": "2026-07-24T07:49:47.655000+00:00",
+    "LastModifiedTime": "2026-07-24T07:53:33.465000+00:00",
+    "MetricsConfig": {
+        "EnableDetailedObservability": true
+    }
+}

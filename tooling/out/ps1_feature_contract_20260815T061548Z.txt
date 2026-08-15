@@ -1,0 +1,253 @@
+ps1_feature_contract.sh  20260815T061548Z  region=us-east-1
+
+installing joblib (CloudShell does not ship it)...
+[notice] A new release of pip is available: 26.1.2 -> 26.2.1
+[notice] To update, run: pip install --upgrade pip
+joblib 1.5.3
+
+==============================================================
+ GATE
+==============================================================
+  archive: 788K
+  members:
+    ps1_gate_xgb.json
+    ps1_gate_meta.joblib
+    ps1_gate_threshold.joblib
+    requirements.txt
+    inference.py
+
+  meta=1  threshold=1  inference.py=1
+  meta file  : ps1_gate_meta.joblib
+  model_type : xgboost
+  model_file : ps1_gate_xgb.json
+  n_features : 47
+  medians    : 47 of 47
+  classifier : SparkXGBClassifierModel
+  model_file : ps1_gate_xgb.json
+  model_type : xgboost
+
+  feature_cols IN ORDER (the contract the scoring job must satisfy):
+      0  roll_fail_7d
+      1  roll_fail_30d
+      2  roll_fail_90d
+      3  days_since_fail
+      4  fail_free_streak
+      5  tap_count
+      6  tap_reject_rate_pct
+      7  peak_hour_tap_count
+      8  tap_timeout_rate_pct
+      9  tap_timeout_count
+     10  gate_tap_count_prior_7d
+     11  gate_tap_count_prior_30d
+     12  gate_tap_count_prior_90d
+     13  gate_tap_reject_prior_7d
+     14  gate_tap_reject_prior_30d
+     15  gate_tap_reject_prior_90d
+     16  gate_tap_reject_trend_7v30d
+     17  gate_peak_hour_tap_prior_7d
+     18  gate_tap_timeout_prior_7d
+     19  availability_pct_7d
+     20  metric_p95_txn_ms
+     21  metric_slow_tap_count
+     22  metric_rolling_7d_avg_ms
+     23  metric_txn_delta
+     24  use_revenue_cents
+     25  incident_count_7d_past
+     26  incident_count_30d_past
+     27  incident_count_90d_past
+     28  chargeable_count_7d_past
+     29  chargeable_count_30d_past
+     30  distinct_event_codes_30d
+     31  chain_length
+     32  usage_days_in_service
+     33  usage_days_since_last_failure
+     34  usage_cumulative_tap_count
+     35  usage_cumulative_failure_count
+     36  usage_cumulative_outage_min
+     37  usage_daily_maint_events
+     38  gate_mech_events_prior_sum_7d
+     39  gate_mech_events_prior_sum_30d
+     40  csc_reader_events_prior_sum_7d
+     41  csc_reader_events_prior_sum_30d
+     42  comms_events_prior_sum_7d
+     43  comms_events_prior_sum_30d
+     44  chargeable_outage_count_prior_sum_7d
+     45  chargeable_outage_count_prior_sum_30d
+     46  hardware_oos_count_prior_sum_7d
+
+  -> wrote tooling/out/ps1_gate_feature_contract.json
+  threshold  : 0.12284048646688461
+
+==============================================================
+ TVM
+==============================================================
+  archive: 68K
+  members:
+    ps1_tvm_xgb.json
+    ps1_tvm_meta.joblib
+    ps1_tvm_threshold.joblib
+    requirements.txt
+    inference.py
+
+  meta=1  threshold=1  inference.py=1
+  meta file  : ps1_tvm_meta.joblib
+  model_type : xgboost
+  model_file : ps1_tvm_xgb.json
+  n_features : 40
+  medians    : 40 of 40
+  classifier : SparkXGBClassifierModel
+  model_file : ps1_tvm_xgb.json
+  model_type : xgboost
+
+  feature_cols IN ORDER (the contract the scoring job must satisfy):
+      0  roll_fail_7d
+      1  roll_fail_30d
+      2  roll_fail_90d
+      3  days_since_fail
+      4  fail_free_streak
+      5  availability_pct_7d
+      6  sales_7d_avg
+      7  kpi_count
+      8  incident_count_7d_past
+      9  incident_count_30d_past
+     10  incident_count_90d_past
+     11  chargeable_count_7d_past
+     12  chargeable_count_30d_past
+     13  avg_mttr_7d_past
+     14  avg_mttr_30d_past
+     15  min_priority_30d_past
+     16  distinct_event_codes_30d
+     17  days_since_last_incident
+     18  incident_rate_trend
+     19  chain_length
+     20  usage_days_in_service
+     21  usage_days_since_last_failure
+     22  usage_cumulative_failure_count
+     23  usage_cumulative_outage_min
+     24  usage_daily_maint_events
+     25  printer_events_prior_sum_7d
+     26  printer_events_prior_sum_30d
+     27  bankcard_events_prior_sum_7d
+     28  bankcard_events_prior_sum_30d
+     29  bhu_events_prior_sum_7d
+     30  bhu_events_prior_sum_30d
+     31  chu_events_prior_sum_7d
+     32  chu_events_prior_sum_30d
+     33  scrst_events_prior_sum_7d
+     34  scrst_events_prior_sum_30d
+     35  comms_events_prior_sum_7d
+     36  comms_events_prior_sum_30d
+     37  chargeable_outage_count_prior_sum_7d
+     38  chargeable_outage_count_prior_sum_30d
+     39  hardware_oos_count_prior_sum_7d
+
+  -> wrote tooling/out/ps1_tvm_feature_contract.json
+  threshold  : 0.02648935467004776
+
+==============================================================
+ VALIDATOR
+==============================================================
+  archive: 124K
+  members:
+    ps1_validator_xgb.json
+    ps1_validator_meta.joblib
+    ps1_validator_threshold.joblib
+    requirements.txt
+    inference.py
+
+  meta=1  threshold=1  inference.py=1
+  meta file  : ps1_validator_meta.joblib
+  model_type : xgboost
+  model_file : ps1_validator_xgb.json
+  n_features : 40
+  medians    : 40 of 40
+  classifier : SparkXGBClassifierModel
+  model_file : ps1_validator_xgb.json
+  model_type : xgboost
+
+  feature_cols IN ORDER (the contract the scoring job must satisfy):
+      0  roll_fail_7d
+      1  roll_fail_30d
+      2  roll_fail_90d
+      3  days_since_fail
+      4  fail_free_streak
+      5  tap_count
+      6  tap_reject_rate_pct
+      7  peak_hour_tap_count
+      8  tap_timeout_rate_pct
+      9  tap_timeout_count
+     10  tvm_read_count_prior_7d
+     11  tvm_read_count_prior_30d
+     12  tvm_read_count_prior_90d
+     13  tvm_reject_rate_prior_7d
+     14  tvm_reject_rate_prior_30d
+     15  tvm_reject_rate_prior_90d
+     16  tvm_reject_rate_trend_7v30d
+     17  tvm_null_rate_prior_7d
+     18  availability_pct_7d
+     19  metric_p95_txn_ms
+     20  metric_slow_tap_count
+     21  metric_rolling_7d_avg_ms
+     22  metric_txn_delta
+     23  use_revenue_cents
+     24  sales_7d_avg
+     25  chain_length
+     26  mttr_avg_downtime_30d
+     27  mttr_avg_downtime_90d
+     28  mttr_failure_days_30d
+     29  mttr_failure_days_90d
+     30  mttr_days_since_prev_failure
+     31  mttr_max_downtime_30d
+     32  usage_days_in_service
+     33  usage_days_since_last_failure
+     34  usage_cumulative_tap_count
+     35  usage_cumulative_failure_count
+     36  usage_cumulative_outage_min
+     37  comms_events_prior_sum_7d
+     38  comms_events_prior_sum_30d
+     39  hardware_oos_count_prior_sum_7d
+
+  -> wrote tooling/out/ps1_validator_feature_contract.json
+  threshold  : 0.39651793241500854
+
+==============================================================
+ WHICH inference.py ACTUALLY RUNS
+==============================================================
+
+  gate: s3://sagemaker-us-east-1-170202974600/sagemaker-scikit-learn-2026-07-24-07-49-45-421/sourcedir.tar.gz
+      ps1_gate_xgb.json
+      ps1_gate_meta.joblib
+      ps1_gate_threshold.joblib
+      requirements.txt
+      inference.py
+      IDENTICAL to the copy inside model.tar.gz -- no ambiguity.
+      requirements.txt (this is what installs xgboost into the sklearn DLC):
+        numpy
+        pandas
+        xgboost>=2.0
+
+  tvm: s3://sagemaker-us-east-1-170202974600/sagemaker-scikit-learn-2026-07-24-07-42-41-346/sourcedir.tar.gz
+      ps1_tvm_xgb.json
+      ps1_tvm_meta.joblib
+      ps1_tvm_threshold.joblib
+      requirements.txt
+      inference.py
+      IDENTICAL to the copy inside model.tar.gz -- no ambiguity.
+      requirements.txt (this is what installs xgboost into the sklearn DLC):
+        numpy
+        pandas
+        xgboost>=2.0
+
+  validator: s3://sagemaker-us-east-1-170202974600/sagemaker-scikit-learn-2026-07-24-09-30-07-216/sourcedir.tar.gz
+      ps1_validator_xgb.json
+      ps1_validator_meta.joblib
+      ps1_validator_threshold.joblib
+      requirements.txt
+      inference.py
+      IDENTICAL to the copy inside model.tar.gz -- no ambiguity.
+      requirements.txt (this is what installs xgboost into the sklearn DLC):
+        numpy
+        pandas
+        xgboost>=2.0
+
+transcript: tooling/out/ps1_feature_contract_20260815T061548Z.txt

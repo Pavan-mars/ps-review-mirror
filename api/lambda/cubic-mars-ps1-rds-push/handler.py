@@ -189,19 +189,57 @@ def build_rows(table, city, run_id, computed_date, gold_s3):
     # ---- serial grain (equal-split attribution)
     ser_rows = []
     if col["matched_serial_nbr"]:
-        keep = {}
+        # THE DEDUP KEY MUST BE THE PRIMARY KEY. ps1_serial_predictions_pkey is
+        # (city_id, run_id, device_id, matched_serial_nbr) -- there is no date in
+        # it. This used to key on (device, serial, DAY), so a source carrying the
+        # same device+serial on several days produced one row per day, all with
+        # the same run_id, and the second INSERT violated the key. The source is
+        # device_ps1_cross_wired_DAILY: multi-day is the normal shape, so this
+        # failed on every real file, not an edge case.
+        #
+        # Collapse to the LATEST prediction_date per device, then keep that day's
+        # serials. One row per (device, serial), and the equal-split weights
+        # still sum to exactly 1.0 because every surviving serial shares one day.
+        #
+        # The key is built from the TRUNCATED values, because those are what the
+        # constraint sees -- two serials differing only past character 64 collide
+        # in the table even though they differ in the source.
+        latest_day = {}
         for i in range(table.num_rows):
             if ser[i] is None:
                 continue
-            keep.setdefault((dev[i], str(ser[i]), day[i]), i)
-        # count DISTINCT serials per device-day so the weights sum to exactly 1.0
+            d = dev[i]
+            if d not in latest_day or day[i] > latest_day[d]:
+                latest_day[d] = day[i]
+
+        keep, dropped_older, dropped_dup = {}, 0, 0
+        for i in range(table.num_rows):
+            if ser[i] is None:
+                continue
+            if day[i] != latest_day[dev[i]]:
+                dropped_older += 1
+                continue
+            k = (dev[i][:40], str(ser[i])[:64])
+            if k in keep:
+                dropped_dup += 1
+                continue
+            keep[k] = i
+        if dropped_older:
+            warn.append(f"serial grain: kept only each device's latest prediction_date; "
+                        f"{dropped_older:,} row(s) on earlier dates dropped because the "
+                        f"table's primary key has no date column")
+        if dropped_dup:
+            warn.append(f"serial grain: {dropped_dup:,} duplicate (device, serial) pair(s) "
+                        f"collapsed after truncation to the key's column widths")
+        # count DISTINCT serials per device so the weights sum to exactly 1.0
         counts = {}
-        for (d, s, dy) in keep:
-            counts[(d, dy)] = counts.get((d, dy), 0) + 1
-        for (d, s, dy), i in keep.items():
-            w = round(1.0 / counts[(d, dy)], 5)
+        for (d, s) in keep:
+            counts[d] = counts.get(d, 0) + 1
+        for (d, s), i in keep.items():
+            dy = day[i]
+            w = round(1.0 / counts[d], 5)
             ser_rows.append(dict(
-                city_id=city, run_id=run_id, device_id=d[:40], matched_serial_nbr=s[:64],
+                city_id=city, run_id=run_id, device_id=d, matched_serial_nbr=s,
                 device_category=(str(cat[i]) if cat[i] is not None else None),
                 component_type=(str(ctype[i])[:48] if ctype[i] is not None else None),
                 component_age_days=(round(cage[i], 2) if cage[i] is not None else None),
@@ -248,15 +286,70 @@ DELETE = {
     "ps1_serial_predictions":  "city_id = :c AND run_id = :r",
 }
 
+# ---------------------------------------------------------------------------
+# WHY ps1_failure_predictions NEEDS A NARROWER DELETE THAN THE OTHER TWO
+# ---------------------------------------------------------------------------
+# The other two tables delete on run_id, which is unique per run, so a run can
+# only ever remove its own rows. ps1_failure_predictions deletes on
+# (city_id, computed_date) -- which is not run-scoped and not category-scoped.
+#
+# The three PS1 notebooks score ONE device category each. Run gates and then
+# TVMs against the same computed_date and the second run's DELETE removes the
+# first run's rows before inserting its own. The dashboard then shows one fleet
+# where it should show three, and nothing errors -- the load reports success,
+# because from the loader's point of view it did exactly what it was told.
+#
+# This is the normal operating pattern, not an edge case: the categories are
+# always scored separately.
+#
+# THE FIX. Delete only the categories present in THIS payload, one statement
+# per category. Anything already in the table for another category on the same
+# date is left alone.
+#
+# NULL CATEGORY. A row with no device_category cannot be scoped -- there is
+# nothing to match on. Rather than guess, those payloads fall back to the old
+# date-wide delete and say so in the warning list, so the behaviour is visible
+# rather than silent.
+DELETE_BY_CATEGORY = {
+    "ps1_failure_predictions":
+        "city_id = :c AND computed_date = :d AND device_category = :cat",
+}
+
 
 def write_rows(conn, rows_by_target, city, run_id, computed_date, source_rows, gold_s3, warn, batch=500):
     loaded = {}
     for t in ORDER:
         rows = rows_by_target.get(t, [])
-        conn.run(f"DELETE FROM {t} WHERE {DELETE[t]}", c=city, r=run_id, d=computed_date)
+
+        # An empty payload used to still run the DELETE, so a failed or empty
+        # read silently emptied the table for that date and reported success.
+        # A load with nothing to load should change nothing.
         if not rows:
             loaded[t] = 0
+            warn.append(f"{t}: payload empty - nothing deleted, nothing inserted")
             continue
+
+        scoped = DELETE_BY_CATEGORY.get(t)
+        if scoped:
+            cats = sorted({r.get("device_category") for r in rows
+                           if r.get("device_category") is not None})
+            has_null = any(r.get("device_category") is None for r in rows)
+            if cats and not has_null:
+                for one_cat in cats:
+                    conn.run(f"DELETE FROM {t} WHERE {scoped}",
+                             c=city, d=computed_date, cat=one_cat)
+                log.info("[load] %s <- delete scoped to %s", t, ", ".join(cats))
+            else:
+                conn.run(f"DELETE FROM {t} WHERE {DELETE[t]}",
+                         c=city, r=run_id, d=computed_date)
+                warn.append(
+                    f"{t}: device_category is NULL on at least one row, so the delete "
+                    f"could not be scoped and fell back to clearing the whole of "
+                    f"{computed_date} for {city}. Other categories loaded for that date "
+                    f"have been removed.")
+        else:
+            conn.run(f"DELETE FROM {t} WHERE {DELETE[t]}",
+                     c=city, r=run_id, d=computed_date)
         cols = list(rows[0].keys()); collist = ", ".join(cols)
         for i in range(0, len(rows), batch):
             chunk = rows[i:i + batch]

@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../../runtimeConfig';
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   BarChart, Bar, Cell,
@@ -34,7 +35,7 @@ import { VLAB, fmtV, endOnlyLabel, FleetBaselineBand } from '../shared/Dashboard
 // This tab normally fetches through src/data/api.js, which reads
 // VITE_API_BASE_URL. FleetBaselineBand takes an explicit base, so the same
 // env var is resolved here rather than introducing a second source of truth.
-const MAIN_API = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const MAIN_API = (API_BASE_URL || '').replace(/\/$/, '');
 
 
 // PS2's own component (subsystem) and failure-type (error code) vocabularies,

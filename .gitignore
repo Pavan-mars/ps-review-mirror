@@ -98,3 +98,24 @@ PS5_reliability_v5_outputs/
 # Notebook HTML exports (nbconvert); keep docs/ HTML tracked
 **/PS2_SerialGrain*.html
 **/PS4_FaultClustering*_output_*.html
+
+# --- SageMaker Studio scratch (added 10-Aug-2026) -------------------------
+# Studio is an execution workspace, not a git working copy. These are the
+# artefacts a run leaves behind there; the same data already lives in S3.
+# Committing them from Studio is how V22-V25 ended up staged as deletions.
+PS3_V2?_outputs/
+PS3_sql_outputs/
+PS3_taxonomy_outputs/
+catboost_info/
+Untitled*.ipynb
+*.ipynb.invalid
+
+# --- PS1 evidence directory (added 11-Aug-2026) ---------------------------
+# tooling/out/ IS TRACKED ON PURPOSE. It holds measurement artefacts --
+# AWS inventory snapshots, endpoint captures -- that are evidence, not
+# scratch. tooling/ps1_cleanup.sh refuses to delete an endpoint unless its
+# DescribeEndpointConfig capture is committed here, because that capture is
+# the only thing in existence that can answer E-1. Do not gitignore it.
+# Run transcripts (*.log) are noise, though:
+tooling/out/*.log
+_ps1_design_drop.zip

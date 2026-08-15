@@ -149,11 +149,25 @@ def secret():
     return json.loads(sm.get_secret_value(SecretId=SECRET_ID)["SecretString"])
 
 
+CONN_INFO = {}
+
+
 def connect():
+    # 28-Jul-2026. THE SECRET IS AUTHORITATIVE for host/port/database -- exactly
+    # how cubic-mars-dashboard-api resolves them:
+    #     database = s["dbname"] or s["database"] or env DB_NAME
+    # This loader read the RDS_DATABASE env var alone and defaulted to "postgres",
+    # so migrate() reported sql/34 applied 16 / failed 0 while the load died on
+    # relation "ps1_cross_wired_daily" does not exist. Both were true: the table
+    # was created in the secret's database and looked for in "postgres".
     c = secret()
+    host = c.get("host") or RDS_HOST
+    db   = c.get("dbname") or c.get("database") or RDS_DB
+    port = int(c.get("port") or 5432)
+    CONN_INFO.update({"host": host, "database": db, "port": port})
     return pg8000.native.Connection(
         user=c["username"], password=c["password"],
-        host=RDS_HOST, database=RDS_DB, port=int(c.get("port", 5432)),
+        host=host, database=db, port=port,
         ssl_context=True, timeout=60,
     )
 
@@ -219,6 +233,134 @@ def describe(df):
     return {c: str(df[c].dtype) for c in df.columns}
 
 
+# ---------------------------------------------------------------------------
+# SOURCE FRESHNESS  (added 2026-08-10)
+#
+# THE PROBLEM THIS SOLVES. chicago/device_ps1_cross_wired_daily/ has held the
+# same three objects since 2026-07-29. The 06:40 cron reads them, rewrites the
+# same 786,525 rows, and reports success. It has reported success every morning
+# for twelve days while loading nothing new, and there is no way to tell that
+# from the report -- a re-load of identical bytes and a genuine daily refresh
+# produce the same "total_rows_loaded": 786525.
+#
+# That is CORRECT behaviour today: the programme's data stops at 2026-04-11 and
+# the incremental dump has not landed. It stops being correct the moment daily
+# ingestion starts, and nobody will notice the day it silently doesn't.
+#
+# A green run must therefore say WHICH of the two things happened. head_object
+# is a metadata call -- no body, no transfer cost -- so this is cheap enough to
+# do on every action including the read-only ones.
+#
+# The comparison is against the ETag recorded on the last SUCCESSFUL load in
+# ml_batch_load_audit.s3_source, encoded as "<key>@<etag>". ETag beats
+# LastModified here: re-uploading identical content changes the timestamp but
+# not the ETag, and it is content equality we care about.
+# ---------------------------------------------------------------------------
+def head_sources(slugs):
+    """Metadata only, no download. Returns {slug: {...}} and never raises."""
+    out = {}
+    for slug in slugs:
+        key = f"{PREFIX}/{slug}"
+        try:
+            h = s3.head_object(Bucket=BUCKET, Key=key)
+            lm = h["LastModified"]
+            age = (dt.datetime.now(dt.timezone.utc) - lm).total_seconds() / 86400.0
+            out[slug] = {
+                "key": key,
+                "etag": str(h.get("ETag", "")).strip('"'),
+                "last_modified": lm.isoformat(),
+                "age_days": round(age, 2),
+                "bytes": int(h.get("ContentLength") or 0),
+            }
+        except Exception as e:
+            out[slug] = {"key": key, "error": f"{type(e).__name__}: {e}"}
+    return out
+
+
+def last_loaded_etags(conn, slugs):
+    """{slug: etag} from the most recent SUCCESSFUL load audit row per slug."""
+    got = {}
+    for slug in slugs:
+        try:
+            r = conn.run(
+                "SELECT s3_source FROM ml_batch_load_audit "
+                "WHERE city_id = :c AND ps_id = 'PS1' AND status = 'success' "
+                "  AND s3_source LIKE :k "
+                "ORDER BY loaded_at DESC LIMIT 1",
+                c=CITY_ID, k=f"%{PREFIX}/{slug}@%")
+            if r and r[0][0] and "@" in str(r[0][0]):
+                got[slug] = str(r[0][0]).rsplit("@", 1)[1]
+        except Exception:
+            pass          # table missing or unreadable -> simply unknown
+    return got
+
+
+def freshness_verdict(heads, previous):
+    """Turn metadata + history into something a human can act on."""
+    per, unchanged, fresh, unknown, unreadable = {}, 0, 0, 0, 0
+    for slug, h in sorted(heads.items()):
+        if h.get("error"):
+            per[slug] = {"state": "UNREADABLE", "detail": h["error"]}
+            unreadable += 1
+            continue
+        prev = previous.get(slug)
+        if prev is None:
+            state = "NO_PRIOR_LOAD"
+            unknown += 1
+        elif prev == h["etag"]:
+            state = "UNCHANGED"
+            unchanged += 1
+        else:
+            state = "CHANGED"
+            fresh += 1
+        per[slug] = {"state": state, "age_days": h.get("age_days"),
+                     "last_modified": h.get("last_modified"),
+                     "etag": h.get("etag"), "previous_etag": prev}
+    # UNREADABLE dominates everything. A fleet whose object cannot be read is
+    # the most serious thing on this report, and the first version of this
+    # function let two healthy fleets outvote one missing one -- it announced
+    # "genuinely new data for every fleet" while GATE was absent from S3.
+    # Caught by scenario 5 of the test, not by reading the code.
+    if unreadable:
+        missing = sorted(k for k, v in per.items() if v["state"] == "UNREADABLE")
+        verdict = ("SOURCE UNREADABLE for " + ", ".join(missing).upper() +
+                   " -- that fleet's object could not be read from S3 at all. "
+                   "Any total below is missing it. Fix this before reading "
+                   "anything else on this report.")
+    elif unchanged and not fresh:
+        verdict = ("SOURCE UNCHANGED -- this is a re-load of bytes already in the "
+                   "database, not new data. Rows loaded is NOT evidence of freshness.")
+    elif fresh and not unchanged:
+        verdict = "SOURCE CHANGED -- genuinely new data for every fleet."
+    elif fresh and unchanged:
+        verdict = ("MIXED -- some fleets moved and some did not. Check per-fleet "
+                   "state below before trusting any cross-fleet total.")
+    else:
+        verdict = ("NO PRIOR LOAD RECORDED -- cannot say whether this is new data. "
+                   "The next run will be able to.")
+    return {"per_fleet": per, "n_unchanged": unchanged, "n_changed": fresh,
+            "n_unknown": unknown, "n_unreadable": unreadable, "verdict": verdict,
+            "source_prefix": f"s3://{BUCKET}/{PREFIX}/"}
+
+
+def write_load_audit(conn, slug, heads, rows_read, rows_loaded, run_id, status, err=None):
+    """One lineage row per fleet. s3_source carries '<key>@<etag>'."""
+    h = heads.get(slug) or {}
+    src = h.get("key") or f"{PREFIX}/{slug}"
+    if h.get("etag"):
+        src = f"{src}@{h['etag']}"
+    try:
+        conn.run(
+            "INSERT INTO ml_batch_load_audit "
+            "(city_id, ps_id, run_id, target_table, s3_source, rows_read, "
+            " rows_loaded, status, error_text) "
+            "VALUES (:c,'PS1',:r,'ps1_cross_wired_daily',:s,:rr,:rl,:st,:e)",
+            c=CITY_ID, r=run_id, s=src[:300], rr=int(rows_read),
+            rl=int(rows_loaded), st=status, e=(str(err)[:2000] if err else None))
+    except Exception as e:
+        print(f"[warn] load-audit row not written for {slug}: {type(e).__name__}: {e}")
+
+
 def shape_rows(df, device_type, asof, run_id, limit=None):
     """DataFrame -> list of tuples in TARGET_COLS order."""
     lower = {c.lower(): c for c in df.columns}
@@ -268,6 +410,249 @@ def shape_rows(df, device_type, asof, run_id, limit=None):
     return out, sorted(extras), sorted(mapped)
 
 
+def csv_cell(v):
+    """One value -> a CSV field for COPY ... WITH (FORMAT csv, NULL '').
+
+    None becomes an EMPTY, UNQUOTED field, which NULL '' reads as SQL NULL. A
+    QUOTED empty string is NOT null to Postgres, so quoting must be skipped for
+    None specifically -- getting that backwards turns every null numeric into a
+    type error at COPY time.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (dt.date, dt.datetime)):
+        return v.isoformat()
+    return str(v)
+
+
+def copy_rows(conn, rows, chunk=100_000):
+    """Bulk-insert via COPY FROM STDIN instead of batched INSERT.
+
+    WHY. The batched-INSERT version moved ~15,000 rows a minute, so 786,525 rows
+    projected to 30-50 minutes against a 900-second Lambda ceiling. And COMMIT
+    only runs at the very end, so a timeout commits NOTHING -- not a partial
+    load, a wasted quarter hour. COPY does the same work in one server-side pass
+    with no per-row parse or bind.
+
+    Chunked at 100k so the CSV buffer stays near 30 MB instead of materialising
+    ~240 MB for the validator file on top of its pandas frame.
+
+    csv.writer, not manual joins: SHAP feature names can contain commas and
+    quotes, and hand-rolled escaping is how a bulk load silently shifts every
+    column one to the right.
+    """
+    import csv, io as _io
+    collist = ", ".join(TARGET_COLS)
+    sql = f"COPY ps1_cross_wired_daily ({collist}) FROM STDIN WITH (FORMAT csv, NULL '')"
+    done = 0
+    for i in range(0, len(rows), chunk):
+        buf = _io.StringIO()
+        w = csv.writer(buf, lineterminator="\n")
+        for r in rows[i:i + chunk]:
+            w.writerow([csv_cell(v) for v in r])
+        buf.seek(0)
+        conn.run(sql, stream=buf)
+        done += min(chunk, len(rows) - i)
+    return done
+
+
+VERIFY_SQL = [
+    ("summary",     "SELECT * FROM v_ps1_xw_summary ORDER BY device_type"),
+    # 0 => (device_key, serial, transit_day) IS unique and a unique index can be
+    # added WITH EVIDENCE. Non-zero => it is not, and nothing may assume it is.
+    ("grain_dupes", "SELECT COUNT(*) AS dup_keys FROM v_ps1_xw_grain"),
+    ("performance", "SELECT * FROM v_ps1_xw_performance ORDER BY device_type"),
+    # positive_rate MUST climb LOW < MEDIUM < HIGH < CRITICAL. If it does not,
+    # the tier cutpoints are mislabelled and every panel sorting by tier misleads.
+    ("tier_calib",  "SELECT device_type, ps1_risk_tier, n_rows, n_positive, "
+                    "positive_rate, mean_predicted_prob "
+                    "FROM v_ps1_xw_tier_calibration "
+                    "ORDER BY device_type, positive_rate DESC"),
+    ("shap_top8",   "SELECT device_type, feature_name, n_rows, mean_abs_shap, "
+                    "mean_signed_shap, importance_rank FROM v_ps1_shap_importance "
+                    "WHERE importance_rank <= 8 ORDER BY device_type, importance_rank"),
+    ("causation",   "SELECT * FROM v_ps1_xw_causation ORDER BY device_type"),
+    # Should be 0 -- all 34 columns are mapped. Non-zero means the export gained
+    # a column the loader has not been told about.
+    # ---- IS THE LABEL AN ONSET OR A STATE? -----------------------------
+    # will_hardware_oos_3d is true on 91.4% of TVM device-days. The usual cause
+    # is labelling the OOS *state* rather than its *onset*: a device out of
+    # service for three weeks has every one of those days labelled 1, plus the
+    # three before. A model then predicts "is this device currently broken",
+    # which is easy and useless -- you cannot pre-empt a failure that already
+    # happened.
+    #
+    # continuation_share  = share of positive days that FOLLOW a positive day.
+    #                       Near 0.95 => state, not onset.
+    # onset_base_rate     = the real event rate, if the label were onset-only.
+    #                       This is the number PS1 should be trained against.
+    #
+    # Partitioned by (device_id, component_serial_nbr) because the table is at
+    # device x component x day grain -- partitioning by device alone would
+    # interleave separate components' histories and invent transitions that
+    # never happened.
+    ("label_shape",
+     "SELECT device_type, COUNT(*) AS device_days, "
+     "COUNT(*) FILTER (WHERE lbl = 1) AS positive_days, "
+     "COUNT(*) FILTER (WHERE lbl = 1 AND prev = 1) AS continuation_days, "
+     "ROUND(COUNT(*) FILTER (WHERE lbl = 1 AND prev = 1)::numeric "
+     "      / NULLIF(COUNT(*) FILTER (WHERE lbl = 1), 0), 4) AS continuation_share, "
+     "COUNT(*) FILTER (WHERE lbl = 1 AND COALESCE(prev, 0) = 0) AS onsets, "
+     "ROUND(COUNT(*) FILTER (WHERE lbl = 1 AND COALESCE(prev, 0) = 0)::numeric "
+     "      / NULLIF(COUNT(*), 0), 5) AS onset_base_rate "
+     "FROM (SELECT device_type, will_hardware_oos_3d AS lbl, "
+     "             LAG(will_hardware_oos_3d) OVER (PARTITION BY device_id, "
+     "               component_serial_nbr ORDER BY transit_day) AS prev "
+     "      FROM ps1_cross_wired_daily WHERE city_id = :c) z "
+     "GROUP BY device_type ORDER BY device_type"),
+    # How long is a spell? If most positive runs are long, that is the same
+    # finding from the other side.
+    ("spell_lengths",
+     "SELECT device_type, run_len, COUNT(*) AS n_spells FROM ("
+     "  SELECT device_type, device_id, component_serial_nbr, grp, COUNT(*) AS run_len"
+     "  FROM (SELECT device_type, device_id, component_serial_nbr, transit_day,"
+     "               will_hardware_oos_3d AS lbl,"
+     "               ROW_NUMBER() OVER (PARTITION BY device_id, component_serial_nbr"
+     "                                  ORDER BY transit_day)"
+     "             - ROW_NUMBER() OVER (PARTITION BY device_id, component_serial_nbr,"
+     "                                  will_hardware_oos_3d ORDER BY transit_day) AS grp"
+     "        FROM ps1_cross_wired_daily WHERE city_id = :c) a"
+     "  WHERE lbl = 1 GROUP BY device_type, device_id, component_serial_nbr, grp) b "
+     "GROUP BY device_type, run_len ORDER BY device_type, run_len"),
+    ("extra_used",  "SELECT COUNT(*) AS n FROM ps1_cross_wired_daily WHERE extra IS NOT NULL"),
+]
+
+
+def verify(report):
+    """Read-only diagnostics. Writes nothing; safe to run any time.
+
+    Exists because there is no other way to query appdb from CloudShell -- the
+    dashboard-api exposes fixed routes only.
+    """
+    conn = connect()
+    report["connected_to"] = dict(CONN_INFO)
+    out = {}
+    for name, sql in VERIFY_SQL:
+        try:
+            rows = conn.run(sql, c=CITY_ID)
+            cols = [c["name"] for c in conn.columns]
+            out[name] = {"columns": cols,
+                         "rows": [[str(v) if v is not None else None for v in r]
+                                  for r in rows]}
+        except Exception as e:
+            out[name] = {"error": f"{type(e).__name__}: {e}"[:300]}
+    try:
+        conn.close()
+    except Exception:
+        pass
+    report["verify"] = out
+    return report
+
+
+# =====================================================================
+# AUDIT -- what is actually in Aurora, and could we rebuild it?
+#
+# n_stamps > 1 or n_runs > 1 means loads have STACKED rather than replaced --
+# the same run present twice, inflating every count built on that table.
+#
+# Read-only. No DDL, no DELETE, no INSERT.
+# =====================================================================
+
+# Deliberately conservative: anything not proven says "unknown", because
+# "unknown" stops a drop and a wrong guess does not.
+RELOAD_SOURCE = {
+    "ps1_cross_wired_daily":   "S3 artifacts chicago/device_ps1_cross_wired_daily/{gate,tvm,validator}",
+    "ps1_failure_predictions": "sql/load/ps1_predictions_20260726.sql (VERIFY completeness)",
+    "ps1_inference_runs":      "sql/load/ps1_run_20260726.sql (VERIFY)",
+    "ps1_model_performance":   "sql/load/ps1_sklearn_20260726.sql (VERIFY)",
+    "ps3_incident_predictions": "sql/load/ps3_incidents_20260726.sql",
+    "ps3_category_coverage":   "sql/load/ps3_coverage_20260726.sql",
+    "dim_device_station":      "sql/load/dim_device_station_20260726.sql",
+    "dim_device_serial":       "REBUILT by sql/28 from dim_device_component + dim_device_station",
+    # THE ONE THAT MATTERS. Nothing ever wrote chicago/dim/device_serial/ to S3
+    # and there is no dim_device_component script in sql/load/. Drop it and the
+    # device<->serial<->component map every tab joins through is unrecoverable.
+    "dim_device_component":    "NO KNOWN SOURCE -- do not drop",
+}
+
+
+def reload_source(t):
+    if t in RELOAD_SOURCE:
+        return RELOAD_SOURCE[t]
+    if t.startswith("ps2_"):
+        return "S3 artifacts ps2_outputs/ via cubic-mars-ps2-rds-loader"
+    if t.startswith("ps3_"):
+        return "unknown -- no PS3 model-output prefix exists in S3; verify before dropping"
+    if t.startswith("ps1_"):
+        return "unknown -- verify before dropping"
+    return "unknown"
+
+
+def audit(report, prefixes=("ps1", "ps2", "ps3", "dim")):
+    conn = connect()
+    report["connected_to"] = dict(CONN_INFO)
+    like = " OR ".join([f"c.relname LIKE '{p}\\_%'" for p in prefixes])
+    try:
+        tabs = [r[0] for r in conn.run(
+            "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+            f"WHERE n.nspname = 'public' AND c.relkind = 'r' AND ({like}) ORDER BY c.relname")]
+    except Exception as e:
+        report["audit_error"] = f"{type(e).__name__}: {e}"
+        return report
+
+    # Stamp columns read from the catalogue rather than assumed -- these tables
+    # were written by five loaders over several weeks and share no convention.
+    have = {}
+    for t, c in conn.run(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND column_name IN "
+            "('city_id','asof_date','computed_date','prediction_date','run_id','transit_day')"):
+        have.setdefault(t, set()).add(c)
+
+    out = []
+    for t in tabs:
+        cols = have.get(t, set())
+        sel = ["COUNT(*) AS n_rows"]
+        if "city_id" in cols:
+            sel.append("COUNT(DISTINCT city_id) AS n_cities")
+        stamp = next((c for c in ("asof_date", "computed_date", "prediction_date")
+                      if c in cols), None)
+        if stamp:
+            sel += [f"COUNT(DISTINCT {stamp}) AS n_stamps",
+                    f"MIN({stamp})::text AS first_stamp",
+                    f"MAX({stamp})::text AS last_stamp"]
+        if "run_id" in cols:
+            sel.append("COUNT(DISTINCT run_id) AS n_runs")
+        try:
+            r = conn.run(f"SELECT {', '.join(sel)} FROM {t}")[0]
+            names = [c["name"] for c in conn.columns]
+            rec = {"table": t, "stamp_column": stamp or "-",
+                   "reload_source": reload_source(t)}
+            rec.update({n: (str(v) if v is not None else None)
+                        for n, v in zip(names, r)})
+            rec["stacked"] = bool(
+                (rec.get("n_stamps") and int(rec["n_stamps"]) > 1)
+                or (rec.get("n_runs") and int(rec["n_runs"]) > 1))
+            out.append(rec)
+        except Exception as e:
+            out.append({"table": t, "error": f"{type(e).__name__}: {str(e)[:160]}"})
+    try:
+        conn.close()
+    except Exception:
+        pass
+    report["audit"] = out
+    report["audit_totals"] = {
+        "tables": len(out),
+        "empty": sum(1 for r in out if r.get("n_rows") == "0"),
+        "stacked": sum(1 for r in out if r.get("stacked")),
+        "no_reload_source": sum(1 for r in out
+                                if str(r.get("reload_source", "")).startswith(("unknown", "NO KNOWN"))),
+    }
+    return report
+
+
 def lambda_handler(event, context):
     event  = event or {}
     action = event.get("action", "load")
@@ -278,6 +663,35 @@ def lambda_handler(event, context):
 
     report = {"action": action, "bucket": BUCKET, "prefix": PREFIX,
               "city_id": CITY_ID, "run_id": run_id, "files": {}, "errors": {}}
+
+    # ---- freshness: read-only, no download, no write. Answers the one
+    # question a green cron cannot: did the source actually move?
+    #     aws lambda invoke ... --payload '{"action":"freshness"}'
+    if action == "freshness":
+        heads = head_sources(want)
+        prev = {}
+        try:
+            c = connect()
+            try:
+                prev = last_loaded_etags(c, want)
+            finally:
+                c.close()
+        except Exception as e:
+            report["errors"]["__db__"] = f"{type(e).__name__}: {e}"
+        report["source_freshness"] = freshness_verdict(heads, prev)
+        report["note"] = "freshness: nothing was read from S3 bodies and nothing was written"
+        print(json.dumps(report))
+        return report
+
+    # verify touches no S3 and writes nothing -- return before the parquet reads.
+    if action == "verify":
+        return verify(report)
+    if action == "audit":
+        return audit(report, tuple(event.get("prefixes", ["ps1", "ps2", "ps3", "dim"])))
+
+    # Metadata first -- one head_object per fleet, no body. Used for the
+    # freshness verdict and for the lineage row written after the load.
+    heads = head_sources([x for x in want if x in TYPES])
 
     frames = {}
     for slug in want:
@@ -308,11 +722,27 @@ def lambda_handler(event, context):
         report["total_rows_in_s3"] = sum(
             f.get("rows_in_s3", 0) for f in report["files"].values())
         report["expected"] = EXPECTED
+        prev_dry = {}
+        try:
+            _c = connect()
+            try:
+                prev_dry = last_loaded_etags(_c, [x for x in want if x in TYPES])
+            finally:
+                _c.close()
+        except Exception:
+            pass
+        report["source_freshness"] = freshness_verdict(heads, prev_dry)
         report["note"] = "dry_run: nothing was written"
         return report
 
     conn = connect()
+    # Report it. A silent database mismatch is what made the first load fail.
+    report["connected_to"] = dict(CONN_INFO)
     total = 0
+
+    # Read the PREVIOUS load's ETags before this run writes anything, so the
+    # comparison is against history rather than against ourselves.
+    prev_etags = last_loaded_etags(conn, [x for x in want if x in TYPES])
     try:
         conn.run("BEGIN")
         for slug, df in frames.items():
@@ -331,28 +761,7 @@ def lambda_handler(event, context):
                          c=CITY_ID, d=device_type)
 
                 cols = ", ".join(TARGET_COLS)
-                n    = len(TARGET_COLS)
-                ins  = 0
-                for i in range(0, len(rows), BATCH):
-                    chunk = rows[i:i + BATCH]
-                    ph, params = [], {}
-                    for j, r in enumerate(chunk):
-                        names = [f"p{j}_{k}" for k in range(n)]
-                        # CAST_SUFFIX is not cosmetic. pg8000 binds a Python str
-                        # as text (OID 25), and Postgres has NO implicit or
-                        # assignment cast from text to jsonb -- the INSERT would
-                        # fail with "column extra is of type jsonb but
-                        # expression is of type text". The ::jsonb is what makes
-                        # the bind legal.
-                        ph.append("(" + ", ".join(
-                            ":" + x + CAST_SUFFIX.get(TARGET_COLS[k], "")
-                            for k, x in enumerate(names)) + ")")
-                        for k, name in enumerate(names):
-                            params[name] = r[k]
-                    sql = (f"INSERT INTO ps1_cross_wired_daily ({cols}) VALUES "
-                           + ", ".join(ph))
-                    conn.run(sql, **params)
-                    ins += len(chunk)
+                ins  = copy_rows(conn, rows)
 
                 conn.run(f"RELEASE SAVEPOINT {sp}")
                 total += ins
@@ -374,11 +783,34 @@ def lambda_handler(event, context):
             pass
         report["errors"]["__transaction__"] = f"{type(e).__name__}: {e}"
     finally:
+        # Lineage, written AFTER the transaction resolves so status is the truth
+        # and not an intention. Outside the transaction on purpose: a failed load
+        # must still leave a record that it was attempted. This loader wrote no
+        # audit row at all before 2026-08-10, which is why nobody could tell that
+        # twelve consecutive "successful" runs had loaded the same bytes.
+        try:
+            txn_failed = "__transaction__" in report.get("errors", {})
+            for _slug in [x for x in want if x in TYPES]:
+                _f = report.get("files", {}).get(_slug) or {}
+                _rr = int(_f.get("rows_in_s3") or 0)
+                _rl = int(_f.get("rows_loaded") or 0)
+                if txn_failed:
+                    _st, _er = "failed", report["errors"]["__transaction__"]
+                elif _slug in report.get("errors", {}):
+                    _st, _er = "failed", report["errors"][_slug]
+                elif _rl and _rl == _rr:
+                    _st, _er = "success", None
+                else:
+                    _st, _er = "partial", f"rows_read={_rr} rows_loaded={_rl}"
+                write_load_audit(conn, _slug, heads, _rr, _rl, run_id, _st, _er)
+        except Exception as _e:
+            print(f"[warn] load-audit block failed: {type(_e).__name__}: {_e}")
         try:
             conn.close()
         except Exception:
             pass
 
+    report["source_freshness"] = freshness_verdict(heads, prev_etags)
     report["total_rows_loaded"] = total
     report["expected"] = EXPECTED
     print(json.dumps({k: v for k, v in report.items() if k != "files"}))

@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../runtimeConfig';
 // ============================================================================
 // Live API client for the CUBIC MARS dashboard.
 // Fetches from the cubic-mars-dashboard-api Lambda (via API Gateway) set in
@@ -22,7 +23,7 @@ import {
   getPS2TopDevices,
 } from './mockData';
 
-const BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const BASE = (API_BASE_URL || '').replace(/\/$/, '');
 export const API_ENABLED = !!BASE;
 
 const N = (v) => (v === null || v === undefined ? null : Number(v));

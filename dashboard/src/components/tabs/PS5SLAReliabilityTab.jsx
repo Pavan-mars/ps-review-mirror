@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../../runtimeConfig';
 import React, { useState, useMemo, useEffect, useContext, useCallback } from 'react';
 import {
   BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -21,7 +22,7 @@ import Device360Modal from './Device360Modal';
 // Override the base with VITE_PS5_API_BASE_URL if the gateway ever changes.
 // /fleet/baseline is served by the MAIN dashboard-api, not by the PS5
 // gateway above -- the two are different API Gateway stages.
-const MAIN_API = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const MAIN_API = (API_BASE_URL || '').replace(/\/$/, '');
 const PS5_BASE = (import.meta.env.VITE_PS5_API_BASE_URL
   || 'https://b1s4xxlddb.execute-api.us-east-1.amazonaws.com').replace(/\/$/, '');
 async function ps5Get(path, city) {

@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../../runtimeConfig';
 import React, { useState, useMemo, useEffect, useContext, useCallback } from 'react';
 import FilterContext from '../../context/FilterContext';
 import Device360Modal from './Device360Modal';
@@ -39,7 +40,7 @@ import {
 // rather than leaving a silently empty chart.
 // ============================================================================
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL
+const API_BASE = (API_BASE_URL
   || 'https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com').replace(/\/$/, '');
 
 async function apiGet(path, params = {}) {

@@ -1,0 +1,1848 @@
+{
+ "collected_utc": "20260810T054803Z",
+ "region": "us-east-1",
+ "lambdas": [
+  {
+   "FunctionName": "cubic-mars-ps1-rds-push",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps1-rds-push",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-ps1-rds-push-role-dev",
+   "Handler": "handler.lambda_handler",
+   "CodeSize": 879040,
+   "Description": "",
+   "Timeout": 600,
+   "MemorySize": 2048,
+   "LastModified": "2026-07-26T19:25:45.000+0000",
+   "CodeSha256": "wyhtWRvTSULCyuHdiDPol7PAW5ACNFqAQ01ct9XtVqY=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_HOST": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+     "CITY_ID": "CHI",
+     "RDS_DATABASE": "postgres",
+     "GOLD_KEY": "chicago/gold/ps1_staging/device_ps1_cross_wired_daily.csv",
+     "GOLD_BUCKET": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+     "RDS_SECRET_ID": "cubic-mars-secret-rds-dev"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "77606aa9-04b0-4725-8129-4126a49b0491",
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:9819e0b13863c84a43e11f5c724871d909046d3cfb807eeb19460c63f974f26f"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-ps1-rds-push"
+   }
+  },
+  {
+   "FunctionName": "cubic-mars-dashboard-api",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-dashboard-api",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-dashboard-api-role-dev",
+   "Handler": "handler.lambda_handler",
+   "CodeSize": 611749,
+   "Description": "",
+   "Timeout": 300,
+   "MemorySize": 256,
+   "LastModified": "2026-08-07T06:14:35.000+0000",
+   "CodeSha256": "lCiSuq2GYgoiFujdv4Sm42WFqAWgOA9pWwEgCDZCvug=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_HOST": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+     "SECRET_ARN": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-cW7LSs",
+     "DB_NAME": "postgres",
+     "D360_PARALLEL": "0"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "6cb0715d-3b59-49da-b6c1-e5553e87260c",
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:fb4a5cbb4aeb1909cf946882192e0e708d8756b3a866c3ab89a3cfcfffeca7bc"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-dashboard-api"
+   }
+  },
+  {
+   "FunctionName": "cubic-mars-ps4-v3-loader",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps4-v3-loader",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-ps4-v3-loader-role-dev",
+   "Handler": "handler.lambda_handler",
+   "CodeSize": 21285362,
+   "Description": "",
+   "Timeout": 900,
+   "MemorySize": 3008,
+   "LastModified": "2026-07-29T08:18:28.000+0000",
+   "CodeSha256": "DkIrrcusa0tsvCFq6QhXbpVVumBW6K+RwEEQkOElfFs=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_HOST": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+     "CITY_ID": "CHI",
+     "ARTIFACT_BUCKET": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+     "PS4_V3_ROOT": "chicago/ps4/v3",
+     "RDS_SECRET_ID": "cubic-mars-secret-rds-dev"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "bbd0b4dc-8fb6-4584-b686-559bc47146cf",
+   "Layers": [
+    {
+     "Arn": "arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:29",
+     "CodeSize": 52053736
+    }
+   ],
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:9819e0b13863c84a43e11f5c724871d909046d3cfb807eeb19460c63f974f26f"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-ps4-v3-loader"
+   }
+  },
+  {
+   "FunctionName": "cubic-mars-ps3-rc-loader",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps3-rc-loader",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-ps3-rc-loader-role-dev",
+   "Handler": "handler.lambda_handler",
+   "CodeSize": 876920,
+   "Description": "",
+   "Timeout": 900,
+   "MemorySize": 1024,
+   "LastModified": "2026-08-04T08:54:30.000+0000",
+   "CodeSha256": "b+dXoqthyfha+bYid+A4NN+aysELMAXQS2OY6sB7b5s=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_HOST": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+     "PG_TIMEOUT": "300",
+     "CITY_ID": "CHI",
+     "ARTIFACT_BUCKET": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+     "PS3_RC_PREFIX": "chicago/ps3/rootcause_outputs",
+     "RDS_SECRET_ID": "cubic-mars-secret-rds-dev"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "7f4d2a71-e6ab-4542-bafb-285f78e42c1f",
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:fb4a5cbb4aeb1909cf946882192e0e708d8756b3a866c3ab89a3cfcfffeca7bc"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-ps3-rc-loader"
+   }
+  },
+  {
+   "FunctionName": "cubic-mars-ps4-rds-loader",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps4-rds-loader",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-ps4-rds-loader-role-dev",
+   "Handler": "handler.lambda_handler",
+   "CodeSize": 883018,
+   "Description": "",
+   "Timeout": 900,
+   "MemorySize": 3008,
+   "LastModified": "2026-07-28T10:20:33.000+0000",
+   "CodeSha256": "i84Dw63WOdcCBnq1XGM/pegEq+WbRzS/Zhwb2xFTMMc=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_HOST": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+     "CITY_ID": "CHI",
+     "RDS_DATABASE": "postgres",
+     "KEEP_SNAPSHOTS": "3",
+     "PS4_CLUSTER_PREFIX": "chicago/ps4/clustering",
+     "PS4_PREFIX": "chicago/ps4",
+     "ARTIFACT_BUCKET": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+     "GOLD_BUCKET": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+     "RDS_SECRET_ID": "cubic-mars-secret-rds-dev"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "b039b2e5-87cd-4056-b7ea-733e5fec8a82",
+   "Layers": [
+    {
+     "Arn": "arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:29",
+     "CodeSize": 52053736
+    }
+   ],
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:9819e0b13863c84a43e11f5c724871d909046d3cfb807eeb19460c63f974f26f"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-ps4-rds-loader"
+   }
+  },
+  {
+   "FunctionName": "cubic-mars-ps5-rds-loader",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps5-rds-loader",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-ps5-rds-loader-role-dev",
+   "Handler": "handler.lambda_handler",
+   "CodeSize": 874639,
+   "Description": "",
+   "Timeout": 900,
+   "MemorySize": 1024,
+   "LastModified": "2026-07-28T05:53:59.000+0000",
+   "CodeSha256": "irlI8QuRo7PsM06JTUqd7GJ6xnoe/tNg8KUAntvt4bY=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_HOST": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+     "CITY_ID": "CHI",
+     "PS5_PREFIX": "chicago/ps5/notebook_outputs",
+     "GOLD_BUCKET": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+     "RDS_SECRET_ID": "cubic-mars-secret-rds-dev"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "b8da01d3-6c0a-4771-8571-d88ac5e7dfdf",
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:9819e0b13863c84a43e11f5c724871d909046d3cfb807eeb19460c63f974f26f"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-ps5-rds-loader"
+   }
+  },
+  {
+   "FunctionName": "cubic-mars-ps1-xw-loader",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps1-xw-loader",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-ps1-xw-loader-role-dev",
+   "Handler": "handler.lambda_handler",
+   "CodeSize": 883330,
+   "Description": "",
+   "Timeout": 900,
+   "MemorySize": 3008,
+   "LastModified": "2026-07-28T15:35:08.000+0000",
+   "CodeSha256": "BDcewkXTsVQvInjmoWE7p/6Ssqsnz8puKz4C+8R89U0=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_HOST": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+     "CITY_ID": "CHI",
+     "RDS_DATABASE": "postgres",
+     "PS1_XW_PREFIX": "chicago/device_ps1_cross_wired_daily",
+     "ARTIFACT_BUCKET": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+     "RDS_SECRET_ID": "cubic-mars-secret-rds-dev"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "4c525051-50d4-41c1-9928-69df31b1146b",
+   "Layers": [
+    {
+     "Arn": "arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:29",
+     "CodeSize": 52053736
+    }
+   ],
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:9819e0b13863c84a43e11f5c724871d909046d3cfb807eeb19460c63f974f26f"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-ps1-xw-loader"
+   }
+  },
+  {
+   "FunctionName": "cubic-mars-dim-loader",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-dim-loader",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-dim-loader-role-dev",
+   "Handler": "handler.lambda_handler",
+   "CodeSize": 878430,
+   "Description": "",
+   "Timeout": 900,
+   "MemorySize": 3008,
+   "LastModified": "2026-07-27T13:04:10.791+0000",
+   "CodeSha256": "F4613Ko2pN3IpP8/686x8vG5mVZRnrqCfir3cjCRdyQ=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_HOST": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+     "CITY_ID": "CHI",
+     "RDS_DATABASE": "postgres",
+     "KEEP_SNAPSHOTS": "3",
+     "GOLD_BUCKET": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+     "DIM_PREFIX": "chicago/dim/device_serial",
+     "RDS_SECRET_ID": "cubic-mars-secret-rds-dev"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "ded0050d-28e4-4e75-bb19-ba255a0c4284",
+   "Layers": [
+    {
+     "Arn": "arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:29",
+     "CodeSize": 52053736
+    }
+   ],
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:9819e0b13863c84a43e11f5c724871d909046d3cfb807eeb19460c63f974f26f"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-dim-loader"
+   }
+  },
+  {
+   "FunctionName": "cubic-mars-ps2-rds-push",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps2-rds-push",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-ps2-rds-push-role",
+   "Handler": "handler.handler",
+   "CodeSize": 63636135,
+   "Description": "",
+   "Timeout": 600,
+   "MemorySize": 512,
+   "LastModified": "2026-07-25T14:14:01.000+0000",
+   "CodeSha256": "rUHPoCvGPlszMXRJWviqLYMEfVCnNbBK46yInKjBv8Q=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_DATABASE": "appdb",
+     "RDS_SECRET_ID": "cubic-mars-secret-rds-dev"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "24dfd4f8-6f1d-4049-9212-658abf0b5b41",
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:9819e0b13863c84a43e11f5c724871d909046d3cfb807eeb19460c63f974f26f"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-ps2-rds-push"
+   }
+  },
+  {
+   "FunctionName": "cubic-mars-ps2-rds-loader",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps2-rds-loader",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-ps2-rds-loader-role-dev",
+   "Handler": "handler.lambda_handler",
+   "CodeSize": 882170,
+   "Description": "PS2 S3->Aurora loader (cold-start bump 2026-08-02)",
+   "Timeout": 900,
+   "MemorySize": 3008,
+   "LastModified": "2026-08-08T14:50:17.000+0000",
+   "CodeSha256": "Rj6/8HdX/bbv6Fi/95CnsP4Rd5e39Y6cVtE4MPqt/4A=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_HOST": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+     "CITY_ID": "CHI",
+     "RDS_DATABASE": "postgres",
+     "PS2_PREFIX": "chicago/ps2_outputs",
+     "KEEP_SNAPSHOTS": "3",
+     "ARTIFACT_BUCKET": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+     "GOLD_BUCKET": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+     "RDS_SECRET_ID": "cubic-mars-secret-rds-dev"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "73652f52-d17d-45d4-ab4a-f03a7a93c81a",
+   "Layers": [
+    {
+     "Arn": "arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:29",
+     "CodeSize": 52053736
+    }
+   ],
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:fb4a5cbb4aeb1909cf946882192e0e708d8756b3a866c3ab89a3cfcfffeca7bc"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-ps2-rds-loader"
+   }
+  },
+  {
+   "FunctionName": "cubic-mars-ps3-v25-loader",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps3-v25-loader",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-ps3-v25-loader-role-dev",
+   "Handler": "handler.lambda_handler",
+   "CodeSize": 883065,
+   "Description": "",
+   "Timeout": 900,
+   "MemorySize": 3008,
+   "LastModified": "2026-08-09T14:06:22.000+0000",
+   "CodeSha256": "beNiBe7+too9TdSYfD1cIoYh1CidelmNsfpVS/R/C1o=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_HOST": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+     "PG_TIMEOUT": "300",
+     "CITY_ID": "CHI",
+     "PS3_PREFIX": "chicago/ps3_outputs",
+     "ARTIFACT_BUCKET": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+     "RDS_SECRET_ID": "cubic-mars-secret-rds-dev"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "3fde53ed-8980-4380-8b52-683fb0442444",
+   "Layers": [
+    {
+     "Arn": "arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:29",
+     "CodeSize": 52053736
+    }
+   ],
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:fb4a5cbb4aeb1909cf946882192e0e708d8756b3a866c3ab89a3cfcfffeca7bc"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-ps3-v25-loader"
+   }
+  },
+  {
+   "FunctionName": "cubic-mars-ps3-v2-loader",
+   "FunctionArn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps3-v2-loader",
+   "Runtime": "python3.12",
+   "Role": "arn:aws:iam::170202974600:role/cubic-mars-ps3-v2-loader-role-dev",
+   "Handler": "handler.lambda_handler",
+   "CodeSize": 21280938,
+   "Description": "",
+   "Timeout": 900,
+   "MemorySize": 3008,
+   "LastModified": "2026-07-29T09:40:28.000+0000",
+   "CodeSha256": "7EnXClYG1W/ovAKj6FKBGB1WoDTWezAs7SS/v36oevo=",
+   "Version": "$LATEST",
+   "VpcConfig": {
+    "SubnetIds": [
+     "subnet-0830633f6cab1b8a1",
+     "subnet-01ad20b3b49bf59de",
+     "subnet-0cd6e4bca78eaab8d"
+    ],
+    "SecurityGroupIds": [
+     "sg-09a66a0caa24a5fc6"
+    ],
+    "VpcId": "vpc-0a7775adc7d382fbb",
+    "Ipv6AllowedForDualStack": false
+   },
+   "Environment": {
+    "Variables": {
+     "RDS_HOST": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+     "CITY_ID": "CHI",
+     "PS3_BUCKET": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+     "PS3_ROOT": "chicago/ps3_hardened_remediation/runs",
+     "RDS_SECRET_ID": "cubic-mars-secret-rds-dev"
+    }
+   },
+   "TracingConfig": {
+    "Mode": "PassThrough"
+   },
+   "RevisionId": "6eb3f86b-0182-40c6-980f-8693720d952b",
+   "Layers": [
+    {
+     "Arn": "arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python312:29",
+     "CodeSize": 52053736
+    }
+   ],
+   "State": "Active",
+   "LastUpdateStatus": "Successful",
+   "PackageType": "Zip",
+   "Architectures": [
+    "x86_64"
+   ],
+   "EphemeralStorage": {
+    "Size": 512
+   },
+   "SnapStart": {
+    "ApplyOn": "None",
+    "OptimizationStatus": "Off"
+   },
+   "RuntimeVersionConfig": {
+    "RuntimeVersionArn": "arn:aws:lambda:us-east-1::runtime:fb4a5cbb4aeb1909cf946882192e0e708d8756b3a866c3ab89a3cfcfffeca7bc"
+   },
+   "LoggingConfig": {
+    "LogFormat": "Text",
+    "LogGroup": "/aws/lambda/cubic-mars-ps3-v2-loader"
+   }
+  }
+ ],
+ "eventbridge_rules": [
+  {
+   "Name": "AWSControlTowerManagedRule",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/AWSControlTowerManagedRule",
+   "EventPattern": "{  \"source\": [\"aws.securityhub\"],   \"detail-type\": [\"Security Hub Findings - Imported\"],  \"detail\": {    \"findings\": {      \"Compliance\": {        \"AssociatedStandards\": {          \"StandardsId\" : [            { \"prefix\": \"standards/service-managed-aws-control-tower\" }          ]        }      },      \"Region\" : [\"us-east-1\"]    }  }}",
+   "State": "ENABLED",
+   "Description": "This rule is used to route Security Hub Control Findings to Control Tower",
+   "ManagedBy": "controltower.amazonaws.com",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "DO-NOT-DELETE-AmazonInspectorEc2ManagedRule",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/DO-NOT-DELETE-AmazonInspectorEc2ManagedRule",
+   "EventPattern": "{\"source\": [\"aws.ec2\"], \"detail-type\": [\"EC2 Instance State-change Notification\"], \"detail\": {\"state\":[\"running\", \"stopped\", \"terminated\"]}}",
+   "State": "ENABLED",
+   "Description": "Managed rule used to route EC2 Events to Inspector",
+   "ManagedBy": "inspector2.amazonaws.com",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "DO-NOT-DELETE-AmazonInspectorEc2TagManagedRule",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/DO-NOT-DELETE-AmazonInspectorEc2TagManagedRule",
+   "EventPattern": "{\"source\": [\"aws.tag\"], \"detail-type\": [\"Tag Change on Resource\"], \"detail\": {\"service\":[\"ec2\"], \"resource-type\":[\"instance\"]}}",
+   "State": "ENABLED",
+   "Description": "Managed rule used to route EC2 Tag Change Events to Inspector",
+   "ManagedBy": "inspector2.amazonaws.com",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "SIRGuardDutyRule",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/SIRGuardDutyRule",
+   "EventPattern": "{\"source\": [\"aws.guardduty\"], \"detail-type\": [\"GuardDuty Finding\"], \"account\": [\"170202974600\"], \"region\": [\"us-east-1\"]}",
+   "State": "ENABLED",
+   "ManagedBy": "triage.security-ir.amazonaws.com",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "SIRSecurityHubRule",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/SIRSecurityHubRule",
+   "EventPattern": "{\"source\": [\"aws.securityhub\"], \"detail-type\": [\"Security Hub Findings - Imported\", \"Security Hub Findings - Custom Action\"], \"detail\": {\"findings\": {\"AwsAccountId\": [\"170202974600\"]}}, \"account\": [\"170202974600\"], \"region\": [\"us-east-1\"]}",
+   "State": "ENABLED",
+   "ManagedBy": "triage.security-ir.amazonaws.com",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "StepFunctionsGetEventsForSageMakerTrainingJobsRule",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/StepFunctionsGetEventsForSageMakerTrainingJobsRule",
+   "EventPattern": "{\n  \"source\": [\n    \"aws.sagemaker\"\n  ],\n  \"detail-type\": [\n    \"SageMaker Training Job State Change\"\n  ],\n  \"detail\": {\n    \"TrainingJobStatus\": [\n      \"Completed\",\n      \"Failed\",\n      \"Stopped\"\n    ],\n    \"Tags\": {\n      \"MANAGED_BY_AWS\" : [ \"STARTED_BY_STEP_FUNCTIONS\" ]\n    }\n  }\n}",
+   "State": "ENABLED",
+   "Description": "This rule is used to notify Step Functions regarding SageMaker Training jobs",
+   "ManagedBy": "states.amazonaws.com",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "aws-controltower-ConfigComplianceChangeEventRule",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/aws-controltower-ConfigComplianceChangeEventRule",
+   "EventPattern": "{\"detail-type\":[\"Config Rules Compliance Change\"],\"source\":[\"aws.config\"]}",
+   "State": "ENABLED",
+   "Description": "CloudWatch Event Rule to send notification on Config Rule compliance changes.",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "cubic-mars-dim-daily-refresh",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/cubic-mars-dim-daily-refresh",
+   "State": "ENABLED",
+   "Description": "Daily device-serial dimension refresh -> Aurora",
+   "ScheduleExpression": "cron(45 5 * * ? *)",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "cubic-mars-events-training-daily-dev",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/cubic-mars-events-training-daily-dev",
+   "State": "ENABLED",
+   "Description": "Triggers cubic-mars ML training pipeline at 02:00 UTC daily",
+   "ScheduleExpression": "cron(0 2 * * ? *)",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "cubic-mars-ps1-daily-push",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/cubic-mars-ps1-daily-push",
+   "State": "ENABLED",
+   "Description": "Daily PS1 gold -> Aurora push",
+   "ScheduleExpression": "cron(15 6 * * ? *)",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "cubic-mars-ps1-xw-daily-load",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/cubic-mars-ps1-xw-daily-load",
+   "State": "ENABLED",
+   "Description": "PS1 cross-wired export -> Aurora",
+   "ScheduleExpression": "cron(40 6 * * ? *)",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "cubic-mars-ps2-daily-load",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/cubic-mars-ps2-daily-load",
+   "State": "ENABLED",
+   "Description": "Daily PS2 run outputs -> Aurora (cubic-mars-ps2-rds-loader)",
+   "ScheduleExpression": "cron(10 7 * * ? *)",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "cubic-mars-ps4-daily-load",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/cubic-mars-ps4-daily-load",
+   "State": "ENABLED",
+   "Description": "Daily PS4 run outputs -> Aurora",
+   "ScheduleExpression": "cron(10 7 * * ? *)",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "cubic-mars-ps4-v3-weekly",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/cubic-mars-ps4-v3-weekly",
+   "State": "ENABLED",
+   "Description": "Weekly PS4 v3 outputs -> Aurora",
+   "ScheduleExpression": "cron(0 8 ? * MON *)",
+   "EventBusName": "default"
+  },
+  {
+   "Name": "cubic-mars-ps5-daily-load",
+   "Arn": "arn:aws:events:us-east-1:170202974600:rule/cubic-mars-ps5-daily-load",
+   "State": "ENABLED",
+   "ScheduleExpression": "cron(20 7 * * ? *)",
+   "EventBusName": "default"
+  }
+ ],
+ "eventbridge_targets": [
+  {
+   "rule": "AWSControlTowerManagedRule",
+   "targets": [
+    {
+     "Id": "ControlTower-ManagedRuleTarget",
+     "Arn": "arn:aws:controltower-us-west-2:us-west-2:::"
+    }
+   ]
+  },
+  {
+   "rule": "DO-NOT-DELETE-AmazonInspectorEc2ManagedRule",
+   "targets": [
+    {
+     "Id": "InspectorTarget",
+     "Arn": "arn:aws:inspector2:us-east-1:::"
+    }
+   ]
+  },
+  {
+   "rule": "DO-NOT-DELETE-AmazonInspectorEc2TagManagedRule",
+   "targets": [
+    {
+     "Id": "InspectorTarget",
+     "Arn": "arn:aws:inspector2:us-east-1:::"
+    }
+   ]
+  },
+  {
+   "rule": "SIRGuardDutyRule",
+   "targets": [
+    {
+     "Id": "security-ir",
+     "Arn": "arn:aws:security-ir:us-east-1:::"
+    }
+   ]
+  },
+  {
+   "rule": "SIRSecurityHubRule",
+   "targets": [
+    {
+     "Id": "security-ir",
+     "Arn": "arn:aws:security-ir:us-east-1:::"
+    }
+   ]
+  },
+  {
+   "rule": "StepFunctionsGetEventsForSageMakerTrainingJobsRule",
+   "targets": [
+    {
+     "Id": "StepFunctionsGetEventsForSageMakerTrainingJobsRule-Id",
+     "Arn": "arn:aws:states:us-east-1:::"
+    }
+   ]
+  },
+  {
+   "rule": "aws-controltower-ConfigComplianceChangeEventRule",
+   "targets": [
+    {
+     "Id": "Compliance-Change-Topic",
+     "Arn": "arn:aws:sns:us-east-1:170202974600:aws-controltower-SecurityNotifications"
+    }
+   ]
+  },
+  {
+   "rule": "cubic-mars-dim-daily-refresh",
+   "targets": [
+    {
+     "Id": "1",
+     "Arn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-dim-loader",
+     "Input": "{}"
+    }
+   ]
+  },
+  {
+   "rule": "cubic-mars-ps1-daily-push",
+   "targets": [
+    {
+     "Id": "1",
+     "Arn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps1-rds-push",
+     "Input": "{}"
+    }
+   ]
+  },
+  {
+   "rule": "cubic-mars-ps1-xw-daily-load",
+   "targets": [
+    {
+     "Id": "1",
+     "Arn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps1-xw-loader",
+     "Input": "{}"
+    }
+   ]
+  },
+  {
+   "rule": "cubic-mars-ps2-daily-load",
+   "targets": [
+    {
+     "Id": "1",
+     "Arn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps2-rds-loader",
+     "Input": "{}"
+    }
+   ]
+  },
+  {
+   "rule": "cubic-mars-ps4-daily-load",
+   "targets": [
+    {
+     "Id": "1",
+     "Arn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps4-rds-loader",
+     "Input": "{}"
+    }
+   ]
+  },
+  {
+   "rule": "cubic-mars-ps5-daily-load",
+   "targets": [
+    {
+     "Id": "1",
+     "Arn": "arn:aws:lambda:us-east-1:170202974600:function:cubic-mars-ps5-rds-loader",
+     "Input": "{}"
+    }
+   ]
+  }
+ ],
+ "apis_http": [
+  {
+   "ApiEndpoint": "https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com",
+   "ApiId": "a9yuqt9j9b",
+   "ApiKeySelectionExpression": "$request.header.x-api-key",
+   "CreatedDate": "2026-07-12T18:59:22+00:00",
+   "DisableExecuteApiEndpoint": false,
+   "IpAddressType": "ipv4",
+   "Name": "cubic-mars-dashboard-api",
+   "ProtocolType": "HTTP",
+   "RouteSelectionExpression": "$request.method $request.path",
+   "Tags": {}
+  },
+  {
+   "ApiEndpoint": "https://b1s4xxlddb.execute-api.us-east-1.amazonaws.com",
+   "ApiId": "b1s4xxlddb",
+   "ApiKeySelectionExpression": "$request.header.x-api-key",
+   "CorsConfiguration": {
+    "AllowHeaders": [
+     "*"
+    ],
+    "AllowMethods": [
+     "GET",
+     "OPTIONS"
+    ],
+    "AllowOrigins": [
+     "*"
+    ]
+   },
+   "CreatedDate": "2026-07-25T14:45:03+00:00",
+   "DisableExecuteApiEndpoint": false,
+   "IpAddressType": "ipv4",
+   "Name": "ps5-api-gw",
+   "ProtocolType": "HTTP",
+   "RouteSelectionExpression": "$request.method $request.path",
+   "Tags": {}
+  }
+ ],
+ "apis_rest": [],
+ "routes": [
+  {
+   "api": "a9yuqt9j9b",
+   "routeKey": "$default",
+   "target": "integrations/fpm6na8",
+   "auth": "NONE"
+  },
+  {
+   "api": "b1s4xxlddb",
+   "routeKey": "$default",
+   "target": "integrations/6lsrih3",
+   "auth": "NONE"
+  }
+ ],
+ "iam": [
+  {
+   "role": "cubic-mars-dashboard-api-role-dev",
+   "inline": "allow-servicenow-secret-read",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-servicenow-dev-*"
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-dashboard-api-role-dev",
+   "inline": "read-rds-secret",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-cW7LSs"
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-dashboard-api-role-dev",
+   "inline": "S3ArtifactsBucketRead",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:GetObject",
+       "s3:ListBucket"
+      ],
+      "Resource": [
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-dashboard-api-role-dev",
+   "inline": "SageMakerModelRegistryRead",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": [
+       "sagemaker:ListModelPackages",
+       "sagemaker:DescribeModelPackage",
+       "sagemaker:ListModelPackageGroups"
+      ],
+      "Resource": "*"
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-dashboard-api-role-dev",
+   "inlineNames": [
+    "allow-servicenow-secret-read",
+    "read-rds-secret",
+    "S3ArtifactsBucketRead",
+    "SageMakerModelRegistryRead"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  },
+  {
+   "role": "cubic-mars-dim-loader-role-dev",
+   "inline": "dim-loader-inline",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-cW7LSs"
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:GetObject",
+       "s3:ListBucket"
+      ],
+      "Resource": [
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600/chicago/dim/device_serial/*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-dim-loader-role-dev",
+   "inlineNames": [
+    "dim-loader-inline"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  },
+  {
+   "role": "cubic-mars-ps1-rds-push-role-dev",
+   "inline": "ps1-push-inline",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-cW7LSs"
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:GetObject",
+       "s3:ListBucket"
+      ],
+      "Resource": [
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600/chicago/gold/*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-ps1-rds-push-role-dev",
+   "inlineNames": [
+    "ps1-push-inline"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  },
+  {
+   "role": "cubic-mars-ps1-xw-loader-role-dev",
+   "inline": "ps1xw-inline",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:GetObject"
+      ],
+      "Resource": "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/chicago/device_ps1_cross_wired_daily/*"
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+      "Condition": {
+       "StringLike": {
+        "s3:prefix": [
+         "chicago/device_ps1_cross_wired_daily/*"
+        ]
+       }
+      }
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "secretsmanager:GetSecretValue"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev*"
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-ps1-xw-loader-role-dev",
+   "inlineNames": [
+    "ps1xw-inline"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  },
+  {
+   "role": "cubic-mars-ps2-rds-loader-role-dev",
+   "inline": "ps2-loader-inline",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-cW7LSs"
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:GetObject",
+       "s3:ListBucket"
+      ],
+      "Resource": [
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600/ps2_outputs/*",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600/chicago/ps2_outputs/*",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/ps2_outputs/*",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/chicago/ps2_outputs/*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-ps2-rds-loader-role-dev",
+   "inlineNames": [
+    "ps2-loader-inline"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  },
+  {
+   "role": "cubic-mars-ps2-rds-push-role",
+   "inline": "ps2-rds-push-permissions",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": [
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/ps2_outputs/*",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/ps2_outputs_scratch/*"
+      ]
+     },
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-*"
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-ps2-rds-push-role",
+   "inlineNames": [
+    "ps2-rds-push-permissions"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  },
+  {
+   "role": "cubic-mars-ps3-rc-loader-role-dev",
+   "inline": "ps3-rc-loader-inline",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-cW7LSs"
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:GetObject",
+       "s3:ListBucket"
+      ],
+      "Resource": [
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/chicago/ps3/rootcause_outputs/*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-ps3-rc-loader-role-dev",
+   "inlineNames": [
+    "ps3-rc-loader-inline"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  },
+  {
+   "role": "cubic-mars-ps3-v2-loader-role-dev",
+   "inline": "ps3-v2-loader-inline",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-cW7LSs"
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:GetObject",
+       "s3:ListBucket"
+      ],
+      "Resource": [
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600/chicago/ps3_hardened_remediation/runs/*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-ps3-v2-loader-role-dev",
+   "inlineNames": [
+    "ps3-v2-loader-inline"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  },
+  {
+   "role": "cubic-mars-ps3-v25-loader-role-dev",
+   "inline": "ps3-v25-loader-inline",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-cW7LSs"
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+      "Condition": {
+       "StringLike": {
+        "s3:prefix": [
+         "ps3_outputs/*",
+         "ps3_replay_outputs/*",
+         "chicago/ps3_outputs/*",
+         "chicago/ps3_replay_outputs/*"
+        ]
+       }
+      }
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:GetObject"
+      ],
+      "Resource": [
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/ps3_outputs/*",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/ps3_replay_outputs/*",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/chicago/ps3_outputs/*",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/chicago/ps3_replay_outputs/*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-ps3-v25-loader-role-dev",
+   "inlineNames": [
+    "ps3-v25-loader-inline"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  },
+  {
+   "role": "cubic-mars-ps4-rds-loader-role-dev",
+   "inline": "ps4-loader-inline",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-cW7LSs"
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:GetObject",
+       "s3:ListBucket"
+      ],
+      "Resource": [
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600/chicago/ps4/*",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/chicago/ps4/*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-ps4-rds-loader-role-dev",
+   "inlineNames": [
+    "ps4-loader-inline"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  },
+  {
+   "role": "cubic-mars-ps4-v3-loader-role-dev",
+   "inline": "ps4-v3-loader-inline",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-cW7LSs"
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:GetObject",
+       "s3:ListBucket"
+      ],
+      "Resource": [
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/chicago/ps4/v3/*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-ps4-v3-loader-role-dev",
+   "inlineNames": [
+    "ps4-v3-loader-inline"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  },
+  {
+   "role": "cubic-mars-ps5-rds-loader-role-dev",
+   "inline": "ps5-loader-inline",
+   "doc": {
+    "Version": "2012-10-17",
+    "Statement": [
+     {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:us-east-1:170202974600:secret:cubic-mars-secret-rds-dev-cW7LSs"
+     },
+     {
+      "Effect": "Allow",
+      "Action": [
+       "s3:GetObject",
+       "s3:ListBucket"
+      ],
+      "Resource": [
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+       "arn:aws:s3:::cubic-mars-pm-s3-datalake-dev-gold-170202974600/chicago/ps5/notebook_outputs/*"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "role": "cubic-mars-ps5-rds-loader-role-dev",
+   "inlineNames": [
+    "ps5-loader-inline"
+   ],
+   "attached": [
+    "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+   ]
+  }
+ ],
+ "s3": [
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "chicago/",
+   "objects": "880",
+   "bytes": "307648916",
+   "newest": "2026-08-09T13:07:00+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "ps2_deploy/",
+   "objects": "3",
+   "bytes": "1359192",
+   "newest": "2026-07-15T06:25:55+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "ps2_outputs/",
+   "objects": "709",
+   "bytes": "16397197",
+   "newest": "2026-08-03T09:12:51+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "ps2_outputs_scratch/",
+   "objects": "100",
+   "bytes": "680102",
+   "newest": "2026-07-21T18:11:48+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "ps2_replay_outputs/",
+   "objects": "159",
+   "bytes": "13118685",
+   "newest": "2026-08-03T04:01:12+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "ps2_reports/",
+   "objects": "13",
+   "bytes": "47471",
+   "newest": "2026-07-24T21:09:32+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "ps3_replay_outputs/",
+   "objects": "86",
+   "bytes": "35846118",
+   "newest": "2026-08-03T03:02:28+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "chicago/device_ps1_cross_wired_daily/",
+   "objects": "3",
+   "bytes": "7482535",
+   "newest": "2026-07-29T04:25:54+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "chicago/ps2_outputs/",
+   "objects": "709",
+   "bytes": "16397197",
+   "newest": "2026-08-08T14:50:08+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "chicago/ps3/",
+   "objects": "11",
+   "bytes": "2665050",
+   "newest": "2026-08-04T03:47:15+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "chicago/ps3_outputs/",
+   "objects": "87",
+   "bytes": "37170700",
+   "newest": "2026-08-09T13:07:00+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600",
+   "prefix": "chicago/ps4/",
+   "objects": "70",
+   "bytes": "243933434",
+   "newest": "2026-07-29T05:08:16+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-bronze-170202974600",
+   "prefix": "chicago_ventra/",
+   "objects": "1000",
+   "bytes": "67366950494",
+   "newest": "2026-06-11T10:34:42+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+   "prefix": "chicago/",
+   "objects": "1000",
+   "bytes": "24565102293",
+   "newest": "2026-08-08T07:08:39+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+   "prefix": "chicago/gold/",
+   "objects": "115",
+   "bytes": "1806929156",
+   "newest": "2026-07-28T07:06:03+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+   "prefix": "chicago/ps3_hardened_remediation/",
+   "objects": "300",
+   "bytes": "9018184",
+   "newest": "2026-08-02T13:50:25+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+   "prefix": "chicago/ps4/",
+   "objects": "30",
+   "bytes": "163987",
+   "newest": "2026-07-28T06:04:42+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+   "prefix": "chicago/ps5/",
+   "objects": "43",
+   "bytes": "4001324",
+   "newest": "2026-08-08T07:08:39+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+   "prefix": "chicago/silver/",
+   "objects": "769",
+   "bytes": "23598792450",
+   "newest": "2026-07-22T13:45:45+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-raw-170202974600",
+   "prefix": "chicago_ventra/",
+   "objects": "1000",
+   "bytes": "559650494",
+   "newest": "2026-06-15T15:37:02+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-silver-170202974600",
+   "prefix": "chicago/",
+   "objects": "117",
+   "bytes": "78976482",
+   "newest": "2026-07-10T07:03:31+00:00"
+  },
+  {
+   "bucket": "cubic-mars-pm-s3-datalake-dev-silver-170202974600",
+   "prefix": "chicago/silver/",
+   "objects": "117",
+   "bytes": "78976482",
+   "newest": "2026-07-10T07:03:31+00:00"
+  }
+ ],
+ "sagemaker_endpoints": [
+  {
+   "EndpointName": "chicago-ps1-3d-validator-failure-v1",
+   "EndpointArn": "arn:aws:sagemaker:us-east-1:170202974600:endpoint/chicago-ps1-3d-validator-failure-v1",
+   "CreationTime": "2026-07-24T09:30:09.123000+00:00",
+   "LastModifiedTime": "2026-07-24T09:33:50.243000+00:00",
+   "EndpointStatus": "InService"
+  },
+  {
+   "EndpointName": "chicago-ps1-3d-gate-failure-v1",
+   "EndpointArn": "arn:aws:sagemaker:us-east-1:170202974600:endpoint/chicago-ps1-3d-gate-failure-v1",
+   "CreationTime": "2026-07-24T07:49:47.655000+00:00",
+   "LastModifiedTime": "2026-07-24T07:53:33.465000+00:00",
+   "EndpointStatus": "InService"
+  },
+  {
+   "EndpointName": "chicago-ps1-3d-tvm-failure-v1",
+   "EndpointArn": "arn:aws:sagemaker:us-east-1:170202974600:endpoint/chicago-ps1-3d-tvm-failure-v1",
+   "CreationTime": "2026-07-24T07:42:43.190000+00:00",
+   "LastModifiedTime": "2026-07-24T07:46:13.833000+00:00",
+   "EndpointStatus": "InService"
+  },
+  {
+   "EndpointName": "chicago-ps3-rootcause-v1",
+   "EndpointArn": "arn:aws:sagemaker:us-east-1:170202974600:endpoint/chicago-ps3-rootcause-v1",
+   "CreationTime": "2026-07-13T07:02:44.060000+00:00",
+   "LastModifiedTime": "2026-07-13T07:05:34.260000+00:00",
+   "EndpointStatus": "InService"
+  }
+ ],
+ "rds_clusters": [
+  {
+   "AllocatedStorage": 1,
+   "AvailabilityZones": [
+    "us-east-1a",
+    "us-east-1b",
+    "us-east-1c"
+   ],
+   "BackupRetentionPeriod": 1,
+   "DatabaseName": "appdb",
+   "DBClusterIdentifier": "cubic-mars-rds-aurora-dev",
+   "DBClusterParameterGroup": "cubic-mars-rds-pg-aurora-postgresql16-dev",
+   "DBSubnetGroup": "cubic-mars-rds-subnet-group-dev",
+   "Status": "available",
+   "EarliestRestorableTime": "2026-08-09T03:08:51.883000+00:00",
+   "Endpoint": "cubic-mars-rds-aurora-dev.cluster-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+   "ReaderEndpoint": "cubic-mars-rds-aurora-dev.cluster-ro-cgdk4y4ewxzi.us-east-1.rds.amazonaws.com",
+   "MultiAZ": false,
+   "Engine": "aurora-postgresql",
+   "EngineVersion": "16.4",
+   "LatestRestorableTime": "2026-08-10T05:49:27.294000+00:00",
+   "Port": 5432,
+   "MasterUsername": "postgres",
+   "PreferredBackupWindow": "03:00-04:00",
+   "PreferredMaintenanceWindow": "sun:05:00-sun:06:00",
+   "UpgradeRolloutOrder": "second",
+   "ReadReplicaIdentifiers": [],
+   "DBClusterMembers": [
+    {
+     "DBInstanceIdentifier": "cubic-mars-rds-aurora-1-dev",
+     "IsClusterWriter": true,
+     "DBClusterParameterGroupStatus": "in-sync",
+     "PromotionTier": 0
+    }
+   ],
+   "VpcSecurityGroups": [
+    {
+     "VpcSecurityGroupId": "sg-0eacdb65e98dff5a6",
+     "Status": "active"
+    }
+   ],
+   "HostedZoneId": "Z2R2ITUGPM61AM",
+   "StorageEncrypted": true,
+   "StorageEncryptionType": "sse-kms",
+   "KmsKeyId": "arn:aws:kms:us-east-1:170202974600:key/92663630-2b31-4b4f-8306-05ec669f38c8",
+   "DbClusterResourceId": "cluster-RTDDX555IYEY7QR5RXVPHHZGXQ",
+   "DBClusterArn": "arn:aws:rds:us-east-1:170202974600:cluster:cubic-mars-rds-aurora-dev",
+   "AssociatedRoles": [],
+   "IAMDatabaseAuthenticationEnabled": false,
+   "ClusterCreateTime": "2026-07-06T03:54:38.356000+00:00",
+   "EnabledCloudwatchLogsExports": [
+    "postgresql"
+   ],
+   "EngineMode": "provisioned",
+   "AutoMinorVersionUpgrade": true,
+   "DeletionProtection": false,
+   "HttpEndpointEnabled": false,
+   "ActivityStreamStatus": "stopped",
+   "CopyTagsToSnapshot": false,
+   "CrossAccountClone": false,
+   "DomainMemberships": [],
+   "TagList": [
+    {
+     "Key": "Project",
+     "Value": "cubic-mars"
+    },
+    {
+     "Key": "Owner",
+     "Value": "platform-team"
+    },
+    {
+     "Key": "ManagedBy",
+     "Value": "terraform"
+    },
+    {
+     "Key": "CostCenter",
+     "Value": "ml-platform"
+    },
+    {
+     "Key": "DataClass",
+     "Value": "internal"
+    },
+    {
+     "Key": "Environment",
+     "Value": "dev"
+    },
+    {
+     "Key": "Component",
+     "Value": "rds"
+    },
+    {
+     "Key": "Application",
+     "Value": "cubic-mars-rds"
+    },
+    {
+     "Key": "Name",
+     "Value": "cubic-mars-rds-aurora-dev"
+    }
+   ],
+   "NetworkType": "IPV4",
+   "DatabaseInsightsMode": "standard",
+   "LocalWriteForwardingStatus": "disabled",
+   "EngineLifecycleSupport": "open-source-rds-extended-support",
+   "VPCNetworkingEnabled": true,
+   "InternetAccessGatewayEnabled": false
+  }
+ ]
+}

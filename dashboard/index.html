@@ -11,6 +11,11 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Runtime config. CLASSIC script, and it must stay ABOVE the module
+         bundle: classic scripts execute synchronously before any module
+         evaluates, which is what lets src/runtimeConfig.js read
+         window.__APP_CONFIG__ at import time without an async gate. -->
+    <script src="/config.js"></script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

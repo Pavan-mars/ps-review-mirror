@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../../runtimeConfig';
 // ============================================================================
 // PS3RootCauseV2.jsx  ->  src/components/tabs/PS3RootCauseV2.jsx
 //
@@ -23,7 +24,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import AnalyseButton from '../shared/AnalyseButton';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL
+const API_BASE = (API_BASE_URL
   || 'https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com').replace(/\/$/, '');
 const CAT_COLOR = { GATE: '#2563eb', TVM: '#0d9488', VALIDATOR: '#c2410c' };
 const BAND = { CRITICAL: '#b91c1c', MAJOR: '#c2410c', HIGH: '#c2410c', MEDIUM: '#b45309', LOW: '#475569' };

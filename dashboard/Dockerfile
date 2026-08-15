@@ -24,6 +24,13 @@ FROM nginx:1.27-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
+# ONE IMAGE, MANY ENVIRONMENTS.                        05-Aug-2026
+# VITE_API_BASE_URL above is still honoured as a fallback, but the
+# entrypoint rewrites /config.js from the API_BASE_URL env var on every
+# start, so a dev image can be promoted to UAT/prod without a rebuild.
+COPY docker-entrypoint.sh /docker-entrypoint.d/40-app-config.sh
+RUN chmod +x /docker-entrypoint.d/40-app-config.sh
+
 # unprivileged listen port so the task can run as a non-root user if the
 # cluster's task-definition enforces it later
 EXPOSE 8080

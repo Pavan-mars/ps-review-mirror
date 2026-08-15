@@ -184,7 +184,10 @@ def conn():
     _conn = pg8000.native.Connection(
         user=sec.get("username", "postgres"), password=sec["password"], host=host,
         port=int(sec.get("port", RDS_PORT)), database=dbname,
-        ssl_context=True, timeout=60)
+        # 60s killed the first v2.5.3 load outright. This is a PER-OPERATION
+        # socket timeout, and the DELETE that precedes each table's insert has
+        # to walk the whole table before a single row is written.
+        ssl_context=True, timeout=int(os.environ.get("PG_TIMEOUT", "300")))
     return _conn
 
 

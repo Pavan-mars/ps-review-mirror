@@ -1,5 +1,5 @@
 """
-cubic-mars-dashboard-api  —  VPC Lambda for the CUBIC MARS Chicago dashboard.
+cubic-mars-dashboard-api  â€”  VPC Lambda for the CUBIC MARS Chicago dashboard.
 Jobs: 1. action=migrate -> applies sql/01..08 to Aurora (missing files skipped)
       2. HTTP API -> read routes for PS1/PS2/PS3/PS5 (+device-level) + PS4 alerts
 pg8000 pure-python driver (no native build).
@@ -21,7 +21,7 @@ _conn = None
 # statement in sql/11 runs past 15s, pg8000 raises "The read operation timed
 # out", and the socket is left unusable. migrate() raises this for its own
 # run and puts it back before returning.
-_CONN_TIMEOUT = 15
+_CONN_TIMEOUT = 60
 
 def _creds():
     s = json.loads(_SECRETS.get_secret_value(SecretId=os.environ["SECRET_ARN"])["SecretString"])
@@ -125,6 +125,102 @@ def _migrate_run(st):
             conn().run(st); return None
         except Exception as e2:
             return e2
+# ---------------------------------------------------------------------------
+# apply_sql  (added 2026-08-10)
+#
+# Apply ONE named file from sql/, and nothing else.
+#
+# WHY THIS EXISTS. migrate() applies a hardcoded list of sql/01 - sql/25 on
+# every deploy. The repo carries 46 files. Everything from 26 upward -- which
+# includes sql/34 (the PS1 cross-wired tables and views), sql/35 (the label
+# onset views), sql/36 and sql/37 (v_ps1_predictions_xw, which /ps1/predictions
+# reads) -- is NOT in that list. There has been no way to apply a NEW migration
+# without also re-running 25 old ones, and two of those write data:
+#
+#   sql/08_ps2_run_backfill.sql       DELETEs and re-INSERTs hardcoded PS2 rows
+#                                     for computed_date 2026-07-14
+#   sql/18_purge_ps3_bridge_test_rows DELETEs ps3_severity_predictions rows
+#
+# Adding a PS1 index should not put PS2 data at risk. This action makes the unit
+# of application one reviewed file.
+#
+# WHAT IT WILL NOT DO. It takes a FILE NAME, never SQL. The name must match the
+# sql/ convention -- digits, underscore, word characters, .sql -- so there is no
+# path traversal, no glob, and nothing from the event body reaches the database.
+# The only thing it can run is a file that was reviewed and packaged into the
+# deployment artifact.
+#
+#   aws lambda invoke ... --payload '{"action":"apply_sql","file":"49_ps1_xw_unique_index.sql","dry_run":true}'
+#   aws lambda invoke ... --payload '{"action":"apply_sql","file":"49_ps1_xw_unique_index.sql"}'
+#
+# dry_run returns the statements that WOULD run, split exactly as execution
+# would split them, and touches nothing.
+#
+# Per-statement behaviour, error tolerance and dead-socket handling are migrate's
+# -- it reuses split_sql and _migrate_run rather than reimplementing them, so the
+# two cannot drift apart.
+# ---------------------------------------------------------------------------
+def apply_sql(evt):
+    global _CONN_TIMEOUT, _conn
+    evt = evt or {}
+    name = str(evt.get("file") or "").strip()
+    if not re.fullmatch(r"[0-9]{2,3}_[A-Za-z0-9_]+\.sql", name):
+        return {"statusCode": 400, "body": json.dumps({
+            "error": "file must be a bare sql/ filename such as "
+                     "49_ps1_xw_unique_index.sql -- no paths, no SQL",
+            "got": name[:120]})}
+    here = os.path.dirname(__file__)
+    path = os.path.join(here, "sql", name)
+    if not os.path.exists(path):
+        return {"statusCode": 404, "body": json.dumps({
+            "error": "not packaged in this deployment", "file": name,
+            "available": sorted(os.listdir(os.path.join(here, "sql")))[:60]})}
+
+    text  = open(path).read()
+    stmts = split_sql(text)
+    head  = [s.strip().splitlines()[0][:100] if s.strip() else "" for s in stmts]
+
+    if evt.get("dry_run"):
+        return {"statusCode": 200, "body": json.dumps({
+            "apply_sql": {"file": name, "dry_run": True,
+                          "statements": len(stmts), "first_lines": head}}, default=str)}
+
+    # DDL needs the longer socket timeout, and a FRESH connection so the new
+    # value actually takes effect -- a cached socket keeps the timeout it was
+    # built with. Restored before returning. Same reasoning as migrate().
+    _prev = _CONN_TIMEOUT
+    _CONN_TIMEOUT = 180
+    try: _conn.close()
+    except Exception: pass
+    _conn = None
+    conn()
+
+    applied = tolerated = failed = 0
+    errs, reconnects = [], 0
+    for st in stmts:
+        _e = _migrate_run(st)
+        if _e is None:
+            applied += 1
+        else:
+            msg = str(_e).lower()
+            if any(t in msg for t in _OK):
+                tolerated += 1
+            else:
+                failed += 1
+                if any(t in msg for t in _DEAD):
+                    reconnects += 1
+                if len(errs) < 8:
+                    errs.append(str(_e)[:300])
+    _CONN_TIMEOUT = _prev
+    out = {"file": name, "statements": len(stmts), "applied": applied,
+           "tolerated": tolerated, "failed": failed, "errors": errs,
+           "first_lines": head}
+    if reconnects:
+        out["dead_socket_after_retry"] = reconnects
+    return {"statusCode": 200 if failed == 0 else 500,
+            "body": json.dumps({"apply_sql": out}, default=str)}
+
+
 def migrate(_evt):
     here = os.path.dirname(__file__); results = {}
     # Longer socket timeout for DDL, and a FRESH connection so the new value
@@ -209,7 +305,32 @@ def migrate(_evt):
                "sql/39_ps3_v2.sql",
                "sql/40_ps3_v2_rootcause.sql",
                "sql/41_dim_device_bus.sql",
-               "sql/42_ps2_serial_grain.sql"):
+               "sql/42_ps2_serial_grain.sql",
+               # 02-Aug-2026. The 20 tables published by PS2 v2.5.2/2.5.3.
+               # Purely additive; the 27 legacy PS2 tables are untouched.
+               "sql/44_ps2_v25.sql",
+               # 03-Aug-2026. The 20 tables published by PS3 V26, built
+               # from that run's own schema dump rather than a fixture.
+               # Purely additive and every name is prefixed ps3_v25_, so
+               # ps3_incident_predictions / ps3_device_predictions /
+               # ps3_v2_* -- what the deployed PS3 screens read today --
+               # are untouched and remain the plan-B set.
+               "sql/45_ps3_v25.sql",
+               # 03-Aug-2026. PS2 v2.5.4 union-minute columns. ADD COLUMN
+               # IF NOT EXISTS on two existing tables; no DROP, no ALTER
+               # TYPE, and hardware_oos_minutes is left exactly as it was
+               # so the published component-burden measure still resolves.
+               "sql/46_ps2_v254_union_minutes.sql",
+               "sql/47_ps3_latest_run_widen.sql",
+               # 04-Aug-2026. MUST run AFTER sql/36 -- it CREATE OR REPLACEs
+               # v_ps1_xw_device_state, which sql/36 creates, so that the state
+               # is read on the last EVALUABLE day rather than the last scored
+               # one. Appended at the end, which gives that ordering for free.
+               #
+               # This list is a TUPLE, not a glob. A new sql/NN file that is not
+               # named here is silently skipped and the deploy still reports
+               # success, which is how migration 47 nearly shipped as a no-op.
+               "sql/48_ps1_state_evaluable_day.sql"):
         path = os.path.join(here, fn)
         if not os.path.exists(path):
             results[fn] = {"skipped": "file not present"}; continue
@@ -333,15 +454,122 @@ def load_run(evt):
         except Exception as e:
             tally[tb] = f"count failed: {str(e)[:80]}"
     return ok({"action": "load_run", "files": results, "rows_after": tally,
-               "note": "PS1 device/serial rows are VALIDATOR only. All three v3 notebooks write to the "
-                       "same unpartitioned gold path device_ps1_cross_wired_daily, so VALIDATOR "
-                       "(last to run) overwrote the 184,386 TVM and 107,110 GATE rows their logs "
-                       "report writing. ps1_explainability stays empty on purpose: the run emits "
-                       "fleet-average SHAP broadcast to every row, not per-row contributions."})
+               "note": "All three fleets load. The cross-wired export writes one object per fleet "
+                       "at chicago/device_ps1_cross_wired_daily/{gate|tvm|validator} -- the fleet is "
+                       "the object key, not a directory or a write partition, so listing the prefix "
+                       "shows three keys and no partition= segment. Verified live 09-Aug-2026: GATE, "
+                       "TVM and VALIDATOR all return rows. An earlier version of this note claimed "
+                       "VALIDATOR overwrote the other two; that collision was real once and is fixed. "
+                       "ps1_explainability stays empty on purpose: the run emits fleet-average SHAP "
+                       "broadcast to every row, not per-row contributions."})
 
 def rows(sql, **kw):
     c = conn(); res = c.run(sql, **kw); cols = [d["name"] for d in c.columns]
     return [dict(zip(cols, r)) for r in res]
+
+
+# ===========================================================================
+# WRITE GUARD  (added 2026-08-10)
+#
+# WHAT THIS API ACTUALLY EXPOSES. Both HTTP API Gateways in this account carry
+# AuthorizationType NONE on their $default route. Of the 117 routes here, three
+# are not read-only, and all three are reachable by anyone who has the URL:
+#
+#   POST  /ps1/servicenow-stage    INSERT INTO servicenow_staging
+#   POST  /ps3/servicenow-stage    INSERT INTO servicenow_staging
+#   PATCH /ps4/alerts/{id}         UPDATE ps4_anomaly_alerts SET status=...
+#
+# The reads are a data-disclosure question. These three are different in kind:
+#
+#   * servicenow_staging is a QUEUE THAT BECOMES REAL WORK ORDERS. Its own
+#     response says "Wire Robin's ServiceNow endpoint to submit." An open write
+#     path into it means anonymous callers can author incidents attributed to
+#     any device_id, and the day that queue is wired to live ServiceNow those
+#     become real tickets dispatched to real technicians.
+#   * payload_json is TEXT with no cap. One caller in a loop is an unbounded
+#     write into Aurora -- a disk-fill denial of service that costs the
+#     attacker nothing.
+#   * PATCH /ps4/alerts/{id} lets an anonymous caller mark any anomaly alert
+#     'resolved'. Silencing an alert is worse than reading one.
+#
+# WHAT THIS GUARD IS AND IS NOT. It is defence in depth, NOT the fix. The fix
+# is authorization at the gateway -- a JWT authorizer, IAM auth, or a WAF --
+# and that is an architecture decision plus an AWS change, not a code change.
+# This bounds the blast radius in the meantime, and it is deliberately built so
+# that turning it on cannot break the running dashboard:
+#
+#   MUTATION_TOKEN unset  -> tokens NOT required. Behaviour unchanged. Caps and
+#                            quotas still apply. This is today's state.
+#   MUTATION_TOKEN set    -> mutating routes additionally require a matching
+#                            x-cubic-token header. Reads are never affected.
+#
+# A token shipped inside a public React bundle is not a secret, so this is a
+# speed bump against casual and automated abuse, not a defence against a
+# determined attacker who has read the JavaScript. Said plainly here so nobody
+# reads this block and concludes the API is secured.
+# ===========================================================================
+MUTATION_TOKEN     = os.environ.get("MUTATION_TOKEN", "").strip()
+MAX_PAYLOAD_BYTES  = int(os.environ.get("MAX_PAYLOAD_BYTES", "16384"))
+STAGE_QUOTA_PER_HR = int(os.environ.get("STAGE_QUOTA_PER_HR", "200"))
+_DEVICE_ID_RE      = re.compile(r"^[A-Za-z0-9_.:-]{1,30}$")
+
+
+def _hdr(evt_headers, name):
+    """HTTP header lookup, case-insensitively -- API Gateway lowercases, curl may not."""
+    if not evt_headers:
+        return ""
+    low = {str(k).lower(): v for k, v in evt_headers.items()}
+    return str(low.get(name.lower(), "") or "")
+
+
+def write_guard(headers, *, payload=None, device_id=None, city=None, quota_check=False):
+    """Returns None when the write may proceed, else a ready-to-return error."""
+    if MUTATION_TOKEN:
+        supplied = _hdr(headers, "x-cubic-token")
+        # Constant-time compare: a length-or-prefix leak here would let a caller
+        # discover the token a character at a time.
+        import hmac
+        if not supplied or not hmac.compare_digest(supplied, MUTATION_TOKEN):
+            return err(401, "this endpoint requires a valid x-cubic-token header")
+
+    if device_id is not None and not _DEVICE_ID_RE.match(str(device_id)):
+        return err(400, "device_id must be 1-30 chars of letters, digits, _ . : or -")
+
+    if payload is not None:
+        try:
+            size = len(json.dumps(payload, default=str).encode("utf-8"))
+        except Exception:
+            return err(400, "payload is not JSON-serialisable")
+        if size > MAX_PAYLOAD_BYTES:
+            return err(413, f"payload is {size} bytes; the limit is {MAX_PAYLOAD_BYTES}. "
+                            f"servicenow_staging.payload_json is unbounded TEXT and an "
+                            f"unauthenticated caller must not be able to fill it")
+
+    if quota_check:
+        try:
+            n = conn().run("SELECT COUNT(*) FROM servicenow_staging "
+                           "WHERE city_id = :c AND created_at > NOW() - INTERVAL '1 hour'",
+                           c=city)[0][0]
+            if int(n) >= STAGE_QUOTA_PER_HR:
+                return err(429, f"{n} incidents already staged for this city in the last hour; "
+                                f"the ceiling is {STAGE_QUOTA_PER_HR}. Nothing was written. "
+                                f"Raise STAGE_QUOTA_PER_HR if this is legitimate volume")
+        except Exception as e:
+            # Never fail a legitimate write because the quota probe broke.
+            print(f"[warn] staging quota check failed, allowing the write: {type(e).__name__}: {e}")
+    return None
+
+# PS1 fleet naming, 2026-08-10. The 13-Jul seed tables (ps1_failure_summary,
+# ps1_leaderboard) spell the fleets as display names -- 'TVM', 'Gates'. Every
+# table written by a notebook since -- ps1_model_performance, ps1_confusion,
+# ps1_feature_importance, ps1_cross_wired_daily -- spells them as codes:
+# 'TVM', 'GATE', 'VALIDATOR'. Nothing reconciled the two, which is why the
+# coverage note in PS1FailurePredictionTab.jsx resorts to matching on the
+# first three characters. One map, used by every route that has to cross that
+# boundary, so the reconciliation is stated once instead of guessed at N times.
+_PS1_DISPLAY = {"GATE": "Gates", "TVM": "TVM", "VALIDATOR": "Validator"}
+_PS1_CATEGORY = {"GATES": "GATE", "GATE": "GATE", "TVM": "TVM",
+                 "VALIDATOR": "VALIDATOR", "VALIDATORS": "VALIDATOR"}
 
 # Query-string integers reach here as strings and may be absent, blank, or
 # hostile. Clamped rather than trusted: an unbounded LIMIT from the URL is a
@@ -489,11 +717,165 @@ def _safe_rows(sql, **kw):
     cannot be read is now an absent section, and the reason is logged rather
     than raised.
     """
+    # PARALLEL PATH HOOK. When a request is running under
+    # _device_360_parallel, results prefetched concurrently are served from
+    # here. A MISS IS NOT AN ERROR -- it falls straight through to the
+    # sequential query below, which is exactly today's behaviour.
+    _st = getattr(_D360_TL, "state", None)
+    if _st is not None:
+        _k = (sql, tuple(sorted(kw.items())))
+        if _k in _st["cache"]:
+            return _st["cache"].pop(_k)
+        _st["seen"].append((sql, dict(kw)))
+
     try:
         return rows(sql, **kw)
     except Exception as e:
         print("device_360 sub-query failed, section skipped: %s", str(e)[:200])
         return []
+
+
+# =====================================================================
+# PARALLEL DEVICE-360  (opt-in, reversible)                 06-Aug-2026
+#
+# THE MEASUREMENT THAT MOTIVATED THIS
+#   /ps1/device-360   1 concurrent  5.5s
+#                     2 concurrent 10.4s
+#                     4 concurrent 21.0s
+#   RDS during 6-way load: CPU 57%, ReadLatency 0.0, connections 7->14.
+#
+# So: the database was NOT saturated, NOT doing disk I/O, and NOT short of
+# connections. _device_360 simply issues 25 queries ONE AT A TIME on a single
+# cached connection -- 5.5s / 25 = ~220ms each. The wall clock is the sum of a
+# queue, not the cost of the work.
+#
+# HOW THIS WORKS -- _device_360 IS NOT MODIFIED.
+#   Rewriting 572 lines of interleaved section-assembly to hoist its queries
+#   would be a large diff over code whose failure modes are already documented
+#   in comments. Instead this adds a prefetch cache in front of _safe_rows:
+#
+#   1. LEARN. The first call in a container runs _device_360 exactly as it runs
+#      today, recording every (sql, params) it issues. Cost: one normal request.
+#   2. PLAN. Keep only the queries whose parameters were EXACTLY {c: city} or
+#      {c: city, d: device} -- i.e. those that depend on nothing the function
+#      computes mid-flight. 19 of the 23 qualify. The four that bind `pid` or
+#      `cat` (drivers, feature-importance, perf, coverage) are excluded and
+#      stay sequential, because their values are not known until `p` returns.
+#      NOTE the trap this avoids: one query binds d=cat, not d=dev. Matching on
+#      parameter NAMES alone would replay it with the wrong value. The plan
+#      matches on VALUES, so that query is correctly left out.
+#   3. REPLAY. Later calls fire the planned queries concurrently across a small
+#      connection pool, then run _device_360 unchanged -- which now finds most
+#      of its results already in the cache and returns them without a round trip.
+#
+# WHY IT IS SAFE
+#   - A cache MISS is not an error: _safe_rows falls through to the normal
+#     sequential path. Worst case is today's behaviour.
+#   - A prefetch query that raises is simply not cached -- same fallthrough.
+#   - The pool is separate from conn(); the sequential path is untouched.
+#   - Off by default. Enable per-request with ?parallel=1, or per-environment
+#     with D360_PARALLEL=1. Revert = unset the variable. No redeploy.
+# =====================================================================
+import threading, queue as _queue
+from concurrent.futures import ThreadPoolExecutor
+
+D360_PARALLEL_DEFAULT = os.environ.get("D360_PARALLEL", "0") == "1"
+D360_POOL_SIZE        = int(os.environ.get("D360_POOL_SIZE", "6"))
+
+_D360_PLAN  = None                 # [("cd"|"c", sql)] learned once per container
+_D360_LOCK  = threading.Lock()
+_D360_POOL  = None
+_D360_TL    = threading.local()    # per-request {cache, seen}
+
+
+def _d360_pool():
+    """A small pool, built once per container. Separate from conn() on purpose:
+    the sequential path keeps its own connection and its own reconnect logic."""
+    global _D360_POOL
+    with _D360_LOCK:
+        if _D360_POOL is None:
+            q = _queue.Queue()
+            c = _creds()
+            for _ in range(D360_POOL_SIZE):
+                q.put(pg8000.native.Connection(
+                    user=c["user"], password=c["password"], host=c["host"],
+                    port=c["port"], database=c["database"], ssl_context=True,
+                    timeout=_CONN_TIMEOUT))
+            _D360_POOL = q
+    return _D360_POOL
+
+
+def _pooled_rows(sql, **kw):
+    """rows() against a pooled connection. A dead socket is replaced rather than
+    returned to the pool -- the same lesson conn() learned on 28-Jul."""
+    pool = _d360_pool()
+    cn = pool.get()
+    try:
+        res = cn.run(sql, **kw)
+        cols = [d["name"] for d in cn.columns]
+        out = [dict(zip(cols, r)) for r in res]
+        pool.put(cn)
+        return out
+    except Exception:
+        try: cn.close()
+        except Exception: pass
+        c = _creds()
+        try:
+            pool.put(pg8000.native.Connection(
+                user=c["user"], password=c["password"], host=c["host"],
+                port=c["port"], database=c["database"], ssl_context=True,
+                timeout=_CONN_TIMEOUT))
+        except Exception:
+            pool.put(None)          # keep the pool's size honest
+        raise
+
+
+def _d360_key(sql, kw):
+    return (sql, tuple(sorted(kw.items())))
+
+
+def _device_360_parallel(city, dev):
+    global _D360_PLAN
+
+    # ---- 1. LEARN (first call in this container) --------------------
+    if _D360_PLAN is None:
+        _D360_TL.state = {"cache": {}, "seen": []}
+        try:
+            out = _device_360(city, dev)
+            seen = _D360_TL.state["seen"]
+        finally:
+            _D360_TL.state = None
+        plan = []
+        for sql, kw in seen:
+            if kw == {"c": city, "d": dev}:  plan.append(("cd", sql))
+            elif kw == {"c": city}:          plan.append(("c", sql))
+        with _D360_LOCK:
+            _D360_PLAN = plan
+        print(f"[d360] plan learned: {len(plan)} of {len(seen)} queries are "
+              f"prefetchable", flush=True)
+        return out
+
+    # ---- 2. REPLAY --------------------------------------------------
+    work = [(sql, ({"c": city, "d": dev} if shape == "cd" else {"c": city}))
+            for shape, sql in _D360_PLAN]
+    cache = {}
+    try:
+        with ThreadPoolExecutor(max_workers=D360_POOL_SIZE) as ex:
+            futs = {ex.submit(_pooled_rows, sql, **kw): (sql, kw) for sql, kw in work}
+            for f, (sql, kw) in futs.items():
+                try:
+                    cache[_d360_key(sql, kw)] = f.result()
+                except Exception:
+                    pass            # miss -> _safe_rows does it sequentially
+    except Exception as e:
+        print(f"[d360] prefetch unavailable ({type(e).__name__}); sequential", flush=True)
+        cache = {}
+
+    _D360_TL.state = {"cache": cache, "seen": []}
+    try:
+        return _device_360(city, dev)
+    finally:
+        _D360_TL.state = None
 
 
 def _device_360(city, dev):
@@ -524,7 +906,7 @@ def _device_360(city, dev):
         if perf:
             out["ps1"].update({k2: perf[0][k2] for k2 in perf[0]})
             out["ps1"]["note"] = (
-                f"Champion {perf[0].get('algorithm')} — quality gate "
+                f"Champion {perf[0].get('algorithm')} â€” quality gate "
                 f"{perf[0].get('quality_gate')}, promoted={perf[0].get('promoted')}. "
                 f"Held-out AUC {perf[0].get('test_auc')}, AP {perf[0].get('test_ap')}, "
                 f"precision {perf[0].get('test_prec')}, recall {perf[0].get('test_rec')}.")
@@ -826,11 +1208,48 @@ def _device_360(city, dev):
     #
     # ps5["category"] already carries the device type from the PS1 lookup, so
     # nothing is lost by dropping the column.
-    d5 = _safe_rows("SELECT as_of_date, concordance_index, rul_standard_days, "
-                    "rul_conservative_days, reader_fault_count_30d, data_quality_gate_passed "
-                    "FROM ps5_reliability_estimates WHERE city_id=:c AND device_id=:d "
-                    "ORDER BY as_of_date DESC LIMIT 1", c=city, d=dev)
+    # 03-Aug-2026. THE DEVICE-LEVEL LOOKUP WAS POINTED AT A TABLE THAT IS NOT
+    # THE PS5 RUN. ps5_reliability_estimates is the first-generation estimate
+    # table -- the same one whose device_type column never applied in Aurora,
+    # documented above. The survival run publishes to v_ps5_device_rul (sql/29)
+    # and v_ps5_serial_rul (sql/30), which is what /ps5/device-rul serves and
+    # what the dashboard's PS5 screen shows.
+    #
+    # The consequence was not subtle: BMV02633 is rank 1 of 3,235 validators,
+    # CRITICAL, act_now, 0.9 days of remaining life -- and its own 360 page said
+    # "No device-level RUL row for this device". The most urgent device in the
+    # fleet read as unknown on the one screen an engineer opens about it.
+    #
+    # The live view is tried FIRST and the legacy table is kept as a fallback,
+    # so a device that only exists in the old estimates still resolves.
+    d5 = _safe_rows(
+        "SELECT feature_asof_date AS as_of_date, device_type, facility_id,"
+        " risk_band, is_overdue, rul_standard_days, predicted_median_survival_days,"
+        " hazard_score, current_healthy_age_days, days_since_hw_oos, roll_fail_30d,"
+        " n_prior_oos, rul_rank_in_type, n_devices_in_type, act_now "
+        "FROM v_ps5_device_rul WHERE city_id=:c AND device_id=:d "
+        "ORDER BY feature_asof_date DESC LIMIT 1", c=city, d=dev)
+    _ps5_src = "v_ps5_device_rul"
+    if not d5:
+        d5 = _safe_rows("SELECT as_of_date, concordance_index, rul_standard_days, "
+                        "rul_conservative_days, reader_fault_count_30d, data_quality_gate_passed "
+                        "FROM ps5_reliability_estimates WHERE city_id=:c AND device_id=:d "
+                        "ORDER BY as_of_date DESC LIMIT 1", c=city, d=dev)
+        _ps5_src = "ps5_reliability_estimates"
+    # Serial grain, deduplicated. v_ps5_serial_dupes measures up to 25 identical
+    # rows per (device, serial) on validators, every measured column constant
+    # inside the repeat -- a roster fan-out. DISTINCT can only drop rows equal
+    # on every selected column, so it cannot lose a reading.
+    _s5 = _safe_rows(
+        "SELECT DISTINCT component_serial_nbr, component_type_name, component_age_days,"
+        " risk_tier, risk_score, expected_component_rul_days, is_overdue, act_now,"
+        " has_serial, serial_source "
+        "FROM v_ps5_serial_rul WHERE city_id=:c AND device_id=:d "
+        "ORDER BY act_now DESC, expected_component_rul_days ASC NULLS LAST LIMIT 20",
+        c=city, d=dev)
     ps5 = {"level": "device" if d5 else "category", "category": cat}
+    if _s5:
+        ps5["components"] = _s5
     if d5:
         ps5.update(d5[0])
         ps5["found"] = True
@@ -847,9 +1266,26 @@ def _device_360(city, dev):
                                           else "narrow")
             except (TypeError, ValueError, ZeroDivisionError):
                 pass
-        ps5["note"] = ("Device-level RUL from ps5_reliability_estimates. "
-                       + ("Data-quality gate PASSED." if d5[0].get("data_quality_gate_passed")
-                          else "Data-quality gate NOT passed — treat the RUL as indicative only."))
+        if _ps5_src == "v_ps5_device_rul":
+            # Rank is WITHIN device type. The three survival models are fitted
+            # separately on separate populations with separate baseline
+            # hazards, so a 3-day TVM and a 3-day validator are not the same
+            # claim and the note says so where someone will actually read it.
+            ps5["source"] = _ps5_src
+            ps5["note"] = (
+                "Device-level remaining life from the survival run (v_ps5_device_rul). "
+                "Rank %s of %s is WITHIN this device type -- the three fleets are "
+                "modelled separately, so day counts are not comparable across them. "
+                "No fleet is signed off in the model registry yet, so treat this as "
+                "prioritisation rather than a schedule."
+                % (d5[0].get("rul_rank_in_type"), d5[0].get("n_devices_in_type")))
+        else:
+            ps5["source"] = _ps5_src
+            ps5["note"] = ("Device-level RUL from the legacy ps5_reliability_estimates "
+                           "table; the survival run has no row for this device. "
+                           + ("Data-quality gate PASSED."
+                              if d5[0].get("data_quality_gate_passed")
+                              else "Data-quality gate NOT passed -- indicative only."))
     else:
         ps5["found"] = False
     if cat:
@@ -858,7 +1294,9 @@ def _device_360(city, dev):
         rel = [r for r in _allrel if str(r.get("device_type")).lower() == p5]  # filter in python: no enum::text cast (pg8000.native-safe)
         ps5["reliability"] = rel[0] if rel else None
         if not d5:
-            ps5["note"] = "No device-level RUL row for this device; showing category reliability status only."
+            ps5["note"] = ("No remaining-life row for this device in either the survival "
+                           "run or the legacy estimates; showing category reliability "
+                           "status only.")
     out["ps5"] = ps5
     # ---- v2/v3 ENRICHMENT (29-Jul-2026) -------------------------------------
     # The Analyse modal previously stopped at the first-generation feeds. The
@@ -892,11 +1330,26 @@ def _device_360(city, dev):
     # Root cause: which component this device's incidents actually came from.
     # OBSERVED attribution, not a prediction - the run publishes no per-incident
     # predicted component, and the wording must not imply one.
+    # DISTINCT, and critical_weighted pulled into the select list because
+    # SELECT DISTINCT requires every ORDER BY expression to appear there.
+    # Without it this block repeated the same (component, serial) pair -- on
+    # TVM08212 the same BHU/fc6850 row came back several times, which reads on
+    # screen as several separate findings about the same part.
     ps3v2["rootcause"] = _q(
-        "SELECT component_label, component_label_semantics, serial_number,"
+        "SELECT DISTINCT component_label, component_label_semantics, serial_number,"
         " incident_count, critical_rate, recurrence_30d, latest_incident_at,"
-        " taxonomy_note FROM v_ps3_v2_rootcause WHERE city_id=:c AND device_id=:d"
-        " ORDER BY critical_weighted DESC NULLS LAST LIMIT 10", c=city, d=dev)
+        " taxonomy_note, critical_weighted FROM v_ps3_v2_rootcause"
+        " WHERE city_id=:c AND device_id=:d"
+        " ORDER BY critical_weighted DESC NULLS LAST LIMIT 20", c=city, d=dev)
+    # Belt and braces: if two rows differ only in a column the view computes,
+    # DISTINCT keeps both. The screen shows one line per part.
+    _seen, _rc = set(), []
+    for _r in ps3v2["rootcause"]:
+        _k = (_r.get("component_label"), _r.get("serial_number"))
+        if _k in _seen:
+            continue
+        _seen.add(_k); _rc.append(_r)
+    ps3v2["rootcause"] = _rc[:10]
     ps3v2["concentration"] = _q(
         "SELECT serial_number, total_incidents, distinct_components, concentration,"
         " concentration_verdict FROM v_ps3_v2_rootcause_concentration"
@@ -1011,7 +1464,7 @@ def _cross_ps(o):
     if a and b:
         agree = a == b
         verdict = "agree" if agree else "disagree"
-        detail = (f"PS2 cascades start at {p2raw} and PS3 attributes failures to {p3raw} — "
+        detail = (f"PS2 cascades start at {p2raw} and PS3 attributes failures to {p3raw} â€” "
                   + ("the same subsystem, reached by two independent methods."
                      if agree else
                      "two different subsystems. Neither is confirmed; inspect both."))
@@ -1044,7 +1497,7 @@ def _reco(o, prob, thr):
     elif prob is not None and thr is not None and prob >= thr:
         _qg = (ps1.get("quality_gate") or "").upper()
         _tail = ("" if _qg == "PASS"
-                 else " REVIEW-ONLY: this model has not passed its quality gate — treat as a watch signal, not an auto-dispatch.")
+                 else " REVIEW-ONLY: this model has not passed its quality gate â€” treat as a watch signal, not an auto-dispatch.")
         base = ("PS1 flags elevated 3-day failure risk (%.1f%% vs threshold %.1f%%).%s"
                 % (prob*100, thr*100, _tail))
     else:
@@ -1084,8 +1537,501 @@ def _sn_payload(dev, cat, o):
         "u_source": "MARS-predictive", "u_state": "staged", "caller_id": "mars.integration"}
 
 
-def route(method, path, params, body):
+# ============ PS2 v2.5 label-aligned generation (sql/44) ====================
+# ONE route family over the 20 tables sql/44 creates, plus /ps2/status.
+#
+# WHY A FAMILY AND NOT 20 ROUTES
+# The tables share one shape: city-scoped, one snapshot per computed_date,
+# replaced wholesale by the daily loader. Twenty near-identical route blocks is
+# twenty chances to forget the city filter or the latest-date subquery. The
+# metric name is validated against this dict, so an unknown one 404s rather
+# than reaching SQL.
+#
+# EVERY QUERY IS SCOPED TO THAT TABLE'S OWN LATEST computed_date.
+# The loader commits all 20 in one transaction so they normally agree. Scoping
+# each independently means a partially refreshed database degrades to "one
+# panel is stale" instead of "one panel is empty".
+#
+# id IS NEVER SELECTED. It is BIGSERIAL and the daily DELETE+INSERT
+# regenerates it, so it is not a stable reference for a link, a saved view or
+# a ServiceNow payload. The business key is.
+#
+# "precision" IS QUOTED. It is a column name in two of these tables and a
+# PostgreSQL keyword. This project already lost a load to an unquoted
+# "window" after eight tables were staged.
+#
+# CAPS. API Gateway kills the integration at 30s. cofailure_clusters holds
+# 83,184 rows and repair_effectiveness 38,395, so both default to a browse
+# window and are never a denominator -- the rollup routes are.
+#
+# (table, select list, order by, default limit, max limit, date column or None)
+_PS2V25 = {
+    # -- label and governance (ps2_v25_*) --------------------------------
+    "label-daily": ("ps2_v25_failure_label_daily",
+        'label_date,device_category,eligible_device_days,positive_device_days,eligible_devices,'
+        'positive_devices,future_hardware_oos_set_events,median_hours_to_next_oos,'
+        'p90_hours_to_next_oos,negative_device_days,label_positive_rate',
+        "label_date, device_category", 2000, 5000, "label_date"),
+    "label-summary": ("ps2_v25_failure_label_summary",
+        'device_category,eligible_device_days,positive_device_days,eligible_devices,positive_devices,'
+        'future_hardware_oos_set_events,mean_hours_to_next_oos,median_hours_to_next_oos,'
+        'p90_hours_to_next_oos,positive_days_with_commanded_oos,negative_device_days,'
+        'label_positive_rate,positive_device_share,label_horizon_days,label_cutoff_date,label_definition',
+        "device_category", 100, 100, None),
+    "label-horizon": ("ps2_v25_failure_horizon_profile",
+        'device_category,lead_day,positive_device_days_at_lead,eligible_device_days,'
+        'positive_rate_at_lead,label_definition',
+        "device_category, lead_day", 100, 100, None),
+    "label-parity": ("ps2_v25_ps1_label_parity",
+        'device_category,eligible_device_days,comparable_device_days,matching_device_days,'
+        'mismatching_device_days,source_label_positive_rate,rebuilt_label_positive_rate,'
+        'legacy_sla_positive_rate,parity_rate,parity_status,rebuilt_target',
+        "device_category", 100, 100, None),
+    "definition-alignment": ("ps2_v25_failure_definition_alignment",
+        'device_category,silver_ps1_failure_device_days,governed_oos_episode_device_days,'
+        'overlap_device_days,silver_only_device_days,governed_only_device_days,'
+        'silver_to_governed_overlap_rate,governed_to_silver_overlap_rate,definition_jaccard',
+        "device_category", 100, 100, None),
+    "model-performance": ("ps2_v25_ps1_model_performance",
+        'device_category,evaluated_device_days,eligible_device_days,prediction_coverage,'
+        'true_positive,false_positive,true_negative,false_negative,actual_positive_rate,'
+        'predicted_positive_rate,"precision",recall,specificity,f1_score,balanced_accuracy,'
+        'brier_score,roc_auc,pr_auc,evaluation_status',
+        "device_category", 100, 100, None),
+    "category-profile": ("ps2_v25_category_profile",
+        'device_category_raw,device_category,event_count,device_count,first_event_ts,'
+        'last_event_ts,is_mapped,is_target_scope',
+        "event_count DESC", 200, 500, None),
+    "run-quality": ("ps2_v25_run_quality",
+        'check_name,passed,observed_value,threshold,severity,metric_context,'
+        'quality_status,run_mode,run_disposition',
+        "severity, passed, check_name", 200, 500, None),
+
+    # -- governed OOS, patterns, components (ps2_v2_*) -------------------
+    "oos-trend": ("ps2_v2_daily_oos_trend",
+        'event_date,device_category,hardware_oos_onsets,affected_devices,hardware_oos_minutes,'
+        'validated_failure_onsets,chargeable_oos_onsets,'
+        # 03-Aug-2026, sql/46. hardware_oos_minutes is the SUM of episode
+        # durations and double-counts concurrent episodes, so it is component
+        # burden and not device downtime. Availability must read
+        # hardware_oos_union_minutes. Both are returned so the difference
+        # stays visible rather than being silently swapped.
+        'hardware_oos_union_minutes,hardware_oos_onsets_distinct_interval',
+        "event_date, device_category", 2000, 5000, "event_date"),
+    "exposure": ("ps2_v2_customer_exposure",
+        'event_date,device_category,hardware_oos_onsets,hardware_oos_minutes,'
+        'transactions_exposed,revenue_cents_exposed',
+        "event_date, device_category", 2000, 5000, "event_date"),
+    "governance": ("ps2_v2_oos_governance",
+        'device_category,oos_evidence_class,failure_evidence_class,event_count,device_count,outage_minutes',
+        "device_category, event_count DESC", 200, 500, None),
+    "precursors": ("ps2_v2_precursor_patterns",
+        'device_category,component_subsystem,next_subsystem,pattern_key,edge_support,'
+        'pre_oos_edge_count,validated_failure_edge_count,median_edge_lag_seconds,p95_edge_lag_seconds,'
+        'baseline_pre_oos_rate,pre_oos_rate,pre_oos_wilson_lower_95,pre_oos_lift_vs_category,'
+        'validated_failure_rate,evidence_tier,priority_score',
+        "priority_score DESC NULLS LAST", 500, 2000, None),
+    "leadlag": ("ps2_v2_leadlag_timing",
+        'device_category,component_subsystem,next_subsystem,pattern_key,edge_support,'
+        'median_edge_lag_seconds,p95_edge_lag_seconds,pre_oos_rate,pre_oos_lift_vs_category,evidence_tier',
+        "edge_support DESC", 500, 2000, None),
+    "topology": ("ps2_v2_topology_nodes",
+        'device_category,subsystem,outgoing_edge_volume,out_degree,outgoing_pre_oos_rate,'
+        'incoming_edge_volume,in_degree,flow_centrality_score',
+        "flow_centrality_score DESC NULLS LAST", 200, 500, None),
+    "drift": ("ps2_v2_pattern_drift",
+        'device_category,component_subsystem,next_subsystem,baseline_count,recent_count,'
+        'baseline_pre_oos_count,recent_pre_oos_count,baseline_pre_oos_rate,recent_pre_oos_rate,'
+        'rate_change,drift_flag',
+        "rate_change DESC NULLS LAST", 500, 2000, None),
+    "serials": ("ps2_v2_component_serial_patterns",
+        'device_category,component_subsystem,component_serial_id,hardware_oos_episode_count,'
+        'validated_failure_count,hardware_oos_minutes,observed_oos_days,last_oos_ts,'
+        'serial_evidence_tier,component_priority_score,current_component_age_days,'
+        'hardware_component_description,hardware_source,current_config_device_count,'
+        'hardware_age_enrichment',
+        "component_priority_score DESC NULLS LAST", 1000, 5000, None),
+    "deterioration": ("ps2_v2_device_deterioration",
+        'device_id,device_category,event_date,hardware_oos_onsets,hardware_oos_minutes,'
+        'validated_failure_onsets,baseline_mean_28d,baseline_std_28d,oos_zscore_28d,alert_reason,'
+        'hardware_oos_union_minutes,hardware_oos_onsets_distinct_interval',
+        "oos_zscore_28d DESC NULLS LAST", 1000, 5000, "event_date"),
+    "clusters": ("ps2_v2_cofailure_clusters",
+        'event_date,cluster_scope,cluster_id,device_category,facility_id,cofailing_devices,'
+        'hardware_oos_onsets,observed_group_devices,cofailure_share,coordinated_station_flag,'
+        'major_station_flag',
+        "event_date DESC, cofailing_devices DESC", 1000, 5000, "event_date"),
+    "repairs": ("ps2_v2_repair_effectiveness",
+        'repair_id,maintenance_component_subsystem,ledger_type,maintenance_date,'
+        'pre_30d_oos_onsets,post_30d_oos_onsets,post_vs_pre_change,interpretation_note',
+        "maintenance_date DESC", 1000, 5000, "maintenance_date"),
+    "cross-ps": ("ps2_v2_cross_ps_alignment",
+        'source,truth_positive_count,signal_positive_count,matched_positive_count,'
+        '"precision",recall,population_unit,alignment_status',
+        "source", 100, 100, None),
+}
+
+# Which optional filters each table can honour. Asked of the SELECT list rather
+# than hardcoded per table, so a column that is not there can never be filtered
+# on -- that would be a 42703 at request time instead of an ignored parameter.
+_PS2V25_FILTERS = (
+    ("category", "device_category"),
+    ("device",   "device_id"),
+    ("serial",   "component_serial_id"),
+    ("facility", "facility_id"),
+    ("subsystem", "component_subsystem"),
+)
+
+
+def _ps2_v25_route(path, params, city):
+    """Returns a response for /ps2/v25/* and /ps2/status, else None."""
+    params = params or {}
+
+    if path == "/ps2/status":
+        # One row per table. A coherent load shows ONE distinct run_id across
+        # all 20. More than one means a partial load -- the failure that
+        # otherwise shows up as a tab where 18 panels are today and 2 are last
+        # week. The view does the UNION so this route stays a one-liner.
+        data = rows(
+            "SELECT table_name, run_id, computed_date, notebook_version, as_of_ts, row_count "
+            "FROM v_ps2_v25_status WHERE city_id=:c ORDER BY table_name", c=city)
+        run_ids = sorted({r["run_id"] for r in data if r.get("run_id")})
+        return ok({
+            "city": city,
+            "tables": len(data),
+            "expected_tables": len(_PS2V25),
+            "run_ids": run_ids,
+            "coherent": len(run_ids) == 1 and len(data) == len(_PS2V25),
+            "computed_date": (data[0]["computed_date"] if data else None),
+            "as_of_ts": (data[0]["as_of_ts"] if data else None),
+            "rows": data,
+        })
+
+    if not path.startswith("/ps2/v25/"):
+        return None
+
+    metric = path[len("/ps2/v25/"):].strip("/")
+    if metric == "":
+        return ok({"metrics": sorted(_PS2V25), "usage": "/ps2/v25/<metric>?city=CHI"})
+    spec = _PS2V25.get(metric)
+    if spec is None:
+        return err(404, "unknown PS2 v2.5 metric %r. Known: %s" % (metric, ", ".join(sorted(_PS2V25))))
+
+    table, cols, order, dflt, hard, datecol = spec
+    where = ["city_id=:c",
+             "computed_date=(SELECT MAX(computed_date) FROM %s WHERE city_id=:c)" % table]
+    kw = {"c": city}
+
+    have = cols.replace('"', '')
+    for pname, col in _PS2V25_FILTERS:
+        v = (params.get(pname) or "").strip()
+        if v and col in have.split(","):
+            where.append("%s=:%s" % (col, pname))
+            kw[pname] = v.upper() if col == "device_category" else v
+
+    if datecol:
+        for pname, op in (("from", ">="), ("to", "<=")):
+            v = (params.get(pname) or "").strip()
+            if v:
+                where.append("%s %s :%s" % (datecol, op, pname))
+                kw[pname] = v
+
+    limit = _clamp_int(params.get("limit"), dflt, 1, hard)
+    offset = _clamp_int(params.get("offset"), 0, 0, 1000000)
+    sql = ("SELECT %s FROM %s WHERE %s ORDER BY %s LIMIT %d OFFSET %d"
+           % (cols, table, " AND ".join(where), order, limit, offset))
+    return ok(rows(sql, **kw))
+
+
+
+# ============ PS3 v2.5 source-first generation (sql/45) =====================
+# ONE route family over the 20 tables sql/45 creates, plus /ps3/status.
+#
+# THESE ARE NEW ROUTES, NOT REPLACEMENTS. /ps3/rootcause, /ps3/incidents and
+# every other existing PS3 path still reads ps3_v2_* / ps3_incident_predictions
+# and is untouched. This family lives under /ps3/v25/ and can be removed by
+# deleting this block.
+#
+# THE COLUMN LISTS ARE GENERATED FROM THE V26 SCHEMA DUMP, not typed. The PS2
+# family was hand-typed and its lesson is already in the backlog: a column the
+# export starts carrying stays invisible to the API until someone remembers to
+# add it here. So the 22 columns that are all-null today -- the linked_* and
+# confirmed_root_cause_* family, which wait on PS3_GOLD_INCIDENT_LABEL_EXPORT
+# and the taxonomy export -- are LISTED anyway. They return null now and
+# populate themselves the day those exports are configured.
+#
+# EVERY IDENTIFIER IS QUOTED. "column" is reserved in PostgreSQL and "rows" is
+# a window-frame keyword; both are real column names in these tables. This
+# project already lost a load to an unquoted "window" after eight tables had
+# been staged, so the class goes rather than the instances.
+#
+# EVERY QUERY IS SCOPED TO THAT TABLE'S OWN LATEST computed_date, matching the
+# PS2 family. The v25 loader refuses to publish a partial run at all, so they
+# should never disagree -- but scoping independently means a half-refreshed
+# database degrades to "one panel is stale" rather than "one panel is empty".
+#
+# CAPS. API Gateway kills the integration at 30s. device_episode_fact and
+# device_day hold 54,239 rows each; both are browse windows, never a
+# denominator. The rollups are the denominators.
+#
+# (table, select list, order by, default limit, max limit, date column or None)
+_PS3V25 = {
+    # ps3_v25_causal_balance: 54 rows, 4 columns
+    "causal-balance": ("ps3_v25_causal_balance",
+        '"treatment_component","covariate","standardised_mean_difference","balance_status"',
+        '"treatment_component", "covariate"', 500, 2000, None),
+    # ps3_v25_causal_effects: 6 rows, 22 columns
+    "causal-effects": ("ps3_v25_causal_effects",
+        '"treatment_component","outcome","estimator","average_treatment_effect",'
+        '"standard_error","ci_low_95","ci_high_95","significant_95","episodes_used",'
+        '"treated_episodes","control_episodes","overlap_share","treated_prevalence",'
+        '"propensity_p01","propensity_p99","models_converged","status","interpretation",'
+        '"p_value_two_sided","p_value_holm","significant_95_holm","multiplicity_note"',
+        '"treatment_component", "outcome"', 200, 1000, None),
+    # ps3_v25_source_column_profile: 7 rows, 9 columns
+    "column-profile": ("ps3_v25_source_column_profile",
+        '"column","status","rows","non_null","null_rate","distinct_values",'
+        '"deterministic_given_event_type","usable_as_observed_label","note"',
+        '"column"', 50, 200, None),
+    # ps3_v25_commanded_split: 3 rows, 5 columns
+    "commanded-split": ("ps3_v25_commanded_split",
+        '"mars_device_category","oos_episodes","commanded_signal_episodes",'
+        '"failure_only_episodes","basis"',
+        '"mars_device_category"', 50, 200, None),
+    # ps3_v25_component_summary: 14 rows, 7 columns
+    "component-summary": ("ps3_v25_component_summary",
+        '"mars_device_category","component_attribution","dashboard_root_cause_domain",'
+        '"dashboard_severity","oos_episode_count","device_count","confirmed_root_cause_count"',
+        '"oos_episode_count" DESC', 200, 2000, None),
+    # ps3_v25_device_day: 54,239 rows, 11 columns
+    "device-day": ("ps3_v25_device_day",
+        '"device_id","mars_device_category","event_date","oos_episode_starts","oos_set_events",'
+        '"set_signal_span_minutes","commanded_signal_episodes","observed_severity_episodes",'
+        '"confirmed_root_cause_episodes","failure_only_episode_starts","grain"',
+        '"event_date" DESC, "device_id"', 500, 5000, 'event_date'),
+    # ps3_v25_device_reliability: 2,806 rows, 16 columns
+    "device-reliability": ("ps3_v25_device_reliability",
+        '"device_id","mars_device_category","oos_episode_count","oos_set_event_count",'
+        '"critical_episodes","first_episode_at","latest_episode_at","mean_interval_hours",'
+        '"median_interval_hours","confirmed_root_cause_episodes","observed_severity_episodes",'
+        '"commanded_signal_episodes","critical_rate","failure_only_episode_count",'
+        '"reliability_risk_band","band_basis"',
+        '"oos_episode_count" DESC', 500, 5000, None),
+    # ps3_v25_device_summary: 2,806 rows, 9 columns
+    "device-summary": ("ps3_v25_device_summary",
+        '"device_id","mars_device_category","oos_episode_count","first_oos_episode_start",'
+        '"latest_oos_episode_start","latest_dashboard_severity",'
+        '"latest_dashboard_root_cause_domain","confirmed_root_cause_episode_count",'
+        '"observed_severity_episode_count"',
+        '"oos_episode_count" DESC', 500, 5000, None),
+    # ps3_v25_device_episode_fact: 54,239 rows, 77 columns
+    # 1500, NOT 2000. Measured against the live API on 03-Aug-2026:
+    #   limit=1000 -> 3,033,966 bytes  200 OK
+    #   limit=1800 -> 5,461,360 bytes  200 OK
+    #   limit=2000 -> HTTP 500 in 2.8s (far too fast to be the 30s gateway
+    #                                   timeout -- this is Lambda's 6 MB
+    #                                   synchronous response cap)
+    # 3,034 bytes per row over 77 columns; 1500 lands at 4.5 MB.
+    # The headroom is not padding: 22 of those columns are all-null today and
+    # will carry real strings once the label and taxonomy exports are
+    # configured. The row gets WIDER, so a cap set flush against today's
+    # ceiling would start 500ing on the day root cause finally lands.
+    "episodes": ("ps3_v25_device_episode_fact",
+        '"oos_episode_id","device_id","mars_device_category","episode_start",'
+        '"episode_last_signal","oos_set_event_count","first_oos_event_id",'
+        '"contains_commanded_oos_signal","observed_event_component","component_subsystem",'
+        '"component_position","facility_id","facility_name","bus_id","component_serial_nbr",'
+        '"event_type_name","event_type_id","observed_event_severity","event_type_severity",'
+        '"event_priority","requires_service_call","any_automatic_clear",'
+        '"distinct_serials_in_episode","distinct_components_in_episode",'
+        '"set_signal_span_minutes","oos_fact_definition","oos_minutes_union",'
+        '"oos_minutes_naive_sum","events_with_clear","events_clear_clamped",'
+        '"episode_scope_status","episode_scope_start","linked_severity","linked_component",'
+        '"linked_root_cause","linked_root_cause_domain","linked_confidence","linked_source",'
+        '"link_method","observed_severity_label","severity_status","component_attribution",'
+        '"component_attribution_status","confirmed_root_cause_label",'
+        '"confirmed_root_cause_domain","root_cause_confidence","root_cause_evidence_source",'
+        '"root_cause_link_method","root_cause_status","candidate_root_cause_raw",'
+        '"evidence_conflict_status","event_month","event_day_of_week","event_hour",'
+        '"log_oos_set_event_count","log_set_signal_span_minutes","prior_episodes_7d",'
+        '"prior_episodes_30d","prior_episodes_90d","days_since_prior_episode",'
+        '"device_oos_recency_status","predicted_component","predicted_component_confidence",'
+        '"component_model_status","run_id","computed_at_utc","data_as_of_date",'
+        '"data_freshness_days","is_current_operational_score","freshness_status",'
+        '"right_censored_tail_days","chargeability_policy","shap_interpretation",'
+        '"dashboard_root_cause_domain","dashboard_root_cause_status","dashboard_severity",'
+        '"dashboard_severity_status"',
+        '"episode_start" DESC', 200, 1500, 'episode_start'),
+    # ps3_v25_root_cause_evidence_audit: 7 rows, 5 columns
+    "evidence-audit": ("ps3_v25_root_cause_evidence_audit",
+        '"source","status","reference","rows","detail"',
+        '"source"', 50, 200, None),
+    # ps3_v25_prediction_explainability: 3 rows, 12 columns
+    "explainability": ("ps3_v25_prediction_explainability",
+        '"target","model_output","oos_episode_id","device_id","mars_device_category",'
+        '"predicted_label","feature","shap_value","abs_shap_value","explanation_status",'
+        '"explanation_note","model_scope"',
+        '"target", "abs_shap_value" DESC', 200, 1000, None),
+    # ps3_v25_facility_rollup: 366 rows, 11 columns
+    "facility-rollup": ("ps3_v25_facility_rollup",
+        '"facility_id","mars_device_category","devices","oos_episodes","first_episode",'
+        '"latest_episode","active_days","commanded_signal_episodes",'
+        '"confirmed_root_cause_episodes","episodes_per_device","failure_only_episodes"',
+        '"oos_episodes" DESC', 500, 2000, None),
+    # ps3_v25_model_feature_importance: 12 rows, 5 columns
+    "feature-importance": ("ps3_v25_model_feature_importance",
+        '"target","model","feature","importance","model_scope"',
+        '"target", "importance" DESC', 200, 1000, None),
+    # ps3_v25_label_maturity: 3 rows, 8 columns
+    "label-maturity": ("ps3_v25_label_maturity",
+        '"mars_device_category","oos_episode_count","observed_severity_count",'
+        '"confirmed_root_cause_count","candidate_root_cause_count",'
+        '"component_attribution_count","severity_coverage","confirmed_root_cause_coverage"',
+        '"mars_device_category"', 50, 200, None),
+    # ps3_v25_model_scorecard: 8 rows, 13 columns
+    "model-scorecard": ("ps3_v25_model_scorecard",
+        '"target","candidate_model","f1_macro","f1_weighted","balanced_accuracy","accuracy",'
+        '"mcc","majority_f1_macro","macro_f1_lift","label_coverage","quality_gate","detail",'
+        '"model_scope"',
+        '"target", "candidate_model"', 100, 500, None),
+    # ps3_v25_repeat_interval: 14 rows, 11 columns
+    "repeat-interval": ("ps3_v25_repeat_interval",
+        '"component_attribution","mars_device_category","attributed_episodes","devices",'
+        '"episodes_with_a_next","median_days_to_next","p25_days_to_next","mean_days_to_next",'
+        '"repeat_rate_within_horizon","horizon_days","basis"',
+        '"attributed_episodes" DESC', 200, 2000, None),
+    # ps3_v25_run_stage_audit: 8 rows, 9 columns
+    "run-stage-audit": ("ps3_v25_run_stage_audit",
+        '"stage","status","detail","at_utc","rows","mode","evidence_sources","taxonomy_rows",'
+        '"model_runs"',
+        '"at_utc"', 100, 500, None),
+    # ps3_v25_run_status: 19 rows, 13 columns
+    "run-status": ("ps3_v25_run_status",
+        '"run_id","revision","table_name","publish_status","rows","path","run_mode",'
+        '"data_as_of_date","is_current_operational_score","computed_at_utc","run_is_coherent",'
+        '"tables_published","tables_total"',
+        '"table_name"', 100, 500, None),
+    # ps3_v25_serial_reliability: 2,762 rows, 10 columns
+    "serial-reliability": ("ps3_v25_serial_reliability",
+        '"component_serial_nbr","device_id","mars_device_category","oos_episode_count",'
+        '"first_episode_at","latest_episode_at","component_attributions",'
+        '"confirmed_root_cause_episodes","observed_span_days","episodes_per_100_observed_days"',
+        '"oos_episode_count" DESC', 500, 5000, None),
+    # ps3_v25_oos_source_audit: 1 rows, 12 columns
+    "source-audit": ("ps3_v25_oos_source_audit",
+        '"source","status","reference","detail","engine","pushed_down","scanned_rows",'
+        '"window_start","window_end","current_device_filter","rows_removed_by_current_filter",'
+        '"selected_rows"',
+        '"source"', 50, 200, None),
+}
+
+_PS3V25_FILTERS = (
+    ("category",  "mars_device_category"),
+    ("device",    "device_id"),
+    ("serial",    "component_serial_nbr"),
+    ("facility",  "facility_id"),
+    ("component", "component_attribution"),
+    ("episode",   "oos_episode_id"),
+    ("target",    "target"),
+)
+
+
+def _ps3_v25_route(path, params, city):
+    """Returns a response for /ps3/v25/* and /ps3/status, else None."""
+    params = params or {}
+
+    if path == "/ps3/status":
+        # Two sources, deliberately. v_ps3_v25_status counts what actually
+        # landed in each table; ps3_v25_run_status is what the NOTEBOOK said it
+        # published. Reading only the first cannot tell a complete load of a
+        # broken run from a broken load of a complete run.
+        data = rows(
+            'SELECT "table_name", "computed_date", "rows" '
+            "FROM v_ps3_v25_status WHERE city_id=:c ORDER BY table_name", c=city)
+        try:
+            declared = rows(
+                'SELECT "run_id","revision","run_mode","computed_date","data_as_of_date",'
+                '"run_is_coherent","tables_published","tables_total",'
+                '"is_current_operational_score","computed_at_utc" '
+                "FROM ps3_v25_run_status WHERE city_id=:c "
+                "AND computed_date=(SELECT MAX(computed_date) FROM ps3_v25_run_status "
+                "WHERE city_id=:c) LIMIT 1", c=city)
+        except Exception as e:
+            declared = []
+            data.append({"table_name": "_run_status_read_error", "rows": str(e)[:160]})
+
+        head = declared[0] if declared else {}
+        dates = sorted({str(r["computed_date"]) for r in data if r.get("computed_date")})
+        loaded = [r for r in data if r.get("table_name", "").startswith("ps3_v25_")]
+        empty = sorted(r["table_name"] for r in loaded if not r.get("rows"))
+        return ok({
+            "city": city,
+            "generation": "ps3_v25",
+            "tables": len(loaded),
+            "expected_tables": len(_PS3V25),
+            "computed_date": (dates[0] if len(dates) == 1 else dates),
+            "run_id": head.get("run_id"),
+            "revision": head.get("revision"),
+            "run_mode": head.get("run_mode"),
+            "data_as_of_date": head.get("data_as_of_date"),
+            "computed_at_utc": head.get("computed_at_utc"),
+            "is_current_operational_score": head.get("is_current_operational_score"),
+            "notebook_tables_published": head.get("tables_published"),
+            "notebook_tables_total": head.get("tables_total"),
+            "notebook_run_is_coherent": head.get("run_is_coherent"),
+            # coherent means three things at once: every expected table is
+            # present, they all carry the same computed_date, and none is
+            # empty. Any one of those failing is a half-loaded dashboard.
+            "coherent": (len(loaded) == len(_PS3V25) and len(dates) == 1 and not empty),
+            "empty_tables": empty,
+            "total_rows": sum(r.get("rows") or 0 for r in loaded),
+            "rows": data,
+        })
+
+    if not path.startswith("/ps3/v25/"):
+        return None
+
+    metric = path[len("/ps3/v25/"):].strip("/")
+    if metric == "":
+        return ok({"metrics": sorted(_PS3V25),
+                   "filters": [p for p, _ in _PS3V25_FILTERS],
+                   "usage": "/ps3/v25/<metric>?city=CHI&category=GATE&limit=200"})
+    spec = _PS3V25.get(metric)
+    if spec is None:
+        return err(404, "unknown PS3 v2.5 metric %r. Known: %s"
+                        % (metric, ", ".join(sorted(_PS3V25))))
+
+    table, cols, order, dflt, hard, datecol = spec
+    where = ["city_id=:c",
+             "computed_date=(SELECT MAX(computed_date) FROM %s WHERE city_id=:c)" % table]
+    kw = {"c": city}
+
+    have = cols.replace('"', "").split(",")
+    for pname, col in _PS3V25_FILTERS:
+        v = (params.get(pname) or "").strip()
+        if v and col in have:
+            where.append('"%s"=:%s' % (col, pname))
+            kw[pname] = v.upper() if col == "mars_device_category" else v
+
+    if datecol:
+        for pname, op in (("from", ">="), ("to", "<=")):
+            v = (params.get(pname) or "").strip()
+            if v:
+                where.append('"%s" %s :%s' % (datecol, op, pname))
+                kw[pname] = v
+
+    limit = _clamp_int(params.get("limit"), dflt, 1, hard)
+    offset = _clamp_int(params.get("offset"), 0, 0, 1000000)
+    sql = ('SELECT %s FROM %s WHERE %s ORDER BY %s LIMIT %d OFFSET %d'
+           % (cols, table, " AND ".join(where), order, limit, offset))
+    return ok(rows(sql, **kw))
+
+def route(method, path, params, body, headers=None):
     city = q((params or {}).get("city", CITY))
+    _v25 = _ps2_v25_route(path, params, city)
+    if _v25 is not None: return _v25
+    _p3v25 = _ps3_v25_route(path, params, city)
+    if _p3v25 is not None: return _p3v25
     if path == "/ps2/windows":
         return ok(rows("SELECT window_bucket,cascade_days,pct,total_cascade_days,slow_fast_fault_mult,slow_fast_duration_mult FROM ps2_cascade_window_summary WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_cascade_window_summary WHERE city_id=:c) ORDER BY cascade_days DESC", c=city))
     if path == "/ps2/windowdetail":
@@ -1340,11 +2286,108 @@ def route(method, path, params, body):
             "ORDER BY betweenness DESC", c=city, s=sc))
     if path == "/ps2/conditional":
         return ok(rows("SELECT sub_a,sub_b,window_bucket,p_b_given_a FROM ps2_conditional_prob WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_conditional_prob WHERE city_id=:c) ORDER BY p_b_given_a DESC", c=city))
-    # ---- PS1 failure prediction (run 20260713_0905; NOT promoted) ----
+    # ---- PS1 model scorecard ----
+    #
+    # 2026-08-10 -- ps1_failure_summary RETIRED as the source of this route.
+    #
+    # WHAT IT WAS SERVING. Two rows, TVM and Gates, hand-seeded on 13-Jul-2026
+    # out of a console log by sql/04 (since moved to sql/manual/). quality_gate
+    # FAIL, promoted false, and target = 'will_fail_3d' -- a label name that
+    # exists nowhere in this system; the column the models are actually trained
+    # on is will_hardware_oos_3d. VALIDATOR was absent entirely. No loader has
+    # ever written to that table, so there was no refresh path: every day it
+    # aged by one and nothing could correct it. A dashboard panel reading it
+    # showed a four-week-old failure verdict as the current state of PS1.
+    #
+    # WHAT REPLACES IT. ps1_model_performance, written by the 26-Jul sklearn run
+    # through sql/load/, carrying all three fleets, quality_gate PASS, promoted
+    # true, and the real target column. ps1_confusion supplies accuracy, n_test,
+    # n_test_pos, the base rate and the operating point from the run's own
+    # TP/FP/TN/FN rather than from a literal typed into a seed file.
+    #
+    # THE COLUMN CONTRACT IS PRESERVED EXACTLY, because two live consumers read
+    # these names: dashboard/src/data/api.js:apiPS1Summary and the legacy
+    # PS1FailurePredictionTab. Columns the new source genuinely does not have --
+    # Brier, calibrated AUC, top-k, MAP, n_train, SageMaker registration,
+    # overfit_flag -- are returned as null and are NOT back-filled from the
+    # retired row. A null reads as "not measured". A stale number reads as fact.
+    #
+    # THE RETIRED TABLE IS NOT DROPPED AND NOT PURGED. If ps1_model_performance
+    # holds nothing for a city, this route falls back to it and says so in
+    # source_table, so no city that has not been re-run yet goes dark. That
+    # fallback is the reversibility of this change: delete the mp branch and the
+    # 13-Jul behaviour returns byte for byte.
     if path == "/ps1/summary":
-        return ok(rows("SELECT device,champion_model,test_auc,test_ap,test_accuracy,test_f1,test_precision,test_recall,op_threshold,op_fleet_pct,op_precision,op_recall,op_f2,recall_floor,quality_gate,promoted,brier_raw,brier_cal,auc_cal,prec_at_k,rec_at_k,lift_at_k,map_score,mlflow_version,sm_registered,endpoint_name,overfit_flag,n_train,n_test,n_test_pos,base_rate_pct,target,run_id FROM ps1_failure_summary WHERE city_id=:c "
-                       # champion-first: promoted models, then strongest test AUC.
-                       "ORDER BY promoted DESC, test_auc DESC NULLS LAST, device", c=city))
+        mp = rows("SELECT device_category,model_name,algorithm,test_auc,test_ap,test_f1,"
+                  "test_prec,test_rec,decision_threshold,quality_gate,promoted,endpoint_name,"
+                  "mlflow_version,n_features,recall_floor,base_rate_pct,target_col,"
+                  "label_revision,run_id,computed_date "
+                  "FROM ps1_model_performance WHERE city_id=:c AND computed_date="
+                  "(SELECT MAX(computed_date) FROM ps1_model_performance WHERE city_id=:c)",
+                  c=city)
+        if mp:
+            conf = {str(r["device_category"]): r for r in rows(
+                "SELECT device_category,tp,fp,tn,fn FROM ps1_confusion WHERE city_id=:c "
+                "AND computed_date=(SELECT MAX(computed_date) FROM ps1_confusion WHERE city_id=:c)",
+                c=city)}
+            out = []
+            for r in mp:
+                cat = str(r.get("device_category") or "")
+                cm  = conf.get(cat) or {}
+                tp = fp = tn = fn = None
+                if all(cm.get(k) is not None for k in ("tp", "fp", "tn", "fn")):
+                    tp, fp, tn, fn = int(cm["tp"]), int(cm["fp"]), int(cm["tn"]), int(cm["fn"])
+                n       = (tp + fp + tn + fn) if tp is not None else None
+                pos     = (tp + fn) if tp is not None else None
+                flagged = (tp + fp) if tp is not None else None
+                # The confusion matrix IS the operating point: it was computed at
+                # decision_threshold, so precision and recall read off it are the
+                # operating precision and recall, not a second set of numbers.
+                acc  = round((tp + tn) / n, 6) if n else None
+                op_p = round(tp / flagged, 6) if flagged else None
+                op_r = round(tp / pos, 6) if pos else None
+                op_f2 = (round(5.0 * op_p * op_r / (4.0 * op_p + op_r), 6)
+                         if op_p and op_r else None)
+                out.append({
+                    "device": _PS1_DISPLAY.get(cat, cat), "device_category": cat,
+                    "champion_model": r.get("model_name") or r.get("algorithm"),
+                    "algorithm": r.get("algorithm"),
+                    "test_auc": r.get("test_auc"), "test_ap": r.get("test_ap"),
+                    "test_accuracy": acc, "test_f1": r.get("test_f1"),
+                    "test_precision": r.get("test_prec"), "test_recall": r.get("test_rec"),
+                    "op_threshold": r.get("decision_threshold"),
+                    "op_fleet_pct": round(100.0 * flagged / n, 2) if n else None,
+                    "op_precision": op_p, "op_recall": op_r, "op_f2": op_f2,
+                    "recall_floor": r.get("recall_floor"),
+                    "quality_gate": r.get("quality_gate"), "promoted": r.get("promoted"),
+                    # Not measured by the run that wrote ps1_model_performance.
+                    # Null on purpose -- see the note above this route.
+                    "brier_raw": None, "brier_cal": None, "auc_cal": None,
+                    "prec_at_k": None, "rec_at_k": None, "lift_at_k": None,
+                    "map_score": None, "sm_registered": None, "overfit_flag": None,
+                    "n_train": None,
+                    "n_test": n, "n_test_pos": pos,
+                    "base_rate_pct": (r.get("base_rate_pct") if r.get("base_rate_pct") is not None
+                                      else (round(100.0 * pos / n, 2) if n else None)),
+                    "n_features": r.get("n_features"),
+                    "mlflow_version": r.get("mlflow_version"),
+                    "endpoint_name": r.get("endpoint_name"),
+                    "target": r.get("target_col"), "label_revision": r.get("label_revision"),
+                    "run_id": r.get("run_id"), "as_of_date": r.get("computed_date"),
+                    "source_table": "ps1_model_performance + ps1_confusion",
+                })
+            # champion-first: promoted models, then strongest test AUC.
+            out.sort(key=lambda x: (x.get("promoted") is not True,
+                                    -(_num(x.get("test_auc")) or 0.0),
+                                    str(x.get("device"))))
+            return ok(out)
+        legacy = rows("SELECT device,champion_model,test_auc,test_ap,test_accuracy,test_f1,test_precision,test_recall,op_threshold,op_fleet_pct,op_precision,op_recall,op_f2,recall_floor,quality_gate,promoted,brier_raw,brier_cal,auc_cal,prec_at_k,rec_at_k,lift_at_k,map_score,mlflow_version,sm_registered,endpoint_name,overfit_flag,n_train,n_test,n_test_pos,base_rate_pct,target,run_id,as_of_date FROM ps1_failure_summary WHERE city_id=:c "
+                      "ORDER BY promoted DESC, test_auc DESC NULLS LAST, device", c=city)
+        for r in legacy:
+            r["device_category"] = _PS1_CATEGORY.get(str(r.get("device") or "").upper())
+            r["source_table"] = ("ps1_failure_summary -- RETIRED 2026-08-10, shown only "
+                                 "because ps1_model_performance has no row for this city")
+        return ok(legacy)
     if path == "/ps1/leaderboard":
         # 2026-07-26 -- was ORDER BY device,lb_rank, which put the *non*-champion
         # top-AUC row first and buried the deployed champion (Gates: CatBoost at
@@ -1360,12 +2403,40 @@ def route(method, path, params, body):
         # device's leaderboard so each model is judged against the bar it must clear,
         # and carry base_rate_pct too -- that is the number that makes a high
         # accuracy readable (Gates base rate 0.54% => 99.46% is the do-nothing score).
+        #
+        # 2026-08-10 -- second reader of ps1_failure_summary, repointed with the
+        # route above. ps1_model_performance carries recall_floor and
+        # base_rate_pct (sql/16 added both), so the floor a model is judged
+        # against now comes from the same run that produced the model.
+        #
+        # The dict is keyed by BOTH spellings -- 'GATE' and 'Gates' -- because
+        # ps1_leaderboard.device is a display name and
+        # ps1_model_performance.device_category is a code. Keying on one and
+        # looking up with the other is what silently returned {} here before,
+        # and a missing floor does not raise: it simply means no model is ever
+        # judged below floor. A gate that cannot fail is not a gate.
+        floors = {}
         try:
-            floors = {str(x["device"]): x for x in rows(
-                "SELECT device,recall_floor,base_rate_pct,quality_gate FROM ps1_failure_summary "
-                "WHERE city_id=:c", c=city)}
+            for x in rows("SELECT device_category,recall_floor,base_rate_pct,quality_gate "
+                          "FROM ps1_model_performance WHERE city_id=:c AND computed_date="
+                          "(SELECT MAX(computed_date) FROM ps1_model_performance WHERE city_id=:c)",
+                          c=city):
+                cat = str(x.get("device_category") or "")
+                floors[cat] = x
+                floors[_PS1_DISPLAY.get(cat, cat)] = x
         except Exception:
             floors = {}
+        if not floors:
+            # Fallback to the retired table, same reversibility rule as /ps1/summary.
+            try:
+                for x in rows("SELECT device,recall_floor,base_rate_pct,quality_gate "
+                              "FROM ps1_failure_summary WHERE city_id=:c", c=city):
+                    dev = str(x.get("device") or "")
+                    floors[dev] = x
+                    cat = _PS1_CATEGORY.get(dev.upper())
+                    if cat: floors[cat] = x
+            except Exception:
+                floors = {}
         for r in lb:
             f = floors.get(str(r.get("device")), {})
             rf, rec = _num(f.get("recall_floor")), _num(r.get("rec"))
@@ -1453,7 +2524,11 @@ def route(method, path, params, body):
                 out.append({"table": tbl, "error": str(e)[:160]})
         return ok(out)
     if path == "/ps1/model-performance":
-        mp = rows("SELECT device_category,model_name,algorithm,decision_threshold,mlflow_version,endpoint_name,n_features,quality_gate,promoted,computed_date,test_auc,test_ap,test_f1,test_prec,test_rec FROM ps1_model_performance WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps1_model_performance WHERE city_id=:c)", c=city)
+        # 2026-08-10 -- target_col, label_revision, recall_floor, base_rate_pct and
+        # run_id were added to this table by sql/16 in July and have never been
+        # served. A scorecard that cannot say which label it was scored against,
+        # or what bar it had to clear, is not a scorecard. They are returned now.
+        mp = rows("SELECT device_category,model_name,algorithm,decision_threshold,mlflow_version,endpoint_name,n_features,quality_gate,promoted,computed_date,test_auc,test_ap,test_f1,test_prec,test_rec,target_col,label_revision,recall_floor,base_rate_pct,run_id FROM ps1_model_performance WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps1_model_performance WHERE city_id=:c)", c=city)
         # 2026-07-26 -- accuracy is now COMPUTED from the real confusion matrix
         # rather than hardcoded (the old {"TVM": 0.7033, "GATE": 0.9950} literal
         # was removed) or left NULL. ps1_confusion holds the run's actual
@@ -1477,8 +2552,65 @@ def route(method, path, params, body):
             "SELECT device_category,tp,fp,tn,fn FROM ps1_confusion WHERE city_id=:c "
             "AND computed_date=(SELECT MAX(computed_date) FROM ps1_confusion WHERE city_id=:c)",
             c=city)}
+        # E-1. Which run is each endpoint actually serving? ps1_inference_runs
+        # records endpoint_name per device_category; if its run_id differs from
+        # the run that produced the scorecard row, the panel and the endpoint
+        # disagree and the reader must be told.
+        _serving_match = {}
+        try:
+            # run_kind MATTERS AND THE FIRST VERSION IGNORED IT.
+            # ps1_inference_runs mixes two kinds of row: run_kind='train', written
+            # when a model is produced and registered, and run_kind='batch_score',
+            # written by a loader every time it scores. Taking the latest row of
+            # ANY kind reported the most recent SCORING run as the model the
+            # endpoint serves. Caught on the live deploy: TVM came back as
+            # ps1_20260810 -- a batch_score row written by Path B this morning --
+            # while GATE and VALIDATOR correctly showed ps1_sklearn_20260726.
+            # A scoring run is not a served model. Only 'train' rows answer this.
+            for _s in rows("SELECT DISTINCT ON (device_category) device_category, run_id, "
+                           "endpoint_name, run_kind FROM ps1_inference_runs "
+                           "WHERE city_id=:c AND run_kind = 'train' "
+                           "ORDER BY device_category, run_ts DESC", c=city):
+                _serving_match[_s["device_category"]] = {
+                    "serving_run_id": _s.get("run_id"),
+                    "endpoint_name": _s.get("endpoint_name"),
+                    "serving_run_kind": _s.get("run_kind"),
+                    "matches": None, "caveat": None}
+        except Exception as _e:
+            print(f"[warn] serving-match probe failed: {type(_e).__name__}: {_e}")
         out = []
         for r in mp:
+            # A category with NO ps1_inference_runs row at all must not fall
+            # through as a silent None. An absent record and a verified match
+            # are different findings and the panel has to be able to tell them
+            # apart -- the same failure this morning's causation view had, where
+            # a missing fleet and a fleet with no signal looked identical.
+            _sm = _serving_match.setdefault(r["device_category"], {
+                "serving_run_id": None, "endpoint_name": None,
+                "matches": None,
+                "caveat": ("No ps1_inference_runs row exists for this fleet, so there is "
+                           "NO RECORD of any endpoint serving it. The link between this "
+                           "scorecard and any deployed endpoint is unverified and must not "
+                           "be presented as serving performance.")})
+            if _sm.get("serving_run_id") is not None or _sm.get("endpoint_name") is not None:
+                _same = (_sm["serving_run_id"] is not None and r.get("run_id") is not None
+                         and str(_sm["serving_run_id"]) == str(r.get("run_id")))
+                _sm["matches"] = _same if _sm["serving_run_id"] and r.get("run_id") else None
+                if _sm["matches"] is False:
+                    _sm["caveat"] = (
+                        f"The scorecard below describes run {r.get('run_id')}. The endpoint "
+                        f"{_sm['endpoint_name']} was last recorded serving run "
+                        f"{_sm['serving_run_id']}. These metrics are NOT what that endpoint "
+                        f"would return. Re-register the model or stop quoting these numbers "
+                        f"as serving performance.")
+                elif _sm["matches"] is None:
+                    _which = ("ps1_model_performance.run_id is NULL for this fleet"
+                              if r.get("run_id") is None
+                              else "ps1_inference_runs has no train-kind run_id for this fleet")
+                    _sm["caveat"] = (f"Cannot determine which run this endpoint is serving: "
+                                     f"{_which}. Treat the link between this scorecard and the "
+                                     f"endpoint as UNVERIFIED. Apply sql/52 to backfill the "
+                                     f"provenance columns the sql/load INSERT omitted.")
             _acc = _base = _n = _prev = None
             cm = conf.get(r["device_category"])
             if cm and all(cm.get(k) is not None for k in ("tp", "fp", "tn", "fn")):
@@ -1505,8 +2637,54 @@ def route(method, path, params, body):
                         # 1.0000 / val AUC 1.0000) and drawing them next to the
                         # held-out numbers on a client dashboard reads as model
                         # quality when it is memorisation. Held-out test metrics only.
-                        # The overfit signal is still served, as the boolean
-                        # ps1_failure_summary.overfit_flag on /ps1/summary.
+                        # 2026-08-10 -- that overfit signal used to be described here as
+                        # "still served on /ps1/summary as ps1_failure_summary.overfit_flag".
+                        # It is not. /ps1/summary no longer reads that table and returns
+                        # overfit_flag as null, because ps1_model_performance does not
+                        # record one. Train/val AUC are the raw material for that flag and
+                        # they are deliberately withheld, so PS1 currently has NO served
+                        # overfit signal. Saying so is the honest state; the fix is for the
+                        # notebook to write the flag, not for this route to infer it.
+                        #
+                        # Provenance, added 2026-08-10. sql/16 put these five columns on
+                        # the table in July and nothing has ever served them.
+                        # base_rate_pct above is the DERIVED majority-class accuracy, so
+                        # the recorded column is returned under its own name rather than
+                        # overwriting it -- two different numbers, two different names.
+                        "target": r.get("target_col"), "target_col": r.get("target_col"),
+                        "label_revision": r.get("label_revision"),
+                        "recall_floor": r.get("recall_floor"),
+                        "recall_floor_met": (None if r.get("recall_floor") is None
+                                                     or r.get("test_rec") is None
+                                             else _num(r["test_rec"]) >= _num(r["recall_floor"])),
+                        "base_rate_pct_recorded": r.get("base_rate_pct"),
+                        "run_id": r.get("run_id"),
+                        # ---- E-1, 2026-08-10: THE ENDPOINT IS NOT SERVING THIS MODEL.
+                        # sql/load/ps1_sklearn_20260726.sql says so in a comment:
+                        #   "chicago-ps1-3d-{gate,tvm,validator}-failure-v1 are still
+                        #    serving the SPARK champion. Until those are re-registered,
+                        #    this scorecard describes the selected model, not the one
+                        #    answering inference calls."
+                        # A comment in a migration file is not a disclosure. Anyone
+                        # reading AUC 0.9040 on this panel reasonably assumes that is
+                        # what the endpoint would return. It is not, and the gap has
+                        # been open since 2026-07-26.
+                        #
+                        # serving_matches_scorecard is derived, not asserted: the run
+                        # that produced THIS row is compared against the run recorded
+                        # for the endpoint in ps1_inference_runs. Unknown stays
+                        # unknown -- None means "could not determine", never "fine".
+                        "serving_matches_scorecard": _serving_match.get(
+                            r["device_category"], {}).get("matches"),
+                        "serving_run_id": _serving_match.get(
+                            r["device_category"], {}).get("serving_run_id"),
+                        # run_kind is published, not implied: a reader must be able
+                        # to see that the comparison used a 'train' row and not a
+                        # scoring run, without trusting that the query got it right.
+                        "serving_run_kind": _serving_match.get(
+                            r["device_category"], {}).get("serving_run_kind"),
+                        "serving_caveat": _serving_match.get(
+                            r["device_category"], {}).get("caveat"),
                         "s3_metrics": {"test_auc": r["test_auc"], "test_ap": r["test_ap"], "test_f1": r["test_f1"],
                                        "test_prec": r["test_prec"], "test_rec": r["test_rec"]}})
         # champion-first ordering for the model cards / registry table
@@ -1601,9 +2779,101 @@ def route(method, path, params, body):
         return ok(_xw("SELECT * FROM v_ps1_shap_importance WHERE city_id=:c "
                       "AND importance_rank <= :t "
                       "ORDER BY device_type, importance_rank", c=city, t=top))
+    # 2026-08-10. sql/50 changed this view from "omit the fleet" to "publish the
+    # fleet, withhold the conclusion". GATE was never absent from
+    # ps1_cross_wired_daily; it simply had fewer than 30 device-days on one side
+    # of the coordinated-station-failure split, and sql/34's WHERE clause turned
+    # that into a fleet the panel had never heard of.
+    #
+    # ORDER BY critical_lift DESC alone would now bury the insufficient fleets
+    # among the low-lift ones with no signal that they are different. Sufficient
+    # fleets rank first by lift; the rest follow ordered by how close they came,
+    # so "GATE, 6 of the 30 device-days needed" is a readable statement of what
+    # is missing rather than a blank.
+    #
+    # ORDER-INDEPENDENT, added 2026-08-10 evening. This route and sql/50 are
+    # deployed by two separate mechanisms -- update-function-code for the code,
+    # apply_sql for the view -- and there is no way to make those atomic. If the
+    # code lands first, sufficient_data and min_cell do not exist yet and the
+    # ORDER BY raises 42703, dark-screening the panel for the length of the gap.
+    #
+    # Rather than depend on an operator getting the order right every time, the
+    # route detects which view is installed and adapts. The new ordering when
+    # sql/50 is applied; the old one when it is not, plus an explicit marker so
+    # the panel can say WHY GATE is missing instead of simply not drawing it.
+    # Deploy-then-apply and apply-then-deploy now both work, in either order.
     if path == "/ps1/xw-causation":
-        return ok(_xw("SELECT * FROM v_ps1_xw_causation WHERE city_id=:c "
-                      "ORDER BY critical_lift DESC", c=city))
+        try:
+            _has50 = bool(rows(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='v_ps1_xw_causation' AND column_name='sufficient_data'"))
+        except Exception:
+            _has50 = False
+        if _has50:
+            return ok(_xw("SELECT * FROM v_ps1_xw_causation WHERE city_id=:c "
+                          "ORDER BY sufficient_data DESC, critical_lift DESC NULLS LAST, "
+                          "min_cell DESC, device_type", c=city))
+        _legacy = _xw("SELECT * FROM v_ps1_xw_causation WHERE city_id=:c "
+                      "ORDER BY critical_lift DESC", c=city)
+        for _r in (_legacy if isinstance(_legacy, list) else []):
+            _r["sufficient_data"] = None
+            _r["min_cell"] = None
+            _r["schema_note"] = ("sql/50 is NOT applied to this database. This view still "
+                                 "OMITS any fleet with fewer than 30 device-days on either "
+                                 "side of the split, so a fleet missing from this list may "
+                                 "exist and simply be under-observed. Apply "
+                                 "50_ps1_xw_causation_all_fleets.sql to tell the two apart.")
+        return ok(_legacy)
+    # ---- LOCATION DIMENSION -------------------------------------------
+    # 2026-08-06. THE NAMES WERE ALWAYS THERE; NOTHING SERVED THEM.
+    #
+    # dim_device_station holds 2,183 distinct facility_ids and EVERY ONE has a
+    # facility_name. The only route that exposed any of them was
+    # /ps1/station-summary, and that INNER-drives off ps1_station_summary, so
+    # it can only ever name a facility that PS1 scored. PS2, PS3, PS4 and PS5
+    # reference facilities PS1 never saw, which is why they showed bare ids.
+    #
+    # This route serves the DIMENSION, not a rollup, so every tab can resolve
+    # any facility_id it holds. Additive: /ps1/station-summary is untouched and
+    # PS1's Depots tab is unaffected. Reversible by deleting this block.
+    #
+    # UNION, not a join. dim_device_station is the broad source; dim_station is
+    # a 17-row hand-seeded table from the PS2 run that occasionally has a name
+    # the other lacks. Preferring dim_device_station and falling back keeps one
+    # answer per id rather than two competing ones.
+    #
+    # regexp_replace collapses runs of whitespace: the source holds both
+    # "North Park" and "North  Park" (two spaces) for different ids, and
+    # untidied they sort apart and read as two different places.
+    if path == "/ps1/facilities":
+        return ok(rows(
+            "WITH d AS ("
+            "  SELECT facility_id,"
+            "         BTRIM(regexp_replace(facility_name, '\\s+', ' ', 'g')) AS nm,"
+            "         BTRIM(COALESCE(operator_name,''))                       AS op,"
+            "         COUNT(*)                                                AS n_devices"
+            "    FROM dim_device_station"
+            "   WHERE city_id=:c AND facility_id IS NOT NULL"
+            "     AND BTRIM(COALESCE(facility_name,'')) <> ''"
+            "   GROUP BY 1,2,3"
+            "), best AS ("
+            "  SELECT DISTINCT ON (facility_id) facility_id, nm, op, n_devices"
+            "    FROM d ORDER BY facility_id, n_devices DESC, nm"
+            "), seeded AS ("
+            "  SELECT facility_id,"
+            "         BTRIM(regexp_replace(station_name, '\\s+', ' ', 'g')) AS nm,"
+            "         BTRIM(COALESCE(operator,''))                           AS op"
+            "    FROM dim_station"
+            "   WHERE city_id=:c AND BTRIM(COALESCE(station_name,'')) <> ''"
+            ") "
+            "SELECT COALESCE(b.facility_id, s.facility_id)      AS facility_id,"
+            "       COALESCE(b.nm, s.nm)                        AS facility_name,"
+            "       NULLIF(COALESCE(b.op, s.op, ''), '')        AS operator_name,"
+            "       COALESCE(b.n_devices, 0)                    AS n_devices,"
+            "       CASE WHEN b.facility_id IS NOT NULL THEN 'dim_device_station'"
+            "            ELSE 'dim_station' END                 AS source "
+            "  FROM best b FULL OUTER JOIN seeded s ON s.facility_id = b.facility_id "
+            " ORDER BY 4 DESC, 2", c=city))
     if path == "/ps1/xw-facility":
         top = int((params or {}).get("top", 20))
         return ok(_xw("SELECT * FROM v_ps1_xw_facility WHERE city_id=:c "
@@ -1622,9 +2892,26 @@ def route(method, path, params, body):
         return ok(_xw("SELECT * FROM v_ps1_xw_performance_onset WHERE city_id=:c "
                       "ORDER BY device_type", c=city))
     if path == "/ps1/xw-chronic":
-        top = int((params or {}).get("top", 20))
-        return ok(_xw("SELECT * FROM v_ps1_xw_chronic_devices WHERE city_id=:c "
-                      "ORDER BY total_days_out DESC LIMIT :t", c=city, t=top))
+        # 10-Aug-2026 FIX. Same defect as /ps1/xw-act-now above: ranked across
+        # the whole fleet with a LIMIT. TVM dominates total_days_out, so all 20
+        # rows were TVM. MEASURED 10-Aug: 20/20 rows TVM.
+        # `top` now means top-N PER FLEET.
+        try:
+            per_type = max(1, min(500, int((params or {}).get("top") or 20)))
+        except (TypeError, ValueError):
+            per_type = 20
+        return ok(_xw("""WITH ranked AS (
+                  SELECT v.*, ROW_NUMBER() OVER (
+                           PARTITION BY v.device_type
+                           ORDER BY v.total_days_out DESC NULLS LAST
+                         ) AS fleet_rank
+                  FROM v_ps1_xw_chronic_devices v
+                  WHERE v.city_id = :c
+                )
+                SELECT * FROM ranked
+                WHERE fleet_rank <= :t
+                ORDER BY device_type, total_days_out DESC NULLS LAST""",
+                c=city, t=per_type))
     # ---- sql/36: state framing -----------------------------------------
     if path == "/ps1/xw-flag-reason":
         return ok(_xw("SELECT * FROM v_ps1_xw_flag_reason WHERE city_id=:c "
@@ -1633,12 +2920,35 @@ def route(method, path, params, body):
         return ok(_xw("SELECT * FROM v_ps1_xw_state_mix WHERE city_id=:c "
                       "ORDER BY device_type, ps1_risk_tier, device_state", c=city))
     if path == "/ps1/xw-act-now":
-        top = int((params or {}).get("top", 100))
-        # IN_SPELL first: a device down now outranks one whose window opened
-        # today, and both outrank anything already back in service.
-        return ok(_xw("SELECT * FROM v_ps1_xw_act_now WHERE city_id=:c "
-                      "ORDER BY (device_state = 'IN_SPELL') DESC, "
-                      "ps1_fail_prob DESC LIMIT :t", c=city, t=top))
+        # 10-Aug-2026 FIX. This ranked across the WHOLE fleet with a LIMIT.
+        # VALIDATOR probabilities sit near 0.99997, so all 100 returned rows were
+        # VALIDATOR and GATE devices needing action were invisible. MEASURED
+        # 10-Aug: 100/100 rows VALIDATOR.
+        #
+        # This is the identical mistake fixed in /ps1/predictions on 26-Jul; the
+        # fix was applied there and never generalised. `top` now means top-N
+        # PER FLEET, matching how /ps1/predictions treats `limit`.
+        #
+        # IN_SPELL first WITHIN each fleet: a device down now outranks one whose
+        # window opened today, and both outrank anything already back in service.
+        try:
+            per_type = max(1, min(500, int((params or {}).get("top") or 100)))
+        except (TypeError, ValueError):
+            per_type = 100
+        return ok(_xw("""WITH ranked AS (
+                  SELECT v.*, ROW_NUMBER() OVER (
+                           PARTITION BY v.device_type
+                           ORDER BY (v.device_state = 'IN_SPELL') DESC,
+                                    v.ps1_fail_prob DESC NULLS LAST
+                         ) AS fleet_rank
+                  FROM v_ps1_xw_act_now v
+                  WHERE v.city_id = :c
+                )
+                SELECT * FROM ranked
+                WHERE fleet_rank <= :t
+                ORDER BY device_type,
+                         (device_state = 'IN_SPELL') DESC,
+                         ps1_fail_prob DESC NULLS LAST""", c=city, t=per_type))
     if path == "/ps1/table-status":
         return ok(_xw("SELECT * FROM v_ps1_table_status ORDER BY table_name"))
     if path == "/ps1/feature-importance":
@@ -1790,21 +3100,80 @@ def route(method, path, params, body):
             " n_prior_oos, rul_rank_in_type, n_devices_in_type, act_now,"
             " feature_asof_date "
             f"FROM v_ps5_device_rul WHERE {w} "
-            "ORDER BY act_now DESC, rul_standard_days ASC NULLS LAST LIMIT 3000", **kw))
+            "ORDER BY act_now DESC, rul_standard_days ASC NULLS LAST "
+            f"LIMIT {_clamp_int((params or {}).get('limit'), 3000, 1, 12000)}", **kw))
     if path == "/ps5/serial-rul":
         dt = (params or {}).get("device_type")
         w = "city_id=:c"; kw = {"c": city}
         if dt:
             w += " AND device_type=:d"; kw["d"] = str(dt).upper().strip()
+        # DISTINCT is not cosmetic. v_ps5_serial_dupes measures 3,823 duplicated
+        # (device_id, component_serial_nbr) keys on validators, up to 25 rows
+        # each, and reports max_component_types = max_risk_tiers =
+        # max_rul_values = 1 within every one of them -- the repetition is a
+        # roster fan-out, not a second reading of the part. DISTINCT can only
+        # ever drop rows that are equal on every selected column, so it removes
+        # the fan-out without being able to lose a real measurement. The grain
+        # audit at /ps5/serial-grain stays live so the underlying defect is
+        # still visible rather than papered over here.
         return ok(rows(
-            "SELECT device_type, device_id, component_serial_nbr, has_serial,"
+            "SELECT DISTINCT device_type, device_id, component_serial_nbr, has_serial,"
             " component_type_name, component_age_days, risk_tier, risk_score,"
             " expected_component_rul_days, predicted_median_survival_days,"
             " is_overdue, device_oos_failures_total, act_now, serial_source,"
             " feature_asof_date "
             f"FROM v_ps5_serial_rul WHERE {w} "
             "ORDER BY act_now DESC, expected_component_rul_days ASC NULLS LAST "
-            "LIMIT 3000", **kw))
+            f"LIMIT {_clamp_int((params or {}).get('limit'), 3000, 1, 12000)}", **kw))
+    # ---- THE DENOMINATORS -------------------------------------------------
+    # /ps5/device-rul and /ps5/serial-rul are ORDERED, CAPPED browse lists.
+    # Counting them gives the count of what was returned, not of what exists,
+    # and because both are ordered act_now DESC the truncated tail is the
+    # healthy end -- so a UI that counts the browse list overstates risk. That
+    # is the same trap that once put "600 of 600 devices need a work order" on
+    # the PS1 screen.
+    #
+    # These two routes aggregate in SQL over the WHOLE view. They are the only
+    # honest source of a PS5 total.
+    if path == "/ps5/summary":
+        return ok(rows(
+            "SELECT device_type,"
+            " COUNT(*) AS n_devices,"
+            " COUNT(*) FILTER (WHERE act_now) AS n_act_now,"
+            " COUNT(*) FILTER (WHERE is_overdue) AS n_overdue,"
+            " COUNT(*) FILTER (WHERE risk_band='CRITICAL') AS n_critical,"
+            " COUNT(*) FILTER (WHERE risk_band='HIGH') AS n_high,"
+            " COUNT(*) FILTER (WHERE risk_band='MEDIUM') AS n_medium,"
+            " COUNT(*) FILTER (WHERE risk_band='LOW') AS n_low,"
+            " ROUND(AVG(rul_standard_days)::numeric,1) AS mean_rul_days,"
+            " ROUND((PERCENTILE_CONT(0.5) WITHIN GROUP"
+            "        (ORDER BY rul_standard_days))::numeric,1) AS median_rul_days,"
+            " ROUND(MIN(rul_standard_days)::numeric,1) AS min_rul_days,"
+            " MAX(n_devices_in_type) AS n_devices_in_type,"
+            " MAX(feature_asof_date) AS feature_asof_date "
+            "FROM v_ps5_device_rul WHERE city_id=:c "
+            "GROUP BY device_type ORDER BY device_type", c=city))
+    if path == "/ps5/component-summary":
+        # COUNT(DISTINCT (device_id, component_serial_nbr)) rather than COUNT(*)
+        # for the fan-out reason documented on /ps5/serial-rul above. n_rows is
+        # carried alongside it so the size of the fan-out stays measurable from
+        # this route alone: n_rows > n_components IS the defect.
+        return ok(rows(
+            "SELECT device_type,"
+            " COUNT(DISTINCT (device_id, component_serial_nbr)) AS n_components,"
+            " COUNT(*) AS n_rows,"
+            " COUNT(DISTINCT device_id) AS n_devices,"
+            " COUNT(DISTINCT component_type_name) AS n_component_types,"
+            " COUNT(DISTINCT device_id) FILTER (WHERE act_now) AS n_devices_act_now,"
+            " COUNT(DISTINCT (device_id, component_serial_nbr))"
+            "   FILTER (WHERE act_now) AS n_components_act_now,"
+            " COUNT(DISTINCT (device_id, component_serial_nbr))"
+            "   FILTER (WHERE risk_tier='CRITICAL') AS n_components_critical,"
+            " COUNT(DISTINCT (device_id, component_serial_nbr))"
+            "   FILTER (WHERE has_serial IS NOT TRUE) AS n_components_no_serial,"
+            " MAX(feature_asof_date) AS feature_asof_date "
+            "FROM v_ps5_serial_rul WHERE city_id=:c "
+            "GROUP BY device_type ORDER BY device_type", c=city))
     if path == "/ps5/leaderboard":
         # sd travels WITH oot_cindex on purpose: a high concordance with a wide
         # fold-to-fold spread is not better than a steadier lower one, and the
@@ -1966,7 +3335,11 @@ def route(method, path, params, body):
     # _v2() never raises: a missing table returns the reason in the payload
     # rather than a 500 that kills the whole tab.
     # ------------------------------------------------------------------
-    if path.startswith("/ps3/v2"):
+    # NOTE the trailing hyphen. Without it this also matches
+    # /ps3/v25/... and swallows the entire PS3 v2.5 family below.
+    # Every path inside this block is /ps3/v2-<name>, so the
+    # hyphen changes nothing here and removes the collision.
+    if path.startswith("/ps3/v2-"):
         def _v2(sql, **kw):
             try:
                 return rows(sql, **kw)
@@ -2058,17 +3431,41 @@ def route(method, path, params, body):
     if path.startswith("/ps4/alerts/") and method == "PATCH":
         aid = path.rsplit("/", 1)[-1]; new = (body or {}).get("status")
         if new not in ("active", "investigating", "acknowledged", "resolved"): return err(400, "bad status")
-        conn().run("UPDATE ps4_anomaly_alerts SET status=:s, acknowledged_at=CASE WHEN :s='acknowledged' THEN NOW() ELSE acknowledged_at END, resolved_at=CASE WHEN :s='resolved' THEN NOW() ELSE resolved_at END WHERE id=CAST(:i AS uuid)", s=new, i=aid)
+        # Marking an alert 'resolved' silences it. That is a more damaging
+        # anonymous write than any read on this API.
+        _blocked = write_guard(headers)
+        if _blocked: return _blocked
+        # 2026-08-10 -- THIS ROUTE HAS NEVER WORKED. PostgreSQL could not deduce a
+        # type for :s, which appears once as an assignment to a VARCHAR column and
+        # twice compared against a text literal:
+        #     42P08 inconsistent types deduced for parameter $1
+        #           text versus character varying
+        # Every PATCH against this route has returned a 500. Found while testing
+        # the write guard below, not by reading the code -- the SQL looks fine.
+        # Explicit casts on both sides resolve the deduction.
+        conn().run("UPDATE ps4_anomaly_alerts SET status=CAST(:s AS varchar), "
+                   "acknowledged_at=CASE WHEN CAST(:s AS text)='acknowledged' THEN NOW() "
+                   "ELSE acknowledged_at END, "
+                   "resolved_at=CASE WHEN CAST(:s AS text)='resolved' THEN NOW() "
+                   "ELSE resolved_at END "
+                   "WHERE id=CAST(:i AS uuid)", s=new, i=aid)
         return ok({"id": aid, "status": new})
     if path == "/overview/summary":
         return err(501, "v_executive_summary deferred to Phase 2 (needs PS1/PS3/PS4 tables)")
     if path == "/ps1/device-360":
         dev = (params or {}).get("device_id", "")
         if not dev: return err(400, "device_id required")
-        return ok(_device_360(city, dev))
+        # A/B WITHOUT A REDEPLOY. ?parallel=1 forces the concurrent path,
+        # ?parallel=0 forces the sequential one; absent, D360_PARALLEL decides.
+        _pv = (params or {}).get("parallel")
+        _par = D360_PARALLEL_DEFAULT if _pv is None else str(_pv).strip() in ("1", "true", "yes")
+        return ok(_device_360_parallel(city, dev) if _par else _device_360(city, dev))
     if path == "/ps1/servicenow-stage" and method == "POST":
         d = body or {}; dev = d.get("device_id", "")
         if not dev: return err(400, "device_id required")
+        _blocked = write_guard(headers, payload=d.get("payload", {}), device_id=dev,
+                               city=city, quota_check=True)
+        if _blocked: return _blocked
         import uuid as _uuid
         sid = str(_uuid.uuid4()); pl = d.get("payload", {})
         conn().run("INSERT INTO servicenow_staging(id,city_id,device_id,device_category,short_description,payload_json,status,created_at) VALUES(CAST(:i AS uuid),:c,:d,:cat,:sd,:p,'staged',NOW())",
@@ -2517,6 +3914,10 @@ def route(method, path, params, body):
         dev = d.get("device_id", "")
         if not dev:
             return err(400, "device_id required")
+        _blocked = write_guard(headers, payload=d.get("payload", {}), device_id=dev,
+                               city=city, quota_check=True)
+        if _blocked:
+            return _blocked
         import uuid as _uuid
         sid = str(_uuid.uuid4())
         conn().run(
@@ -2885,6 +4286,91 @@ _EXPECTED = {
     "ps3_model_runs": ["city_id","run_id","run_kind","run_ts"],
 }
 
+# =====================================================================
+# catalog -- READ-ONLY live inventory of the whole database.
+#
+# `inspect` only covers PURGE_TABLES["ps1"] + ["ps3"], which is a small
+# slice. This walks information_schema and returns EVERY table and view
+# in `public` with its columns, types, nullability, primary key and live
+# row count -- i.e. what is actually in Aurora right now, as opposed to
+# what the migrations say should be.
+#
+#   aws lambda invoke --function-name cubic-mars-dashboard-api \
+#     --cli-binary-format raw-in-base64-out \
+#     --payload '{"action":"catalog"}' catalog.json
+#
+# Options:
+#   {"action":"catalog","counts":false}   skip row counts (much faster)
+#   {"action":"catalog","like":"ps5_"}    only names containing this
+#
+# Row counts are exact COUNT(*) per table and are the slow part. On a
+# wide database that can approach the Lambda timeout, so counts are
+# wrapped per-table and a failure degrades to a message on that table
+# rather than losing the whole response.
+# =====================================================================
+def catalog(evt):
+    c = conn()
+    like = (evt or {}).get("like") or ""
+    want_counts = (evt or {}).get("counts", True)
+
+    cols_by_table = {}
+    for tb, cn, dt, nul, dflt in c.run(
+        "SELECT table_name, column_name, "
+        "       COALESCE(character_maximum_length::text, "
+        "                numeric_precision::text, '') AS extra, "
+        "       is_nullable, COALESCE(column_default,'') "
+        "FROM information_schema.columns "
+        "WHERE table_schema='public' ORDER BY table_name, ordinal_position"):
+        cols_by_table.setdefault(tb, []).append(
+            {"column": cn, "size": dt, "nullable": nul == "YES", "default": dflt[:60]})
+
+    types_full = {}
+    for tb, cn, dt in c.run(
+        "SELECT table_name, column_name, data_type FROM information_schema.columns "
+        "WHERE table_schema='public'"):
+        types_full[(tb, cn)] = dt
+
+    pks = {}
+    for tb, cn in c.run(
+        "SELECT tc.table_name, kcu.column_name "
+        "FROM information_schema.table_constraints tc "
+        "JOIN information_schema.key_column_usage kcu "
+        "  ON tc.constraint_name = kcu.constraint_name "
+        " AND tc.table_schema = kcu.table_schema "
+        "WHERE tc.table_schema='public' AND tc.constraint_type='PRIMARY KEY' "
+        "ORDER BY tc.table_name, kcu.ordinal_position"):
+        pks.setdefault(tb, []).append(cn)
+
+    kinds = {}
+    for tb, kind in c.run(
+        "SELECT table_name, table_type FROM information_schema.tables "
+        "WHERE table_schema='public'"):
+        kinds[tb] = "view" if kind == "VIEW" else "table"
+
+    out = []
+    for tb in sorted(kinds):
+        if like and like not in tb:
+            continue
+        rec = {"name": tb, "kind": kinds[tb],
+               "n_columns": len(cols_by_table.get(tb, [])),
+               "primary_key": pks.get(tb, []),
+               "columns": [dict(x, type=types_full.get((tb, x["column"]), "?"))
+                           for x in cols_by_table.get(tb, [])]}
+        if want_counts and kinds[tb] == "table":
+            try:
+                rec["rows"] = int(c.run('SELECT COUNT(*) FROM "%s"' % tb)[0][0])
+            except Exception as e:
+                rec["rows"] = "count failed: " + str(e)[:60]
+        out.append(rec)
+
+    tabs = [o for o in out if o["kind"] == "table"]
+    empty = sorted(o["name"] for o in tabs if o.get("rows") == 0)
+    return ok({"action": "catalog", "read_only": True,
+               "n_tables": len(tabs), "n_views": len([o for o in out if o["kind"] == "view"]),
+               "empty_tables": empty,
+               "objects": out})
+
+
 def inspect(evt):
     c = conn()
     want = list(PURGE_TABLES["ps1"]) + list(PURGE_TABLES["ps3"])
@@ -3025,12 +4511,16 @@ def lambda_handler(event, context):
         return migrate(event)
     if isinstance(event, dict) and event.get("action") == "purge":
         return purge(event)
+    if isinstance(event, dict) and event.get("action") == "catalog":
+        return catalog(event)
     if isinstance(event, dict) and event.get("action") == "inspect":
         return inspect(event)
     if isinstance(event, dict) and event.get("action") == "recreate":
         return recreate(event)
     if isinstance(event, dict) and event.get("action") == "load_run":
         return load_run(event)
+    if isinstance(event, dict) and event.get("action") == "apply_sql":
+        return apply_sql(event)
     rc = (event or {}).get("requestContext", {}).get("http", {})
     method = rc.get("method", "GET"); path = event.get("rawPath", "/")
     params = event.get("queryStringParameters") or {}
@@ -3039,6 +4529,6 @@ def lambda_handler(event, context):
         try: body = json.loads(event["body"])
         except Exception: body = {}
     try:
-        return route(method, path, params, body)
+        return route(method, path, params, body, event.get("headers") or {})
     except Exception as e:
         return err(500, str(e)[:300])

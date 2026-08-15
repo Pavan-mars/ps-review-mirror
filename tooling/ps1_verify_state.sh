@@ -189,22 +189,67 @@ elif any(r.get('sufficient_data') is None for r in d):
 fi
 
 # ------------------------------------------------------------------ [U9]
-hdr "[U9] Did the PS1 crons actually run? (last 3 days)"
-for FN in cubic-mars-ps1-xw-loader cubic-mars-ps1-rds-push; do
-  echo "   $FN"
-  for M in Invocations Errors Throttles; do
-    V=$(aws cloudwatch get-metric-statistics --namespace AWS/Lambda --metric-name $M \
-          --dimensions Name=FunctionName,Value=$FN \
-          --start-time "$(date -u -d '3 days ago' +%Y-%m-%dT%H:%M:%SZ)" \
-          --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --period 259200 --statistics Sum \
-          --region "$REGION" --query 'Datapoints[0].Sum' --output text 2>/dev/null)
-    case "$V" in ''|None) V=0 ;; esac
-    printf '     %-12s %s\n' "$M" "$V"
-  done
-done
+# FIXED 2026-08-11. The previous version windowed "last 3 days" and then
+# asserted "EXPECT ps1-rds-push: Invocations=0". Path B was disabled on
+# 2026-08-10 at 12:00Z, so a 3-day window SPANS THE DISABLE and necessarily
+# includes the legitimate pre-disable invocations. The check therefore
+# reported a violation every time it ran correctly -- it manufactured its
+# own false alarm, and a check that cries wolf gets ignored, which is worse
+# than no check.
+#
+# The question is not "has this function ever been invoked". It is "has it
+# been invoked SINCE WE TURNED IT OFF". So the window starts at the disable.
+#
+# Set PATHB_DISABLED_AT to the moment Path B was disabled. If you disable it
+# again later, move this timestamp -- it is the whole basis of the assertion.
+PATHB_DISABLED_AT="${PATHB_DISABLED_AT:-2026-08-10T12:00:00Z}"
+
+hdr "[U9] Did the PS1 crons actually run?"
+echo "   Path B disable timestamp: ${PATHB_DISABLED_AT}"
 echo
-echo "   EXPECT ps1-xw-loader: Invocations>0, Errors=0"
-echo "   EXPECT ps1-rds-push : Throttles>0 or Invocations=0 (that IS the disable working)"
+
+_metric() {  # _metric <fn> <metric> <start-iso> <end-iso>
+  local V
+  V=$(aws cloudwatch get-metric-statistics --namespace AWS/Lambda --metric-name "$2" \
+        --dimensions Name=FunctionName,Value="$1" \
+        --start-time "$3" --end-time "$4" --period 2592000 --statistics Sum \
+        --region "$REGION" --query 'Datapoints[0].Sum' --output text 2>/dev/null)
+  case "$V" in ''|None) V=0 ;; esac
+  printf '%s' "$V"
+}
+
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+D3="$(date -u -d '3 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+
+# --- the loader: a plain 3-day window is correct here, nothing was disabled
+echo "   cubic-mars-ps1-xw-loader   (window: last 3 days)"
+for M in Invocations Errors Throttles; do
+  printf '     %-12s %s\n' "$M" "$(_metric cubic-mars-ps1-xw-loader "$M" "$D3" "$NOW")"
+done
+echo "   EXPECT Invocations>0, Errors=0"
+echo
+
+# --- Path B: split the window at the disable, because the two halves mean
+#     completely different things and averaging them says nothing
+echo "   cubic-mars-ps1-rds-push"
+BEFORE_INV="$(_metric cubic-mars-ps1-rds-push Invocations "$D3" "$PATHB_DISABLED_AT")"
+AFTER_INV="$( _metric cubic-mars-ps1-rds-push Invocations "$PATHB_DISABLED_AT" "$NOW")"
+AFTER_THR="$( _metric cubic-mars-ps1-rds-push Throttles   "$PATHB_DISABLED_AT" "$NOW")"
+AFTER_ERR="$( _metric cubic-mars-ps1-rds-push Errors      "$PATHB_DISABLED_AT" "$NOW")"
+printf '     %-34s %s\n' "Invocations BEFORE disable"  "$BEFORE_INV"
+printf '     %-34s %s\n' "Invocations SINCE disable"   "$AFTER_INV"
+printf '     %-34s %s\n' "Throttles   SINCE disable"   "$AFTER_THR"
+printf '     %-34s %s\n' "Errors      SINCE disable"   "$AFTER_ERR"
+echo
+echo "   EXPECT Invocations SINCE disable = 0."
+echo "   'BEFORE disable' is HISTORY, not a fault -- it is what a working"
+echo "   Path B looked like. Only the SINCE figure is an assertion."
+if [ "${AFTER_INV%.*}" != "0" ]; then
+  echo "   *** Path B HAS BEEN INVOKED SINCE IT WAS DISABLED (${AFTER_INV})."
+  echo "   *** Either the rule was re-enabled, or something invokes this"
+  echo "   *** function directly and the rule was never the only trigger."
+fi
+
 
 hdr "SUMMARY"
 cat <<'NOTE'

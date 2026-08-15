@@ -109,3 +109,13 @@ PS3_taxonomy_outputs/
 catboost_info/
 Untitled*.ipynb
 *.ipynb.invalid
+
+# --- PS1 evidence directory (added 11-Aug-2026) ---------------------------
+# tooling/out/ IS TRACKED ON PURPOSE. It holds measurement artefacts --
+# AWS inventory snapshots, endpoint captures -- that are evidence, not
+# scratch. tooling/ps1_cleanup.sh refuses to delete an endpoint unless its
+# DescribeEndpointConfig capture is committed here, because that capture is
+# the only thing in existence that can answer E-1. Do not gitignore it.
+# Run transcripts (*.log) are noise, though:
+tooling/out/*.log
+_ps1_design_drop.zip

@@ -1,7 +1,10 @@
 # CUBIC MARS Chicago — Dashboard Lineage, Dependencies and Operations
 
-**Version 1.0 — 2026-08-16.** Written for the delivery team: everything between a
-SageMaker notebook and a rendered dashboard panel, in one place.
+**Version 1.1 — 2026-08-16 (evening).** Written for the delivery team: everything
+between a SageMaker notebook and a rendered dashboard panel, in one place.
+
+Changelog v1.1: PR #13 merged to `main` (`a80cee3`); repo stale-file sweep applied
+per PK instruction (see §10) — recovery point = git tag `archive-sweep-base`.
 
 Evidence tags: `[M <date>]` measured live on that date, `[R]` read from the repo at
 commit `f043c60`+ (branch `feat/v4-readme-collapse-guard`), `[D]` documented decision,
@@ -278,9 +281,9 @@ live routes.
 | Generation | Where |
 |---|---|
 | V1 | `src/pages` + `src/components` — still routed |
-| V2 (final, real) | `dashboard/archive/v2-final/` (18 files) — nothing imports it |
-| V3 | `dashboard/archive/v3-final/` (4 files) |
-| V4 unwired | `dashboard/archive/v4-unwired/V4AnalyseModal.jsx`, `V4DeviceBrief.jsx` |
+| V2 (final, real) | git history only since the 16-Aug sweep: `git show archive-sweep-base:dashboard/archive/v2-final/<file>` |
+| V3 | git history: `git show archive-sweep-base:dashboard/archive/v3-final/<file>` |
+| V4 unwired | git history: `git show archive-sweep-base:dashboard/archive/v4-unwired/<file>` |
 
 Seven V2 panels still have no V4 equivalent (notably **Raise a work order**);
 `/ps1/component-age` and fitment endpoints are still called with nothing rendering
@@ -369,14 +372,20 @@ ECS task must expose 8080 and use `/healthz`. The `dashboard/reactui` ECR repo h
 
 ---
 
-## 10. Stale-but-kept inventory (cleanup decision 16-Aug: report, don't delete)
+## 10. Stale-file sweep — EXECUTED 16-Aug (evening), PK instruction
+
+Recovery point for everything below: **git tag `archive-sweep-base`** (= `a80cee3`,
+the last pre-sweep commit, pushed to origin). Recover any file with
+`git show archive-sweep-base:<path> > <file>`.
 
 | Item | Status |
 |---|---|
-| `dashboard/archive/` (24 tracked files) | deliberate archive of V2/V3/unwired-V4 — kept |
-| `dashboard/backfill/` (4 SQL) | early copies duplicating `api/.../sql/` — kept for now |
-| `dashboard/patch_ps1_validator.py`, `V3_BUILD_SPEC.md` | historical one-offs — kept |
-| `src/v2`, `src/_retired`, `src/_v51verify`, `v4/_to_delete`, `dist/`, `.vite/` | REMOVED 16-Aug (empty dirs + gitignored build junk, ~12 MB) |
+| `dashboard/archive/` (24 files: v2-final 18, v3-final 4, v4-unwired 2) | REMOVED from the tree 16-Aug — supersedes the 08-Aug keep decision |
+| `dashboard/backfill/` (4 SQL) | REMOVED 16-Aug — canonical copies live in `api/lambda/cubic-mars-dashboard-api/sql/` |
+| `dashboard/patch_ps1_validator.py`, `dashboard/V3_BUILD_SPEC.md` | REMOVED 16-Aug |
+| `notebooks/ps1_failure_prediction/archive/` (17 files incl. the mlflow purge/restore + teardown scripts) | REMOVED 16-Aug |
+| `src/v2`, `src/_retired`, `src/_v51verify`, `v4/_to_delete`, `dist/`, `.vite/` | removed locally 16-Aug (empty dirs + gitignored build junk, ~12 MB — never tracked) |
+| Tracked-junk scan (`__pycache__`, `.pyc`, `.bak`, `.tmp`, locks) | CLEAN — zero hits across all tracked files `[M 16-Aug]` |
 | `.gitattributes` | still missing — the CRLF trap remains for any Linux checkout (`* text=auto eol=lf` is the fix, deferred) |
 
 ---

@@ -33,8 +33,10 @@ for a in "$@"; do
   case "$a" in
     --apply)              APPLY=1 ;;
     --delete-empty-repos) DELETE_EMPTY_REPOS=1 ;;
+    --delete-ecr-now)     DELETE_ECR_NOW=1 ;;
   esac
 done
+DELETE_ECR_NOW="${DELETE_ECR_NOW:-0}"
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p tooling/out
@@ -133,11 +135,22 @@ else
 fi
 
 # ---------------------------------------------------------------------
-step "3  cubic-pdm/mars-ps1 (2.38 GB, referenced by 0/28 MPGs, 0 endpoints)"
+step "3  cubic-pdm/mars-ps1 -- RETIREMENT APPROVED 2026-08-15"
 # ---------------------------------------------------------------------
-echo "NOT deleted. A lifecycle policy expiring untagged images older than"
-echo "90 days, then a re-audit in 30 days, then delete. 2.38 GB of ECR is"
-echo "a small monthly cost; an image nobody can reproduce is not."
+echo "PK's decision 2026-08-15: retire it. The basis is now measured, not"
+echo "inferred -- all three endpoints run the AWS-managed"
+echo "sagemaker-scikit-learn:1.2-1-cpu-py3 DLC (account 683313688378), and"
+echo "the model.tar.gz is self-contained. BYOC was considered and declined:"
+echo "it requires ECR, costs the same, and buys only build-time dependency"
+echo "freezing -- which an exact pin in requirements achieves for one line."
+echo
+echo "STILL NOT DELETED IN THIS PASS, and the reason is not timidity."
+echo "A lifecycle policy expiring untagged images >90d, then a re-audit in"
+echo "30 days, then delete. 2.38 GB of ECR is a small monthly cost. An"
+echo "image nobody can reproduce is not -- and nothing in this repo can"
+echo "rebuild it, because docker/Dockerfile.ps1 has been retired too."
+echo
+echo "To delete outright anyway:  --delete-ecr-now  (irreversible)"
 echo
 echo "Re-audit on: $(date -u -d '+30 days' +%Y-%m-%d 2>/dev/null || echo '30 days from today')"
 LIFECYCLE='{"rules":[{"rulePriority":1,"description":"expire untagged >90d (ps1 retirement, 2026-08-11)","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":90},"action":{"type":"expire"}}]}'
@@ -165,6 +178,20 @@ else
   echo "  confirmed absent (LifecyclePolicyNotFoundException) -- safe to put"
   run aws ecr put-lifecycle-policy --repository-name cubic-pdm/mars-ps1 \
       --region "$REGION" --lifecycle-policy-text "$LIFECYCLE"
+fi
+
+if [ "$DELETE_ECR_NOW" -eq 1 ]; then
+  echo
+  echo "  --delete-ecr-now IS SET. This is IRREVERSIBLE."
+  echo "  2.38 GB of images go, and nothing in the repo can rebuild them:"
+  echo "  docker/Dockerfile.ps1 was retired by tooling/ps1_repo_cleanup.sh."
+  echo "  Recording the manifest digests first, so at least the record survives:"
+  aws ecr describe-images --repository-name cubic-pdm/mars-ps1 --region "$REGION" \
+      --query 'imageDetails[].[imageDigest,imageTags,imageSizeInBytes,imagePushedAt]' \
+      --output text 2>&1 | tee "tooling/out/ecr_mars_ps1_manifest_${TS}.txt" | sed 's/^/    /'
+  echo "  -> tooling/out/ecr_mars_ps1_manifest_${TS}.txt  (COMMIT THIS)"
+  run aws ecr delete-repository --repository-name cubic-pdm/mars-ps1 \
+      --region "$REGION" --force
 fi
 
 # ---------------------------------------------------------------------

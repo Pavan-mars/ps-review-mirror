@@ -1,0 +1,57 @@
+# PS1 daily scoring — pinned dependencies for the SageMaker Processing job.
+#
+# WHY EXACT PINS, NOT RANGES
+# --------------------------
+# The deployed endpoints' sourcedir/requirements.txt says `xgboost>=2.0`,
+# unbounded. Every container start does a fresh pip install, so a new xgboost
+# release can change what the SAME booster JSON predicts, with nothing in the
+# system recording that anything changed. XGBoost does not guarantee identical
+# output across major versions for a serialised model.
+#
+# That is the same failure shape as everything else in this programme: a value
+# produced by something other than the thing you think produced it, with no
+# signal that it happened.
+#
+# So: exact pins. A dependency that can move on its own is not a dependency,
+# it is a variable.
+#
+# VERIFY BEFORE TRUSTING THESE
+# ----------------------------
+# The versions below are the ones to CONFIRM against what actually trained the
+# boosters — they are a starting point, not a measurement. Run this in the
+# SageMaker Studio kernel that produced the models:
+#
+#     import xgboost, numpy, pandas, sklearn
+#     for m in (xgboost, numpy, pandas, sklearn):
+#         print(m.__name__, m.__version__)
+#
+# and replace anything that differs. A pin to the wrong version is worse than
+# a range, because it looks deliberate.
+#
+# CROSS-CHECK: the booster JSON records the version that wrote it. Read it:
+#
+#     import json, tarfile
+#     with tarfile.open("model.tar.gz") as t:
+#         b = json.load(t.extractfile("ps1_gate_xgb.json"))
+#     print(b.get("version"))          # -> [major, minor, patch]
+#
+# That is the authoritative answer for xgboost specifically. Use it.
+
+xgboost==2.1.3
+numpy==1.26.4
+pandas==2.2.3
+joblib==1.4.2
+pyarrow==17.0.0
+boto3==1.35.36
+s3fs==2024.10.0
+
+# scikit-learn is NOT required by the scoring path. The deployed inference.py
+# imports only xgboost/lightgbm/catboost per meta["model_type"], and all three
+# PS1 fleets are model_type=xgboost (measured 2026-08-15). The managed image is
+# named "sagemaker-scikit-learn" for historical reasons; that does not mean the
+# scoring code uses sklearn.
+#
+# lightgbm and catboost are likewise NOT pinned here. model_fn imports them
+# lazily inside branches this data never takes. Adding them would install two
+# large packages on every run to satisfy a code path that cannot execute.
+# If a future PS1 champion is lightgbm or catboost, add the pin THEN.

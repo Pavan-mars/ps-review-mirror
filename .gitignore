@@ -47,8 +47,6 @@ credentials
 Thumbs.db
 
 # local context notes - kept local, never shared in the repo
-local-notes.md
-.localnotes/
 
 # Local skill files â€” kept local, never shared in the repo
 skill/

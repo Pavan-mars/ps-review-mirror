@@ -159,3 +159,28 @@ Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_1
   meet the 0.65 gate. This may be stale v1 status rows sitting beside the newer v5.6
   leaderboard (`ps5_cindex_leaderboard`, 18 rows) — reconcile before any client
   conversation. Tracker #53 is now OPEN-RED pending that reconciliation (follow-up below).
+
+---
+
+## Addendum B — SET W self-checks, 16-Aug-2026 late evening [M]
+
+- `{"dry_run": true}` (doubles as the reconciliation report): **EXACT S3-vs-RDS
+  parity on every loaded family** — device_rul 1,536 (429+190+917), serial_rul
+  11,718 (1,236+1,963+8,519), cindex_leaderboard 18 (6x3), permutation_importance
+  164 (64+41+59), enrich_coverage 24 (8x3). Aurora holds exactly one generation —
+  delete-then-insert semantics proven by the loader's own reconcile block.
+- The loader maps `*_serial_reliability.csv` -> `ps5_serial_rul`: the populated
+  legacy tables `ps5_serial_reliability` (12,904) and `ps5_reliability_estimates`
+  (4,103) are fed by something OTHER than this loader — writer still `[U]`.
+- `cubic-mars-ps5-daily-scorer`: absent from the live function inventory —
+  repo-only status re-confirmed a second way.
+- W1 (re-paste received) — **#53 RECONCILED: the served C-indexes are stale v1
+  rows.** `/ps5/status` serves `ps5_reliability_status` (3 v1-era rows: gates
+  0.5906 clean_v1; tvms 0.5071 broken_champion_selection, blocker "#89 MLflow
+  CI=nan churn"; validators 0.597, blocker "cox_ph_model.pkl missing /
+  .crdownload") — all pre-v5.6 language. The CURRENT v5.6 leaderboard champions:
+  GATE 0.67795 (Baseline CoxPH, 13 feats) PASS; TVM 0.79848 (Cox + facility
+  frailty) PASS; VALIDATOR 0.64926 (CoxPH perm-selected) — 0.001 UNDER the 0.65
+  floor with sd 0.0036, i.e. statistically AT the floor. Actions: re-point or
+  retire the status route/table (the v5.6 loader never writes it), and decide
+  at-floor waiver vs lift pass for VALIDATOR. #53: OPEN-RED -> AMBER.

@@ -154,3 +154,26 @@ Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_1
   confirmed never run. Decide run/revise/retire.
 - Newest clustering manifests: `asof=2026-07-28` (gate/tvm/validator) — the variant
   ratification needs one follow-up read of `gate_manifest.json` (exact command below).
+
+---
+
+## Addendum B — SET W self-checks, 16-Aug-2026 late evening [M]
+
+- Daily loader `{"dry_run": true}`: timeline 438 rows; assignments TVM 475 /
+  GATE 829 / VALIDATOR 3,163 (4,467 read vs 8,978 in RDS — Aurora holds prior
+  generations; the dry-run `retired` sweep reported none); cluster_summary 12;
+  device_daily streams only on a real load. The refused-by-design feeds are now
+  QUANTIFIED by the loader itself: `anomalies` = 17,568,514 rows = **47.96% of all
+  device-hours flagged** (deterministic `signal_active_count >= 2` — "neither
+  Lambda-loadable nor meaningful yet"), `outliers` = 36,629,754 rows ~5.5 GB.
+- Dual vintage from the loader: `scored_asof=2026-04-11` (max hour_dt in data) vs
+  `cluster_asof=2026-07-28` (run date) — label them separately on screen.
+- v3 loader `{"action":"dry_run"}`: run `ps4-20260728T213153Z-bf4609d4`,
+  READY.json present, paths resolved via manifest — **PERFECT S3-vs-RDS parity**:
+  weekly_device_summary 7,742 / weekly_alerts 1,108 / weekly_timeline 6 /
+  cluster_profile 9 / cluster_quality 3 — every figure matches live Aurora exactly.
+- W1 (re-paste received) — **variant question RATIFIED:** `gate_manifest.json`
+  declares `"engine": "pyspark"` — the current production clustering outputs come
+  from the PySpark variants (champion `P5_IF_TSNE_KMeans`, silhouette 0.6058,
+  829 devices / 4 clusters, GATE asof 2026-07-28). The Databricks-scheduled-job
+  recommendation for PS4 is now evidence-complete.

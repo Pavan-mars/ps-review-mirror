@@ -207,3 +207,24 @@ Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_1
 - `/ps2/status`: 20/20 expected tables, coherent=true, run `6a705387-f3ab-4a80-95cb-9b5583d32179`,
   computed_date 2026-04-11 — consistent with the data-vintage limit.
 - The export-prefix landmine stands unchanged (loader reads `chicago/ps2_outputs`; notebook env not yet repointed).
+
+---
+
+## Addendum B — SET W self-checks, 16-Aug-2026 late evening [M]
+
+- `cubic-mars-ps2-rds-loader` `{"dry_run": true}`: 47 tables / 294,749 rows /
+  0 refused / 0 errors — the 08-Aug picture reproduced exactly. The five
+  `ps2_v25_*_audit` exports sit in `no_target` (5/4/4/3/4 rows in S3, no Aurora
+  tables) — the audit-table gap re-confirmed by the loader itself.
+- Two computed_date families in one sweep: core cascade tables load
+  computed_date=2026-07-26; the `ps2_v2_*`/`ps2_v25_*` families load 2026-04-11.
+- **Landmine timeline, precise:** the last notebook export wrote 03-Aug 09:12Z to
+  the BARE `ps2_outputs/` prefix (charts + `_runs/run_complete.json`, run
+  `6a705387`); the 08-Aug migration copy captured that run, so the dashboard has
+  NOT yet diverged. The next run still lands at the bare prefix until
+  `PS2_PRODUCTION_EXPORT_PREFIX=chicago/ps2_outputs` is set.
+- Bucket fact: PS2 data exists ONLY in the artifacts bucket — both gold-bucket ps2
+  prefixes are EMPTY (the gold grant is unused).
+- **NEW census gap:** Lambda `cubic-mars-ps2-rds-push` exists live (25-Jul, 512 MB)
+  and appears in no audit or lineage doc. Role `[U]` — investigate or retire
+  (cf. the retired `ps1-rds-push`).

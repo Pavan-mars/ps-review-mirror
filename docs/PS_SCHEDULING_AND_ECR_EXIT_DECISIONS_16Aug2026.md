@@ -187,3 +187,55 @@ aws s3 cp s3://cubic-mars-pm-s3-datalake-dev-gold-170202974600/chicago/ps4/clust
 curl -s "https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com/ps5/status?city=CHI"; echo
 curl -s "https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com/ps5/leaderboard?city=CHI"; echo
 ```
+
+---
+
+## Addendum 2 — SET W results (loader self-checks, estate sweep, endpoint traffic), 16-Aug-2026 late evening [M]
+
+1. **SECRET NOT ROTATED:** `cubic-mars-secret-rds-dev` — RotationEnabled null,
+   LastRotated null, LastChanged **2026-07-22** — the RDS password exposed in chat
+   on 16-Aug has NOT been rotated and no rotation is configured. Item A8 escalates
+   to do-first.
+2. **All four endpoints: 0 invocations in 30 days** (AllTraffic, CloudWatch Sum) —
+   PS1 x3 re-measured over 30 days, PS3 measured for the first time. The D-4
+   deletion-safety evidence (incl. the PS3 extension) is complete.
+3. **Loader fleet: 8/8 read-only self-checks clean** (0 errors everywhere).
+   Highlights: PS5 and PS4-v3 show EXACT S3-vs-RDS parity; PS3-v25 sees exactly
+   one complete run; PS2 reproduces its 08-Aug picture. Per-PS detail in each
+   audit's Addendum B. One WARNING: the newest PS3 hardened (v2) run (01-Aug) is
+   mostly empty — never `load` it as-is.
+4. **Deployed inventory (12 `cubic-mars-*` functions, all python3.12):**
+   dashboard-api 11-Aug, dim-loader 27-Jul, ps1-rds-push 10-Aug, ps1-xw-loader
+   11-Aug, ps2-rds-loader 08-Aug, **ps2-rds-push 25-Jul (UN-CATALOGED — new
+   discovery, role [U])**, ps3-rc 04-Aug, ps3-v2 29-Jul, ps3-v25 09-Aug, ps4-rds
+   28-Jul, ps4-v3 29-Jul, ps5-rds 28-Jul. NOT present: ps5-daily-scorer,
+   ps3-rds-push, ps3-inference. (Filter = name contains cubic|mars — the ps5-api
+   Lambda behind `b1s4xxlddb` may carry another name.) Two API GWs confirmed:
+   `a9yuqt9j9b` dashboard-api, `b1s4xxlddb` ps5-api-gw.
+5. **S3 staleness portrait (newest object per prefix):** PS1 Path A 29-Jul; PS2
+   bare prefix 03-Aug (last real export) / migrated prefix 08-Aug (copy); PS3 v25
+   09-Aug, rc 04-Aug (3 CSVs only), v2 01-Aug (GOLD bucket); PS4 28-Jul; PS5
+   08-Aug. PS2 gold-bucket prefixes EMPTY (artifacts-only).
+6. **THE 02:00 TRAINING PIPELINE — SOLVED (W1):** all 20 listed daily executions
+   SUCCEEDED in ~45 MILLISECONDS each (02:00:26.20 -> .24) — the Map state
+   iterates `$.models` and receives an empty list, so it trains NOTHING, daily,
+   successfully. The definition is generic early-platform scaffold ("up to 80
+   models", hardcoded hyperparameters, ml.m5.4xlarge spot) pointing at
+   `cubic-mars-ecr-training-dev:latest` — an ECR repo measured EMPTY — and at a
+   `cubic-mars-artifacts-dev` bucket family, not the datalake buckets. It has
+   never trained a model and cannot as configured. RECOMMENDATION: disable rule
+   `cubic-mars-events-training-daily-dev`, record as retired scaffold; delete or
+   deliberately redesign the state machine only when real retraining automation
+   is built (the section-2 decisions do NOT reuse it). Optional confirmation:
+   `aws events list-targets-by-rule --rule cubic-mars-events-training-daily-dev`
+   to see the static (empty-models) input.
+7. **PS3 image binding one level deeper (W1):** the endpoint's model carries no
+   direct image — it wraps model-package `chicago-ps3-root-cause/14`; the
+   `mars-ps3:latest` pin sits in the package's InferenceSpecification. Fix there
+   during exit-plan step 6.
+8. **PS4 variant RATIFIED (W1):** manifest `"engine": "pyspark"` — the
+   Databricks-job recommendation is evidence-complete.
+9. **PS5 #53 RECONCILED (W1):** `/ps5/status` serves stale v1 rows
+   (0.5906/0.5071/0.597 + v1-era blockers). v5.6 champions: GATE 0.678 PASS,
+   TVM 0.798 PASS, VALIDATOR 0.649 (0.001 under floor, sd 0.0036). Re-point or
+   retire the status feed; decide waiver-vs-lift for VALIDATOR. RED -> AMBER.

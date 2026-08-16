@@ -207,3 +207,36 @@ Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_1
   image, tagged `latest`, pushed 13-Jul 06:56Z — six minutes before the model's creation
   timestamp. Probable but UNCONFIRMED binding; the mutable-`latest` defect stands either way.
 - `/ps3/summary` and `/ps3/collapse-health` both serving (re-confirmed in the same batch).
+
+---
+
+## Addendum B — SET W self-checks, 16-Aug-2026 late evening [M]
+
+- v25 loader `{"dry_run": true}`: exactly ONE complete run visible
+  (computed_date 2026-04-11, run 6a787954), 20/20 tables, 117,377 rows, 0 errors,
+  unexpected: `[_runs]` only — `choose_run()` healthy.
+- rc loader `{"dry_run": true}`: would load run `ps3_oos_20260804` (manifest
+  run_kind=train; 3 artifacts). **`ps3_serial_predictions.csv` is SKIPPED — "not
+  readable"** — only 3 CSVs exist at the prefix; the 2,515 RDS serial rows are from
+  the earlier family. **`ps3_head_feature_importance` is NOT in the rc artifact
+  set** — so #66 cannot be fixed by re-loading this run; it needs a fresh export
+  from the notebook or retirement of the three drivers routes.
+- **v2 loader WARNING:** the newest hardened run `ps3_20260801T191241Z` is mostly
+  EMPTY — 13 of 17 datasets read 0 rows (only run_scorecard 3, display_policy 13,
+  readiness 3, data_freshness 1). The populated `ps3_v2_*` content in Aurora
+  (shap_incident 4,800, action_queue 472, ...) came from earlier runs. **Do NOT
+  invoke `{"action":"load"}` on the v2 loader while this hollow run is newest.**
+- Correction to (b): hardened-remediation runs live in the **GOLD** bucket
+  (`chicago/ps3_hardened_remediation/runs/` — loader echo), not artifacts.
+- Deployed-function inventory: of (e)'s five components only rc / v2 / v25 exist
+  live — `cubic-mars-ps3-rds-push` and `cubic-mars-ps3-inference` are NOT deployed
+  (repo-only or since deleted).
+- **PS3 endpoint: 0 invocations in 30 days** (first-ever measurement) — the
+  D-4-extension deletion evidence for `chicago-ps3-rootcause-v1` is complete.
+- W1 (re-paste received): `describe-model` shows the model carries NO direct
+  image — it wraps **model-package `chicago-ps3-root-cause/14`** (Mode
+  SingleModel; the newest of the 14 sprawled versions). The `mars-ps3:latest`
+  pin therefore sits inside the package's InferenceSpecification — fix it there
+  during exit-plan step 6; an optional `describe-model-package` on version 14
+  closes the final inch. (`DeploymentRecommendation: FAILED` is
+  inference-recommender noise, not a serving fault.)

@@ -233,3 +233,18 @@ Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_1
   `683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3` —
   the AWS managed DLC. **PS1 uses no custom ECR image — confirmed at the model level.**
   ECR `cubic-pdm/mars-ps1` holds 3 images (newest `latest`, 13-Jul) referenced by nothing — retire per D-1.
+
+---
+
+## Addendum B — SET W self-checks, 16-Aug-2026 late evening [M]
+
+- `cubic-mars-ps1-xw-loader` `{"action":"verify"}`: ran clean; `extra_used` reports
+  n = 786,525 — the loader's own verify confirms the EXPECTED contract row count in
+  Aurora. (The verify header and the `{"action":"freshness"}` output were clipped
+  from the paste — re-requested; the contract figure is from the received tail.)
+- Path A S3 objects unchanged: newest objects remain 29-Jul 04:18-04:25Z
+  (validator/tvm/gate keys) — static-since-29-Jul re-confirmed at object level.
+- **Endpoints: 0 invocations in 30 days** on all three PS1 endpoints (variant
+  AllTraffic, CloudWatch Sum) — D-4 deletion-safety evidence, now over a 30-day window.
+- Deployed vintages (live inventory): xw-loader 11-Aug, rds-push 10-Aug (its
+  disable date), dashboard-api 11-Aug; all python3.12.

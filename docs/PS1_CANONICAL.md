@@ -534,3 +534,96 @@ the nine unknowns closed.
    source (§8.6).
 
 Once 1–4 are closed, PS1 is done and PS2 gets the same treatment.
+
+---
+
+## 11. THE SERVING CONTRACT — MEASURED 2026-08-15  [M 15-Aug 06:15Z]
+
+Two read-only CloudShell runs closed the last standing unknown about what the
+endpoints actually run. Raw artefacts are committed at `tooling/out/`. Full
+narrative in `docs/PS1_OPERATIONAL_INVENTORY.md` §14.
+
+### 11.1 There are no ECR endpoints for PS1  [M]
+
+Image on all three: `683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3`.
+Account `683313688378` is **AWS's**, i.e. the managed DLC. `cubic-pdm/mars-ps1`
+(2.38 GB) is referenced by 0 of 28 model package groups and 0 endpoints.
+
+**DECISION-1 settled: ECR is not required for PS1.** `docker/Dockerfile.ps1` and
+`docker/inference_ps1.py` build a Flask BYOC image that nothing deploys — its
+`model_fn` globs `*_champion.joblib`, a filename the real bundle does not contain.
+
+`cubic-pdm/mars-ps3` IS live (model package 14) and pins the **mutable `:latest`
+tag**. Real PS3 defect; never sweep it into a PS1 cleanup.
+
+### 11.2 The bundle, and the feature contract  [M]
+
+`model.tar.gz` is byte-identical to `sourcedir.tar.gz` for all three fleets, so
+the handler analysed is the handler that runs — a genuine ambiguity, since
+`SAGEMAKER_PROGRAM` resolves out of the submit directory for managed containers.
+
+| fleet | features | medians | deployed threshold | classifier |
+|---|---|---|---|---|
+| GATE | 47 | 47/47 | 0.12284049 | `SparkXGBClassifierModel` |
+| TVM | 40 | 40/40 | 0.02648935 | `SparkXGBClassifierModel` |
+| VALIDATOR | 40 | 40/40 | 0.39651793 | `SparkXGBClassifierModel` |
+
+14 features are shared by all three; 13/16/14 are fleet-specific. These are three
+genuinely different models, not one applied three times.
+
+`requirements.txt` carries `numpy, pandas, xgboost>=2.0` — **unpinned**. A
+container restart can install a newer xgboost against the same booster JSON.
+
+### 11.3 E-1 QUANTIFIED — the deployed model matches NO scorecard row  [M]
+
+`v_ps1_serving_gap` has only ever used a **proxy**. This is the first direct
+observation.
+
+| fleet | deployed thr | scorecard v2 (Spark) | scorecard v3-sklearn | deployed n_feat | scorecard v2 |
+|---|---|---|---|---|---|
+| GATE | 0.122840 | 0.1349 | 0.648467 | 47 | 67 |
+| TVM | 0.026489 | 0.0255 | 0.494842 | 40 | 67 |
+| VALIDATOR | 0.396518 | 0.4513 | 0.604953 | 40 | 43 |
+
+Lineage is Spark, as `sql/load` warned. But the threshold is only *close* to the
+Spark row, and `n_features` matches neither row for any fleet. Three readings are
+possible and none is chosen here  [U]: an unloaded Spark run; figures transcribed
+from a different checkpoint of the same run; or `n_features` counting candidates
+rather than selected features.
+
+**Operational consequence, which is not in doubt:** GATE's endpoint fires at
+**0.1228** while `/ps1/threshold-sweep` publishes **0.65**. Every flagged-device
+count, alert-rate estimate and capacity figure derived from the published
+threshold is wrong — and wrong in the unsafe direction, since a far lower
+threshold flags far more devices.
+
+**Still not claimable:** that these endpoints have ever answered an inference
+request. `InService` proves `model_fn` ran at container start. With 0 invocations
+in 14 days, `input_fn`/`predict_fn` are unexercised in production.
+
+### 11.4 C-3 corrected — an ordering bug, not a missing-median bug  [V]
+
+Medians are **complete** (47/47, 40/40, 40/40). The earlier framing — "features
+with no median" — described an empty set and is withdrawn.
+
+The defect survives in sharper form. `_impute` only touches columns already
+present, so an **absent** column is skipped and then `reindex(fill_value=0.0)`
+sets it to `0.0`, **while its correct median sits unused in the same bundle**.
+Cause is ordering; fix is one line:
+
+    X = _impute(df.reindex(columns=cols), cols, medians).astype(float).values
+
+`notebooks/ps1_batch_score_daily.py` implements both this and the DECISION-8
+presence assertion.
+
+### 11.5 A bug in the audit tool itself  [V]
+
+`ps1_read_docker_and_model.sh` printed `VERDICT: NO ps1_*_meta.joblib in the
+archive` two lines below a member listing containing `ps1_gate_meta.joblib`.
+
+Cause: `set -o pipefail` with `tar -tzf … | grep -q`. `grep -q` exits at the
+first match, `tar` takes SIGPIPE and returns 141, `pipefail` propagates it, and
+`&& HAS_META=1` never runs. A race — the 68 KB archive won it, the 788 KB one did
+not. **It reported absence when it meant "I stopped looking", in the script
+written to detect exactly that.** Fixed in `tooling/ps1_feature_contract.sh` by
+listing once into a variable. Recorded as failure pattern 16 in the skill.

@@ -1,7 +1,45 @@
 # PS1 Operational Inventory
 
 **CUBIC MARS Chicago (CTA-Ventra) · Problem Statement 1 — 3-day hardware failure prediction**
-**Compiled 2026-08-11 · Evidence-marked throughout**
+**Compiled 2026-08-11 · Updated 2026-08-15 with the measured serving contract · Evidence-marked throughout**
+
+> **STATUS OF THE TEN QUESTIONS**
+>
+> | # | Question | State |
+> |---|---|---|
+> | 1 | SageMaker notebooks | **§1 — complete** |
+> | 2 | S3 output locations | **§2 — complete**; live object freshness needs `ps1_aws_inventory.sh` |
+> | 3 | Loaders / dispatchers / Lambdas / handlers | **§3 — complete** |
+> | 4 | How data reaches RDS | **§4 — complete** |
+> | 5 | RDS tables + schema + **row counts** | **§5 — schema complete; ROW COUNTS STILL NEED `tooling/sql/ps1_inventory_counts.sql`** |
+> | 6 | Inference endpoints | **§6 + §14 — MEASURED 2026-08-15, complete** |
+> | 7 | EventBridge rules | **§7 — from repo; live states need `ps1_aws_inventory.sh`** |
+> | 8 | How ECR + EventBridge are used | **§8 — complete, DECISION-1 now settled** |
+> | 9 | Issues since yesterday | **§9 — complete, 15 entries** |
+> | 10 | Cleanup performed | **§10 — complete** |
+>
+> **Only two gaps remain, and both need one command each. See §12.**
+>
+> ---
+>
+> **THIS DOCUMENT IS THE PRIMARY PS1 REFERENCE.** Standing instruction from PK,
+> 2026-08-15: consult it before answering any PS1 question, cite it, and **update
+> it in the same session whenever anything it describes changes** — a reference
+> that silently goes stale is worse than none, because people trust it.
+>
+> The maintenance protocol — what triggers an update, which section to change, and
+> the rules for the edit — is in **`local-notes.md` §3A** at the repo root, which loads
+> automatically at the start of every session. In short:
+>
+> - a script is run → replace the `[AWS-PENDING]` marker with the measured value
+>   **and its date**, and commit the transcript to `tooling/out/`
+> - a defect is found **or withdrawn** → §9 gets an entry either way; strike
+>   withdrawn claims in place rather than deleting them
+> - anything structural changes → mirror it into `skills/chicago-ps1/SKILL.md`
+> - every claim keeps its evidence tag; never promote `[UNVERIFIED]` to
+>   `[MEASURED]` without a transcript
+> - add a dated subsection rather than rewriting history (§13 and §14 are the
+>   pattern)
 
 ---
 
@@ -450,7 +488,7 @@ The archive is self-contained **[READ, CELL 22]** — native booster file, `ps1_
 
 **Zero invocations is expected** — the daily Chicago data has not arrived, so nothing has had cause to call them. But note precisely what `InService` proves: the model **loaded** at container start. `input_fn` and `predict_fn` run only on invocation, and there have been none. **Whether these endpoints can answer is untested in production.**
 
-Full live detail: **[AWS-PENDING]** — item 6 of `ps1_aws_inventory.sh`.
+**Full live detail is no longer pending — it was measured on 2026-08-15. See §14.**
 
 ---
 
@@ -629,6 +667,118 @@ The pickles are timestamped, so there may be several generations. They are in th
 
 So the full upstream chain is: `run_layer_silver` → `run_layer_gold` (builds `device_ps1_daily`) → `export_gold_to_s3` (lands it in S3) → the PS1 notebooks read it as their spine. **That is the chain whose completion should fire the daily scoring trigger** — see `docs/PS1_DAILY_INFERENCE_DESIGN.md` §Q6, `DECISION-3`.
 
-### 13.4 What remains genuinely unread
+### 13.4 What remained unread at the 11-Aug pass
 
 Only one item, and it is low-value: per-file one-line descriptions for the ~30 non-PS1 migrations (`02, 05–09, 15, 17–20, 23–33, 38–42, 45–47`). Their filenames are known; only `26` and `46` contain `ALTER TABLE` statements. Nothing in PS1 depends on them.
+
+---
+
+## 14. The measured serving contract — 2026-08-15 **[MEASURED]**
+
+Two read-only CloudShell runs (`ps1_read_docker_and_model.sh`, then `ps1_feature_contract.sh`) resolved item 6 completely and produced the first non-proxy evidence for E-1. Raw artefacts are committed at `tooling/out/`.
+
+### 14.1 The endpoints — item 6 answered
+
+All three, identical shape:
+
+| | value |
+|---|---|
+| Image | `683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3` |
+| Image owner | **AWS account 683313688378** — the managed DLC, not a CUBIC image |
+| Status | `InService`, created 2026-07-24 |
+| `SAGEMAKER_PROGRAM` | `inference.py` |
+| `SAGEMAKER_SUBMIT_DIRECTORY` | `s3://sagemaker-us-east-1-170202974600/sagemaker-scikit-learn-2026-07-24-*/sourcedir.tar.gz` |
+| Role | `arn:aws:iam::170202974600:role/cubic-mars-role-sagemaker-exe` |
+| `SAGEMAKER_MODEL_SERVER_TIMEOUT` | 3600 |
+
+**The question asked about "ECR inference endpoints". There are none for PS1.** The image is AWS's own managed container. `cubic-pdm/mars-ps1` (2.38 GB) is referenced by nothing. **`DECISION-1` is settled: ECR is not required for PS1 and that repository can be retired.**
+
+**How xgboost gets into a scikit-learn container.** `sourcedir.tar.gz` carries a `requirements.txt`:
+
+```
+numpy
+pandas
+xgboost>=2.0
+```
+
+> **New risk, logged today:** `xgboost>=2.0` is unbounded. A container restart can install a newer xgboost against the same booster JSON. XGBoost does not guarantee identical output across major versions for a serialised model. **Pin it.**
+
+**A question settled cleanly:** `inference.py` is **byte-identical** in `model.tar.gz` and in `sourcedir.tar.gz`, for all three fleets. For managed framework containers `SAGEMAKER_PROGRAM` resolves out of the submit directory, so there was a real possibility the handler being analysed was not the handler being run. It is the same file. No ambiguity.
+
+### 14.2 The model bundle — what each archive contains
+
+```
+ps1_<fleet>_xgb.json          the booster
+ps1_<fleet>_meta.joblib       feature_cols, medians, model_type, model_file, classifier
+ps1_<fleet>_threshold.joblib  the operating threshold
+requirements.txt
+inference.py
+```
+
+| fleet | archive | features | medians | threshold | classifier |
+|---|---|---|---|---|---|
+| GATE | 788 KB | **47** | 47/47 | **0.12284049** | `SparkXGBClassifierModel` |
+| TVM | 68 KB | **40** | 40/40 | **0.02648935** | `SparkXGBClassifierModel` |
+| VALIDATOR | 124 KB | **40** | 40/40 | **0.39651793** | `SparkXGBClassifierModel` |
+
+Machine-readable copies: `tooling/out/ps1_{gate,tvm,validator}_feature_contract.json`.
+
+Feature-set structure: **14 features shared by all three fleets**; 13 unique to GATE (`gate_tap_*`, `gate_mech_events_*`, `csc_reader_events_*`), 16 unique to TVM (`printer_*`, `bankcard_*`, `bhu_*`, `chu_*`, `scrst_*`, `avg_mttr_*`), 14 unique to VALIDATOR (`tvm_read_*`, `mttr_*`). The fleets are genuinely different models, not one model applied three times.
+
+### 14.3 E-1, quantified for the first time
+
+`v_ps1_serving_gap` has only ever used a **proxy** — the latest train-kind row in `ps1_inference_runs` — and says so in its own `COMMENT`. This is the first direct observation of the deployed artefact.
+
+| fleet | **deployed threshold** | scorecard `v2` (Spark) | scorecard `v3-sklearn` | **deployed n_features** | scorecard `v2` |
+|---|---|---|---|---|---|
+| GATE | **0.122840** | 0.1349 | 0.648467 | **47** | 67 |
+| TVM | **0.026489** | 0.0255 | 0.494842 | **40** | 67 |
+| VALIDATOR | **0.396518** | 0.4513 | 0.604953 | **40** | 43 |
+
+**The deployed artefact matches neither scorecard row, for any fleet, on either axis.** `classifier = SparkXGBClassifierModel` confirms the lineage is Spark — exactly as `sql/load/ps1_sklearn_20260726.sql` warned in its `error_text`: *"the live endpoint still serves the Spark champion"*. But the threshold is merely *close* to the Spark row, and the feature count matches nothing at all.
+
+Three readings are possible and this document does not choose between them **[UNVERIFIED]**:
+
+1. The deployed models come from a Spark run whose numbers were never loaded into `ps1_model_performance`.
+2. The loaded `v2` figures were transcribed from a different checkpoint of the same run than the one exported at CELL 22.
+3. `n_features` in the scorecard counts candidate features while the bundle counts selected ones.
+
+Whichever it is, the operational consequence is fixed and immediate:
+
+> **GATE's endpoint fires at 0.1228. `/ps1/threshold-sweep` publishes 0.65.** Any count of "devices that will be flagged", any alert-rate estimate, any capacity plan derived from the published threshold is wrong — and wrong in the unsafe direction, since a much lower threshold flags far more devices.
+
+**What still cannot be claimed:** that these endpoints have ever answered an inference request. `InService` proves `model_fn` ran at container start. With 0 invocations in 14 days, `input_fn` and `predict_fn` remain unexercised in production.
+
+### 14.4 C-3 corrected, and reduced to one line
+
+Medians are **complete** — 47/47, 40/40, 40/40. The earlier framing ("features with no median") described an empty set and is withdrawn.
+
+The defect survives in a sharper form. In the deployed handler:
+
+```python
+def _impute(df, cols, medians):
+    for c in cols:
+        if c in out.columns and c in medians:      # ABSENT columns skipped
+            out[c] = out[c].astype(float).fillna(medians[c])
+...
+X = _impute(df, cols, medians).reindex(columns=cols, fill_value=0.0)
+```
+
+A column *present* with NaN receives its median. A column **absent** is skipped by `_impute`, then `reindex` sets it to `0.0` — **while the correct median sits unused in the same bundle**. The cause is ordering, and the fix is one line:
+
+```python
+X = _impute(df.reindex(columns=cols), cols, medians).astype(float).values
+```
+
+Reindex first, so absent columns arrive as `NaN` and `_impute` fills them properly. `DECISION-8`'s presence assertion still applies on top — silently substituting a median for an entire missing feature is its own failure mode, just a less severe one than substituting zero.
+
+`notebooks/ps1_batch_score_daily.py` implements both the fix and the assertion.
+
+### 14.5 A bug in the audit tool itself
+
+`ps1_read_docker_and_model.sh` reported `VERDICT: NO ps1_*_meta.joblib in the archive` for GATE and VALIDATOR — printed two lines below a member listing containing `ps1_gate_meta.joblib`.
+
+Cause: `set -o pipefail` combined with `tar -tzf … | grep -q`. `grep -q` exits at the first match, `tar` takes SIGPIPE and returns 141, `pipefail` propagates it, and the `&& HAS_META=1` never runs. A race — TVM's 68 KB archive finished listing before `grep` quit; GATE's 788 KB did not. Same archive shape, three different verdicts.
+
+**It reported absence when it meant "I stopped looking" — in the script written to detect exactly that.** Fixed in `tooling/ps1_feature_contract.sh` by listing once into a variable and testing the variable: no pipe, no early exit, no race.
+

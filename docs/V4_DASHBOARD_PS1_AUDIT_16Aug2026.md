@@ -24,7 +24,7 @@ routes were stale. **Every fleet total on the PS1 screen and on the estate card 
 from this seed.**
 
 **F-3 — The estate shell asserts "Daily inference" behind a green `live` badge.**
-`V4Shell.jsx:403`. Daily inference does not exist (`local-notes.md` §4). This is the single
+`V4Shell.jsx:403`. Daily inference does not exist (see docs/PS1_DAILY_INFERENCE_DESIGN.md). This is the single
 most misleading element on the dashboard, because it is a positive claim of freshness
 rendered in the colour that means "healthy".
 

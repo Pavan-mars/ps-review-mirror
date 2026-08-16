@@ -46,7 +46,7 @@ credentials
 .DS_Store
 Thumbs.db
 
-# local context file â€” kept local, never shared in the repo
+# local context notes - kept local, never shared in the repo
 local-notes.md
 .localnotes/
 
@@ -119,3 +119,9 @@ Untitled*.ipynb
 # Run transcripts (*.log) are noise, though:
 tooling/out/*.log
 _ps1_design_drop.zip
+
+skills/*.skill
+skills/chicago-ps1/
+skills/chicago-data-catalog/
+skills/README.md
+docs/*.skill

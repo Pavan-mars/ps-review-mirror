@@ -40,8 +40,8 @@ else
 fi
 
 # Everything here is a `git mv`, so it must run in PK's PowerShell / a real
-# shell with git -- NOT through the remote file bridge, which leaves
-# .git/*.lock files it cannot unlink. See local-notes.md section 0.5.
+# shell with git -- NOT through a remote file bridge, which can leave
+# .git/*.lock files it cannot unlink.
 mv_it() {  # mv_it <src> <dest-dir> <reason>
   local src="$1" dest="$2" why="$3"
   if [ ! -e "$src" ]; then

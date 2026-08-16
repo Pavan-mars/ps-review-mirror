@@ -5,9 +5,9 @@ error mid-transaction, after other tables are staged."""
 import datetime as dt, json, resource, sys, time, types
 _f = types.ModuleType("boto3"); _f.client = lambda *a, **k: object()
 sys.modules["boto3"] = _f
-sys.path.insert(0, "/tmp/scratch/ps3/loader")
+sys.path.insert(0, "/tmp/ps3_scratch/loader")
 import handler
-sys.path.insert(0, "/tmp/scratch/ps3/loader")
+sys.path.insert(0, "/tmp/ps3_scratch/loader")
 from simulate_load import synth, VAL, reset_ps3_v25   # noqa
 
 DUMP = json.load(open("/tmp/ps3_schema_real.json"))
@@ -17,7 +17,7 @@ N = SPEC["rows"]
 conn = __import__("pg8000.native", fromlist=["native"]).Connection(
     user="postgres", unix_sock="/tmp/.s.PGSQL.5442", database="appdb")
 reset_ps3_v25(conn)
-ddl = open("/tmp/scratch/ps3/45_ps3_v25.sql").read()
+ddl = open("/tmp/ps3_scratch/45_ps3_v25.sql").read()
 for stmt in [s.strip() for s in ddl.split(";\n") if s.strip()]:
     if stmt.lstrip().startswith("--") and "CREATE" not in stmt:
         continue

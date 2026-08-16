@@ -12,8 +12,8 @@ import datetime as dt
 import json
 import sys
 
-sys.path.insert(0, "/tmp/scratch/ps3/loader")
-sys.path.insert(0, "/tmp/scratch/ps3/routes")
+sys.path.insert(0, "/tmp/ps3_scratch/loader")
+sys.path.insert(0, "/tmp/ps3_scratch/routes")
 
 DUMP = json.load(open("/tmp/ps3_schema_real.json"))["tables"]
 CITY = "CHI"
@@ -51,7 +51,7 @@ def reset_ps3_v25(c):
         c.run(f"DROP TABLE IF EXISTS ps3_v25_{t} CASCADE")
 
 reset_ps3_v25(conn_obj)
-for stmt in [s.strip() for s in open("/tmp/scratch/ps3/45_ps3_v25.sql").read().split(";\n") if s.strip()]:
+for stmt in [s.strip() for s in open("/tmp/ps3_scratch/45_ps3_v25.sql").read().split(";\n") if s.strip()]:
     if stmt.lstrip().startswith("--") and "CREATE" not in stmt:
         continue
     conn_obj.run(stmt)
@@ -103,7 +103,7 @@ def _clamp_int(v, default, lo, hi):
     return max(lo, min(hi, n))
 
 ns = {"rows": rows, "ok": ok, "err": err, "_clamp_int": _clamp_int, "json": json}
-exec(open("/tmp/scratch/ps3/routes/ps3_v25_routes.py").read(), ns)
+exec(open("/tmp/ps3_scratch/routes/ps3_v25_routes.py").read(), ns)
 route = ns["_ps3_v25_route"]
 METRICS = ns["_PS3V25"]
 FILTERS = ns["_PS3V25_FILTERS"]

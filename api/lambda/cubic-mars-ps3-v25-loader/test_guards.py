@@ -10,7 +10,7 @@ import types
 _fake = types.ModuleType("boto3")
 _fake.client = lambda *a, **k: object()
 sys.modules["boto3"] = _fake
-sys.path.insert(0, "/tmp/scratch/ps3/loader")
+sys.path.insert(0, "/tmp/ps3_scratch/loader")
 import handler  # noqa: E402
 
 DUMP = json.load(open("/tmp/ps3_schema_real.json"))

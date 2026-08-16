@@ -28,7 +28,7 @@
 > that silently goes stale is worse than none, because people trust it.
 >
 > The maintenance protocol — what triggers an update, which section to change, and
-> the rules for the edit — is in **`local-notes.md` §3A** at the repo root, which loads
+> the rules for the edit — is in **the local operational notes** (kept outside the repo), which loads
 > automatically at the start of every session. In short:
 >
 > - a script is run → replace the `[AWS-PENDING]` marker with the measured value

@@ -121,7 +121,7 @@ for slug in sorted(ROUTES):
     lines.append(f"        {order!r}, {dflt}, {hard}, "
                  f"{'None' if datecol is None else repr(datecol)}),")
 
-open("/tmp/scratch/ps3/routes/_ps3v25_table.py", "w").write("\n".join(lines) + "\n")
+open("/tmp/ps3_scratch/routes/_ps3v25_table.py", "w").write("\n".join(lines) + "\n")
 print(f"metrics: {len(ROUTES)}")
 print(f"columns exposed: {sum(len([c for c in DUMP[ROUTES[k][0]]['columns'] if c['name'] not in HIDE]) for k in ROUTES)}")
 print(f"all-null columns deliberately included: {len(allnull_included)}")

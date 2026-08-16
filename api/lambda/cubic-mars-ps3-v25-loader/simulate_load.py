@@ -21,7 +21,7 @@ _fake = types.ModuleType("boto3")
 _fake.client = lambda *a, **k: object()
 sys.modules["boto3"] = _fake
 
-sys.path.insert(0, "/tmp/scratch/ps3/loader")
+sys.path.insert(0, "/tmp/ps3_scratch/loader")
 import handler  # noqa: E402
 
 def reset_ps3_v25(c):
@@ -82,7 +82,7 @@ def main():
         user="postgres", unix_sock="/tmp/.s.PGSQL.5442", database="appdb")
 
     reset_ps3_v25(conn)          # in case a previous run died mid-way
-    ddl = open("/tmp/scratch/ps3/45_ps3_v25.sql").read()
+    ddl = open("/tmp/ps3_scratch/45_ps3_v25.sql").read()
     for stmt in [s.strip() for s in ddl.split(";\n") if s.strip()]:
         if stmt.lstrip().startswith("--") and "CREATE" not in stmt:
             continue

@@ -332,7 +332,7 @@ DARK or degraded (all with a cause, none mysterious):
 - PS1 panels riding the 26-Jul seed (§7.3)
 
 Browser-level pass (clicking through the open tab, console + network capture) is
-pending the browser automation extension connecting; the matrix above is from code +
+pending; the matrix above is from code +
 live API + database evidence.
 
 ---

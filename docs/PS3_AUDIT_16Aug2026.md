@@ -106,3 +106,104 @@ PK ruling]`.
 | Outputs to S3 | production prefix verified to the row | RIGHT |
 | Lambda -> RDS | v25 loader proven (20/20 tables); manual by design | RIGHT (schedule later, deliberately) |
 | Dashboard refresh | v25 family + fixed guard live; drivers dark (#66); severity unlabelled pending the head | PARTIAL |
+
+
+---
+
+## Addendum A — Live verification, 16-Aug-2026 evening [M]
+
+**RDS (PS3 family — 53 tables, 167,029 rows, 24 views):**
+
+| object | kind | rows | cols |
+|---|---|---:|---:|
+| ps3_v25_device_day | table | 54,239 | 13 |
+| ps3_v25_device_episode_fact | table | 54,239 | 79 |
+| ps3_incident_predictions | table | 34,612 | 20 |
+| ps3_v2_shap_incident | table | 4,800 | 24 |
+| ps3_device_predictions | table | 3,412 | 11 |
+| ps3_v25_device_reliability | table | 2,806 | 18 |
+| ps3_v25_device_summary | table | 2,806 | 11 |
+| ps3_v25_serial_reliability | table | 2,762 | 12 |
+| ps3_serial_predictions | table | 2,515 | 17 |
+| ps3_v2_device_serial_component | table | 1,413 | 14 |
+| ps3_v2_device_reliability | table | 927 | 18 |
+| ps3_v2_device_serial | table | 927 | 13 |
+| ps3_v2_severity_action_queue | table | 472 | 28 |
+| ps3_v25_facility_rollup | table | 366 | 13 |
+| ps3_v2_facility_hotspots | table | 320 | 12 |
+| ps3_leakage_scan | table | 59 | 7 |
+| ps3_v25_causal_balance | table | 54 | 6 |
+| ps3_v2_shap_global | table | 44 | 18 |
+| ps3_v2_component_taxonomy | table | 29 | 11 |
+| ps3_head_leaderboard | table | 28 | 14 |
+| ps3_v2_driver_importance | table | 22 | 14 |
+| ps3_v25_run_status | table | 19 | 15 |
+| ps3_head_class_metrics | table | 16 | 11 |
+| ps3_v25_component_summary | table | 14 | 9 |
+| ps3_v25_repeat_interval | table | 14 | 13 |
+| ps3_v25_model_feature_importance | table | 12 | 7 |
+| ps3_v2_model_comparison | table | 10 | 35 |
+| ps3_v2_component_reliability | table | 9 | 16 |
+| ps3_v25_model_scorecard | table | 8 | 15 |
+| ps3_v25_run_stage_audit | table | 8 | 11 |
+| ps3_head_summary | table | 7 | 25 |
+| ps3_v25_root_cause_evidence_audit | table | 7 | 7 |
+| ps3_v25_source_column_profile | table | 7 | 11 |
+| ps3_v25_causal_effects | table | 6 | 24 |
+| ps3_v2_display_policy | table | 6 | 11 |
+| ps3_v2_run_scorecard | table | 5 | 17 |
+| ps3_v2_causal_effects | table | 4 | 31 |
+| ps3_v2_promotion_status | table | 4 | 13 |
+| ps3_category_coverage | table | 3 | 12 |
+| ps3_v25_commanded_split | table | 3 | 7 |
+| ps3_v25_label_maturity | table | 3 | 10 |
+| ps3_v25_prediction_explainability | table | 3 | 14 |
+| ps3_v2_readiness | table | 3 | 13 |
+| ps3_model_runs | table | 2 | 15 |
+| ps3_severity_summary | table | 1 | 22 |
+| ps3_v25_oos_source_audit | table | 1 | 14 |
+| ps3_v2_data_freshness | table | 1 | 12 |
+| ps3_v2_runs | table | 1 | 7 |
+| ps3_device_metrics | table | 0 | 7 |
+| ps3_head_feature_importance | table | 0 | 8 |
+| ps3_prediction_explainability | table | 0 | 6 |
+| ps3_severity_drivers | table | 0 | 6 |
+| ps3_severity_predictions | table | 0 | 12 |
+| v_ps3_category_coverage | view | - | 16 |
+| v_ps3_collapse_health | view | - | 7 |
+| v_ps3_device_360 | view | - | 20 |
+| v_ps3_device_all | view | - | 22 |
+| v_ps3_device_risk | view | - | 17 |
+| v_ps3_head_gates | view | - | 10 |
+| v_ps3_latest_run | view | - | 8 |
+| v_ps3_rollup_all | view | - | 14 |
+| v_ps3_run_registry | view | - | 11 |
+| v_ps3_serial_all | view | - | 17 |
+| v_ps3_serial_risk | view | - | 13 |
+| v_ps3_two_head_scorecard | view | - | 21 |
+| v_ps3_v25_severity_maturity | view | - | 7 |
+| v_ps3_v25_status | view | - | 4 |
+| v_ps3_v2_causal | view | - | 32 |
+| v_ps3_v2_current | view | - | 7 |
+| v_ps3_v2_policy | view | - | 11 |
+| v_ps3_v2_queue | view | - | 30 |
+| v_ps3_v2_rootcause | view | - | 17 |
+| v_ps3_v2_rootcause_concentration | view | - | 10 |
+| v_ps3_v2_rootcause_rollup | view | - | 12 |
+| v_ps3_v2_scorecard | view | - | 19 |
+| v_ps3_v2_shap | view | - | 24 |
+| v_ps3_v2_table_status | view | - | 2 |
+
+Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_16Aug2026.md`
+(generated from the live catalog capture).
+
+**Confirmations and findings:**
+- No EventBridge rule for any PS3 loader — CONFIRMED (by-design manual). Loader last-run
+  evidence: v2-loader 29-Jul, rc-loader 04-Aug, v25-loader 09-Aug — matches the manual run history.
+- Endpoint `chicago-ps3-rootcause-v1` InService -> model
+  `chicago-ps3-root-cause-2026-07-13-07-02-42-300` — **`PrimaryContainer.Image` returned
+  None**, meaning the model is defined with a `Containers[]` list; the exact image binding
+  needs one follow-up (`describe-model` full). ECR `cubic-pdm/mars-ps3` holds EXACTLY ONE
+  image, tagged `latest`, pushed 13-Jul 06:56Z — six minutes before the model's creation
+  timestamp. Probable but UNCONFIRMED binding; the mutable-`latest` defect stands either way.
+- `/ps3/summary` and `/ps3/collapse-health` both serving (re-confirmed in the same batch).

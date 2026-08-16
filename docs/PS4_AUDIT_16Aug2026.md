@@ -86,3 +86,71 @@ Open items specific to PS4:
 | Lambda -> RDS | two loaders, daily + weekly, ENABLED | RIGHT |
 | Dashboard refresh | both PS4 tabs wired | RIGHT (content static until runs are scheduled) |
 | Extra | ps4v2_* migration parked since 29-Jul; #52 threshold verification open | decide: run, revise, or retire |
+
+
+---
+
+## Addendum A — Live verification, 16-Aug-2026 evening [M]
+
+**RDS (PS4 family — 25 tables, 20,927 rows, 20 views; 13 tables empty):**
+
+| object | kind | rows | cols |
+|---|---|---:|---:|
+| ps4_cluster_assignments | table | 8,978 | 11 |
+| ps4_weekly_device_summary | table | 7,742 | 24 |
+| ps4_anomaly_timeline | table | 3,048 | 6 |
+| ps4_weekly_alerts | table | 1,108 | 24 |
+| ps4_cluster_summary | table | 25 | 9 |
+| ps4_cluster_profile | table | 9 | 13 |
+| ps4_weekly_timeline | table | 6 | 13 |
+| ps4_anomaly_signal_detail | table | 3 | 6 |
+| ps4_cluster_quality | table | 3 | 10 |
+| ps4_anomaly_predictions | table | 2 | 10 |
+| ps4_anomaly_rate_forecast | table | 2 | 8 |
+| ps4_v3_runs | table | 1 | 12 |
+| ps4_anomalies | table | 0 | 14 |
+| ps4_anomaly_alerts | table | 0 | 15 |
+| ps4_device_daily | table | 0 | 14 |
+| ps4_device_day | table | 0 | 18 |
+| ps4_device_hourly | table | 0 | 12 |
+| ps4_device_lifetime | table | 0 | 14 |
+| ps4_leakage_scan | table | 0 | 6 |
+| ps4_model_leaderboard | table | 0 | 18 |
+| ps4_outlier_scores | table | 0 | 9 |
+| ps4_runs | table | 0 | 21 |
+| ps4_signal_summary | table | 0 | 10 |
+| ps4_spc_thresholds | table | 0 | 8 |
+| ps4_station_anomaly | table | 0 | 9 |
+| v_ps4_anomalies | view | - | 14 |
+| v_ps4_cluster_profile | view | - | 10 |
+| v_ps4_cluster_quality | view | - | 11 |
+| v_ps4_day_anomalies | view | - | 14 |
+| v_ps4_device_anomaly | view | - | 13 |
+| v_ps4_device_status | view | - | 17 |
+| v_ps4_latest_asof | view | - | 2 |
+| v_ps4_latest_run | view | - | 5 |
+| v_ps4_leaderboard | view | - | 12 |
+| v_ps4_outlier_scores | view | - | 11 |
+| v_ps4_timeline | view | - | 6 |
+| v_ps4_v3_cluster_profile | view | - | 16 |
+| v_ps4_v3_current | view | - | 10 |
+| v_ps4_v3_table_status | view | - | 2 |
+| v_ps4_weekly_alert_reconcile | view | - | 6 |
+| v_ps4_weekly_alerts | view | - | 23 |
+| v_ps4_weekly_device | view | - | 24 |
+| v_ps4_weekly_facility | view | - | 8 |
+| v_ps4_weekly_persistent | view | - | 11 |
+| v_ps4_weekly_timeline | view | - | 13 |
+
+Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_16Aug2026.md`
+(generated from the live catalog capture).
+
+**Confirmations and corrections:**
+- **RULE-TIME CORRECTION:** live rule `cubic-mars-ps4-daily-load` = **cron(35 7) — 07:35 UTC**,
+  not the 07:10 the repo deploy script writes. The deployed rule drifted from the script;
+  reconcile whichever is intended. Last log event 16-Aug 08:23Z (ran today).
+- `cubic-mars-ps4-v3-weekly` cron(0 8 ? * MON) ENABLED — last log event Mon 10-Aug (on schedule).
+- **`ps4v2_*` tables: NONE exist in the database** — the 29-Jul additive migration was
+  confirmed never run. Decide run/revise/retire.
+- Newest clustering manifests: `asof=2026-07-28` (gate/tvm/validator) — the variant
+  ratification needs one follow-up read of `gate_manifest.json` (exact command below).

@@ -107,3 +107,55 @@ first. Goes into Chicago documentation after go-live, not onto a screen.
 | Lambda -> RDS | best-discipline loader, daily 07:20 ENABLED, row counts verified | RIGHT |
 | Dashboard refresh | all 9 routes wired across 5 sub-tabs | RIGHT |
 | Extra | weibull/cox params never land in RDS; population gap documentation owed; #53 live C-index check | close during rollout |
+
+
+---
+
+## Addendum A — Live verification, 16-Aug-2026 evening [M]
+
+**RDS (PS5 family — 13 tables, 30,476 rows, 8 views):**
+
+| object | kind | rows | cols |
+|---|---|---:|---:|
+| ps5_serial_reliability | table | 12,904 | 22 |
+| ps5_serial_rul | table | 11,718 | 17 |
+| ps5_reliability_estimates | table | 4,103 | 24 |
+| ps5_device_rul | table | 1,536 | 17 |
+| ps5_permutation_importance | table | 164 | 5 |
+| ps5_enrich_coverage | table | 24 | 9 |
+| ps5_cindex_leaderboard | table | 18 | 7 |
+| ps5_scoring_runs | table | 4 | 15 |
+| ps5_reliability_status | table | 3 | 7 |
+| ps5_event_definition | table | 2 | 9 |
+| ps5_cox_hazard_ratios | table | 0 | 5 |
+| ps5_feature_alignment_audit | table | 0 | 10 |
+| ps5_weibull_params | table | 0 | 7 |
+| v_ps5_dashboard_ready | view | - | 7 |
+| v_ps5_device_360 | view | - | 13 |
+| v_ps5_device_rul | view | - | 20 |
+| v_ps5_reliability_oos_latest | view | - | 24 |
+| v_ps5_serial_dupes | view | - | 10 |
+| v_ps5_serial_fanout | view | - | 6 |
+| v_ps5_serial_oos_latest | view | - | 16 |
+| v_ps5_serial_rul | view | - | 21 |
+
+Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_16Aug2026.md`
+(generated from the live catalog capture).
+
+**Confirmations, corrections, and one RED FLAG:**
+- **`cubic-mars-ps5-daily-scorer` is NOT deployed** (ResourceNotFoundException) — repo-only, as suspected.
+- **Prefix mismatch CONFIRMED:** `chicago/ps5/params/` and `chicago/ps5/state/` are EMPTY;
+  params + state live under `chicago/ps5/notebook_outputs/<fleet>/` (verified listing).
+  Before deploying the scorer: either add a small publish step to the notebook writing
+  flat copies to the scorer's expected prefixes, or set the scorer's env prefixes — noting
+  the notebook layout nests per-fleet folders while the scorer expects flat `<prefix>/<type>_...` keys.
+- CORRECTION to §(d): `ps5_serial_reliability` (12,904 rows) and `ps5_reliability_estimates`
+  (4,103 rows) ARE populated — the earlier "dead by schema defect" note is superseded by
+  live state; which loader/backfill wrote them is [U]. `ps5_scoring_runs` (4 rows) also
+  exists — part of the scorer's table family is already migrated.
+- **RED FLAG — served C-index vs the 0.65 floor:** `/ps5/status` returns gates
+  concordance_index **0.5906**, tvms **0.5071** with `registry_status:
+  broken_champion_selection` (tvms) and `dashboard_ready: false`. As served, PS5 does NOT
+  meet the 0.65 gate. This may be stale v1 status rows sitting beside the newer v5.6
+  leaderboard (`ps5_cindex_leaderboard`, 18 rows) — reconcile before any client
+  conversation. Tracker #53 is now OPEN-RED pending that reconciliation (follow-up below).

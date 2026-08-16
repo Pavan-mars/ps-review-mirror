@@ -165,3 +165,71 @@ Rendering caveats, all verified 16-Aug (`docs/V4_DASHBOARD_PS1_AUDIT_16Aug2026.m
 (12-Apr -> present) has not been ingested.** Until Bronze/Silver/Gold carry new days,
 a perfect daily-inference chain would score nothing new. Sequence: ingestion first,
 then the scoring chain, then model refresh/retrain on the extended window.
+
+
+---
+
+## Addendum A — Live verification, 16-Aug-2026 evening [M]
+
+Run by PK (CloudShell batches A-E). Everything below is measured, not assumed.
+
+**RDS (PS1 family — 17 tables, 840,300 rows, 23 views):**
+
+| object | kind | rows | cols |
+|---|---|---:|---:|
+| ps1_cross_wired_daily | table | 786,525 | 40 |
+| ps1_failure_predictions | table | 47,603 | 26 |
+| ps1_serial_predictions | table | 6,004 | 13 |
+| ps1_feature_importance | table | 45 | 7 |
+| ps1_station_summary | table | 43 | 10 |
+| ps1_prediction_explainability | table | 26 | 6 |
+| ps1_leaderboard | table | 15 | 12 |
+| ps1_risk_trend | table | 12 | 7 |
+| ps1_risk_bands | table | 9 | 6 |
+| ps1_inference_runs | table | 7 | 19 |
+| ps1_confusion | table | 3 | 7 |
+| ps1_model_performance | table | 3 | 27 |
+| ps1_threshold_sweep | table | 3 | 8 |
+| ps1_failure_summary | table | 2 | 36 |
+| ps1_calibration | table | 0 | 8 |
+| ps1_explainability | table | 0 | 6 |
+| ps1_features | table | 0 | 7 |
+| v_ps1_device_drivers | view | - | 17 |
+| v_ps1_label_frame | view | - | 6 |
+| v_ps1_predictions_xw | view | - | 14 |
+| v_ps1_predictions_xw_coverage | view | - | 5 |
+| v_ps1_provenance_gaps | view | - | 8 |
+| v_ps1_serving_gap | view | - | 9 |
+| v_ps1_shap_importance | view | - | 10 |
+| v_ps1_table_status | view | - | 5 |
+| v_ps1_xw_act_now | view | - | 15 |
+| v_ps1_xw_base_rate | view | - | 10 |
+| v_ps1_xw_causation | view | - | 13 |
+| v_ps1_xw_chronic_devices | view | - | 10 |
+| v_ps1_xw_device_state | view | - | 15 |
+| v_ps1_xw_facility | view | - | 9 |
+| v_ps1_xw_flag_reason | view | - | 8 |
+| v_ps1_xw_grain | view | - | 11 |
+| v_ps1_xw_onset | view | - | 46 |
+| v_ps1_xw_performance | view | - | 15 |
+| v_ps1_xw_performance_onset | view | - | 15 |
+| v_ps1_xw_spells | view | - | 11 |
+| v_ps1_xw_state_mix | view | - | 8 |
+| v_ps1_xw_summary | view | - | 17 |
+| v_ps1_xw_tier_calibration | view | - | 9 |
+
+Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_16Aug2026.md`
+(generated from the live catalog capture).
+
+**Confirmations and corrections:**
+- `ps1_cross_wired_daily` = 786,525 rows — matches the loader's EXPECTED contract exactly.
+- CORRECTION to §(e): `ps1_feature_importance` is NOT empty — it holds 45 rows. The
+  "dropped and recreated empty" note from the 08-Aug lineage revision is superseded.
+- EventBridge live: `cubic-mars-ps1-xw-daily-load` cron(40 6) ENABLED — last log event
+  16-Aug 06:43Z (ran on schedule today); `cubic-mars-ps1-daily-push` cron(15 6) DISABLED —
+  last log event 10-Aug (the disable date); **reserved concurrency = 0 CONFIRMED live**
+  (previously only asserted in a script comment).
+- Endpoints: all three PS1 endpoints InService; every one runs
+  `683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3` —
+  the AWS managed DLC. **PS1 uses no custom ECR image — confirmed at the model level.**
+  ECR `cubic-pdm/mars-ps1` holds 3 images (newest `latest`, 13-Jul) referenced by nothing — retire per D-1.

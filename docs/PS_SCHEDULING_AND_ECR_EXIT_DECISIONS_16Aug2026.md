@@ -137,3 +137,53 @@ PK runs the verification set (`docs/VERIFICATION_SET_16Aug2026.md`, five small
 batches) and pastes outputs; the five audits then get RDS schemas + live row
 counts folded in and every remaining `[U]` stamped `[M]` or corrected. The team
 ratifies section 2; builds proceed in section 4 order.
+
+
+---
+
+## Addendum — Cross-cutting live findings, 16-Aug-2026 evening [M]
+
+1. **UNDOCUMENTED DAILY TRAINING PIPELINE DISCOVERED:** EventBridge rule
+   `cubic-mars-events-training-daily-dev`, ENABLED, cron(0 2 * * ? *) — targets Step
+   Functions state machine `cubic-mars-sfn-training-pipeline-dev`. This appears in NO
+   tracker, audit, or memory to date. It has been eligible to fire daily at 02:00 UTC.
+   INVESTIGATE FIRST (follow-up command below): what it runs, whether executions succeed
+   or fail daily, and whether it mutates anything.
+2. **ECR estate (10 repos):** 6 are EMPTY (`cubic-pdm/mars-ps2`, `mars-ps4`, `mars-ps5`,
+   `cubic-mars-dev-repo`, `cubic-mars-ecr-inference-dev`, `cubic-mars-ecr-training-dev`)
+   — cleanup candidates. `cubic-pdm/mars-ps1` (3 images, newest 13-Jul) referenced by
+   nothing — retire per D-1. `cubic-pdm/mars-ps3` — exactly one image, `latest`, 13-Jul.
+   `dashboard/reactui` — newest image is tagged `latest`, pushed **15-Jul**: it PRE-DATES
+   the entire V4 merge, so anything running that image serves an outdated UI; rebuild from
+   current `main` with a git-SHA tag before any publish. `fastapi/backend` — newest 21-Jul.
+3. **Loader run evidence (log last-event):** every ENABLED daily rule ran on schedule
+   today (dim 05:45Z-, xw 06:43Z, ps2 07:11Z, ps4 08:23Z, ps5 07:14Z); ps4-v3 weekly ran
+   Mon 10-Aug; ps1-rds-push last ran 10-Aug (its disable date) and its reserved
+   concurrency = 0 is now CONFIRMED live; PS3 loaders idle since their manual runs
+   (29-Jul / 04-Aug / 09-Aug).
+4. **PS4 rule-time drift:** live `cubic-mars-ps4-daily-load` fires 07:35 UTC; the repo
+   deploy script writes 07:10. Reconcile.
+5. **PS5 RED FLAG:** served `/ps5/status` C-indexes (gates 0.5906 / tvms 0.5071, tvms
+   `broken_champion_selection`, `dashboard_ready:false`) sit BELOW the 0.65 floor —
+   possibly stale v1 status rows beside the v5.6 leaderboard; reconcile before client use
+   (#53 OPEN-RED).
+6. **RDS totals:** 216 tables + 90 views, 51 empty tables; 22 of the empty ones are the
+   legacy app scaffold (`anomalies`, `devices`, `cascade_events`, ...) — post-go-live
+   cleanup candidates. Full inventory: `docs/reference/RDS_LIVE_INVENTORY_16Aug2026.md`.
+
+### Follow-up mini-set (4 commands, regular CloudShell)
+
+```bash
+export AWS_PAGER=""
+aws sagemaker describe-model --model-name chicago-ps3-root-cause-2026-07-13-07-02-42-300 \
+  --query "{Primary:PrimaryContainer.Image,Containers:Containers[].Image}" --output json
+
+aws stepfunctions list-executions \
+  --state-machine-arn arn:aws:states:us-east-1:170202974600:stateMachine:cubic-mars-sfn-training-pipeline-dev \
+  --max-items 5 --query "executions[].{n:name,s:status,start:startDate}" --output table
+
+aws s3 cp s3://cubic-mars-pm-s3-datalake-dev-gold-170202974600/chicago/ps4/clustering/manifest/asof=2026-07-28/gate_manifest.json - | python3 -m json.tool
+
+curl -s "https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com/ps5/status?city=CHI"; echo
+curl -s "https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com/ps5/leaderboard?city=CHI"; echo
+```

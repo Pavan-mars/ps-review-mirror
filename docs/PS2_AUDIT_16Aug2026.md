@@ -111,3 +111,99 @@ end date — the vintage-disclosure pattern PS1 lacks `[R, 16-Aug audit]`.
 
 Also open, cheap and valuable: create the five `ps2_v25_*_audit` Aurora tables so
 each run's label-validation evidence becomes queryable instead of stranded in S3.
+
+
+---
+
+## Addendum A — Live verification, 16-Aug-2026 evening [M]
+
+**RDS (PS2 family — 72 tables, 334,865 rows, 5 views):**
+
+| object | kind | rows | cols |
+|---|---|---:|---:|
+| ps2_conditional_prob_serial | table | 89,990 | 13 |
+| ps2_v2_cofailure_clusters | table | 83,184 | 24 |
+| ps2_v2_repair_effectiveness | table | 38,395 | 21 |
+| ps2_phi_matrix_serial | table | 30,430 | 9 |
+| ps2_business_impact_device | table | 18,692 | 10 |
+| ps2_recurrence_device | table | 18,692 | 9 |
+| ps2_association_rules_serial | table | 11,046 | 12 |
+| ps2_business_impact | table | 4,673 | 9 |
+| ps2_recurrence | table | 4,673 | 5 |
+| ps2_business_impact_serial | table | 4,522 | 9 |
+| ps2_chronic_recurrence_serial | table | 4,522 | 13 |
+| ps2_recurrence_serial | table | 4,522 | 8 |
+| ps2_markov_self_transition_serial | table | 4,486 | 8 |
+| ps2_hmm_regimes_serial | table | 4,415 | 11 |
+| ps2_leadlag_timing_serial | table | 2,505 | 13 |
+| ps2_v2_device_deterioration | table | 2,208 | 26 |
+| ps2_phi_outliers_serial | table | 1,532 | 12 |
+| ps2_device_cascades | table | 1,000 | 12 |
+| ps2_association_rules_device | table | 736 | 11 |
+| ps2_v2_customer_exposure | table | 633 | 19 |
+| ps2_v2_daily_oos_trend | table | 633 | 23 |
+| ps2_v25_failure_label_daily | table | 624 | 24 |
+| ps2_conditional_prob | table | 450 | 12 |
+| ps2_leadlag_timing_device | table | 320 | 12 |
+| ps2_facility_contagion_facility | table | 228 | 9 |
+| ps2_load_audit | table | 215 | 11 |
+| ps2_device_catalog | table | 200 | 16 |
+| ps2_subsystem_associations | table | 184 | 9 |
+| ps2_v2_pattern_drift | table | 140 | 24 |
+| ps2_v2_leadlag_timing | table | 123 | 23 |
+| ps2_v2_precursor_patterns | table | 123 | 33 |
+| ps2_network_centrality_subsystem | table | 108 | 11 |
+| ps2_phi_matrix | table | 100 | 8 |
+| ps2_cascade_sankey_subsystem | table | 80 | 10 |
+| ps2_leadlag_timing | table | 80 | 9 |
+| ps2_v2_component_serial_patterns | table | 78 | 28 |
+| ps2_markov_transitions | table | 36 | 8 |
+| ps2_network_centrality | table | 27 | 9 |
+| ps2_top_devices | table | 21 | 11 |
+| ps2_cascade_velocity_device | table | 20 | 9 |
+| ps2_error_code_transitions | table | 20 | 5 |
+| ps2_error_codes | table | 20 | 6 |
+| ps2_v2_topology_nodes | table | 19 | 21 |
+| ps2_v25_run_quality | table | 16 | 19 |
+| ps2_v2_oos_governance | table | 16 | 19 |
+| ps2_cascade_paths | table | 14 | 9 |
+| ps2_hmm_regimes_device | table | 12 | 9 |
+| ps2_cascade_window_summary | table | 10 | 8 |
+| ps2_ignition_termination_subsystem | table | 10 | 8 |
+| ps2_window_detail | table | 10 | 10 |
+| ps2_ignition_termination | table | 9 | 9 |
+| ps2_subsystem_hub_summary | table | 9 | 5 |
+| ps2_v25_failure_horizon_profile | table | 9 | 19 |
+| ps2_cascade_velocity | table | 5 | 6 |
+| ps2_v25_category_profile | table | 5 | 21 |
+| ps2_v25_failure_definition_alignment | table | 4 | 22 |
+| ps2_v25_failure_label_summary | table | 4 | 29 |
+| ps2_v25_ps1_model_performance | table | 4 | 32 |
+| ps2_cascade_velocity_by_age_serial | table | 3 | 8 |
+| ps2_hmm_regimes | table | 3 | 6 |
+| ps2_v25_ps1_label_parity | table | 3 | 24 |
+| ps2_v2_cross_ps_alignment | table | 3 | 21 |
+| ps2_cascade_path_explainability | table | 2 | 7 |
+| ps2_cascade_risk_assessments | table | 2 | 13 |
+| ps2_facility_contagion_summary | table | 2 | 10 |
+| ps2_subsystem_hub_edges | table | 2 | 5 |
+| ps2_cross_ps_attribution_device | table | 1 | 13 |
+| ps2_cross_ps_attribution_serial | table | 1 | 14 |
+| ps2_suppression_summary_serial | table | 1 | 9 |
+| ps2_cascade_chains_daily | table | 0 | 12 |
+| ps2_device_cmdb_map | table | 0 | 9 |
+| ps2_facility_contagion_daily | table | 0 | 7 |
+| v_ps2_device_cascade | view | - | 11 |
+| v_ps2_facility_contagion_facility | view | - | 8 |
+| v_ps2_ignition_termination_subsystem | view | - | 7 |
+| v_ps2_network_centrality | view | - | 13 |
+| v_ps2_v25_status | view | - | 7 |
+
+Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_16Aug2026.md`
+(generated from the live catalog capture).
+
+**Confirmations:**
+- `cubic-mars-ps2-daily-load` cron(10 7) ENABLED — last log event 16-Aug 07:11Z (ran today).
+- `/ps2/status`: 20/20 expected tables, coherent=true, run `6a705387-f3ab-4a80-95cb-9b5583d32179`,
+  computed_date 2026-04-11 — consistent with the data-vintage limit.
+- The export-prefix landmine stands unchanged (loader reads `chicago/ps2_outputs`; notebook env not yet repointed).

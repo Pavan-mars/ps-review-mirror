@@ -90,10 +90,12 @@ spark: Any = globals().get("spark")
 import boto3
 from pyspark.sql import functions as F
 
-# STEP 1/2 above must be done first. Then this import is the whole point.
-# %run ./ps1_features
+# MAGIC %run ./ps1_features
 
 ARTIFACT_BUCKET = "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600"
+GOLD_BUCKET = "cubic-mars-pm-s3-datalake-dev-gold-170202974600"
+S3_GOLD = f"s3://{GOLD_BUCKET}/chicago/gold"
+S3_SILVER = f"s3://{GOLD_BUCKET}/chicago/silver"
 FEATURES_PREFIX = "chicago/ps1/features"
 
 # 90 for the longest window, +7 so the 90-day window is itself fully populated
@@ -179,11 +181,19 @@ def build_fleet(fleet: str) -> dict:
 
     # ---- the three extracted functions, called with a SCORING window -------
     # with_label=False is TRAP 1. start_day/asof_date is TRAP 2.
-    df = read_spine(spark, fleet, start_day, asof_date, with_label=False)   # noqa: F821
+    df = read_spine(
+        spark, fleet, start_day, asof_date,
+        with_label=False, s3_gold=S3_GOLD, s3_silver=S3_SILVER,
+    )
     _assert_rows(df, fleet, "read_spine")
 
-    df = add_auxiliary(spark, df, fleet, start_day, asof_date)              # noqa: F821
-    df, _recomputed_cols = join_and_materialise(spark, df, fleet)           # noqa: F821
+    aux = add_auxiliary(
+        spark, df, fleet, start_day, asof_date,
+        s3_gold=S3_GOLD, s3_silver=S3_SILVER,
+    )
+    df, _recomputed_cols = join_and_materialise(
+        spark, aux, fleet, with_label=False, materialize=False,
+    )
     # _recomputed_cols is DISCARDED on purpose. TRAP 3: the contract wins.
 
     # ---- emit ONE day. The other 96 existed only to fill the windows. -----

@@ -1,0 +1,86 @@
+{
+  "Comment": "PS1 daily scoring. Triggered by Gold-layer completion, NOT by a clock. asof_date arrives in the event and is passed down -- two components independently guessing the same date is a race.",
+  "StartAt": "ScoreFleets",
+  "States": {
+    "ScoreFleets": {
+      "Type": "Map",
+      "ItemsPath": "$.fleets",
+      "MaxConcurrency": 3,
+      "Parameters": {
+        "fleet.$": "$$.Map.Item.Value",
+        "asof_date.$": "$.asof_date",
+        "city.$": "$.city"
+      },
+      "Iterator": {
+        "StartAt": "ScoreOneFleet",
+        "States": {
+          "ScoreOneFleet": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+            "Parameters": {
+              "ProcessingJobName.$": "States.Format('ps1-score-{}-{}', $.fleet, $.asof_date)",
+              "AppSpecification": {
+                "ImageUri": "REPLACE_WITH_MANAGED_DLC_URI",
+                "ContainerEntrypoint": ["python3", "/opt/ml/processing/input/code/ps1_batch_score_daily.py"]
+              },
+              "RoleArn": "REPLACE_WITH_SAGEMAKER_EXECUTION_ROLE",
+              "ProcessingResources": {
+                "ClusterConfig": {
+                  "InstanceCount": 1,
+                  "InstanceType": "ml.m5.2xlarge",
+                  "VolumeSizeInGB": 50
+                }
+              },
+              "StoppingCondition": { "MaxRuntimeInSeconds": 3600 }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": ["SageMaker.AmazonSageMakerException"],
+                "IntervalSeconds": 60,
+                "MaxAttempts": 2,
+                "BackoffRate": 2
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "NotifyFailure", "ResultPath": "$.error" }
+      ],
+      "Next": "TriggerCrossWire"
+    },
+
+    "TriggerCrossWire": {
+      "Comment": "Databricks cross_wired_daily_job, with asof_date passed EXPLICITLY. Do not let the job re-derive 'latest transit_day' -- that is a second guess at the same fact.",
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "REPLACE_WITH_DATABRICKS_TRIGGER_LAMBDA",
+        "Payload": {
+          "job": "cross_wired_daily_job",
+          "asof_date.$": "$.asof_date",
+          "city.$": "$.city",
+          "lookback_days": 1
+        }
+      },
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "NotifyFailure", "ResultPath": "$.error" }
+      ],
+      "End": true
+    },
+
+    "NotifyFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "REPLACE_WITH_SNS_TOPIC_ARN",
+        "Subject": "PS1 daily scoring FAILED",
+        "Message.$": "States.JsonToString($)"
+      },
+      "Next": "Fail"
+    },
+
+    "Fail": { "Type": "Fail", "Error": "PS1DailyScoringFailed" }
+  }
+}

@@ -1,5 +1,9 @@
 # PS1 daily scoring — pinned dependencies for the SageMaker Processing job.
 #
+# MUST MATCH the three production notebooks (CELL 22 bundle requirements.txt):
+#   PS1_3d_{GATE,TVM,VALIDATOR}_SageMaker_MLflow_FeatureStore.ipynb
+#   _req.append("xgboost==2.1.3")  — pinned 2026-08-18 (step 2 go-live cleanup)
+#
 # WHY EXACT PINS, NOT RANGES
 # --------------------------
 # The deployed endpoints' sourcedir/requirements.txt says `xgboost>=2.0`,

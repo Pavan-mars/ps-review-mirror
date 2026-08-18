@@ -1,6 +1,7 @@
 # Databricks Asset Bundle — CUBIC MARS Chicago
 # Deploy:  databricks bundle validate && databricks bundle deploy -t dev
-# Run job:  databricks bundle run cross_wired_daily -t dev
+# Run job:  databricks bundle run medallion_ps1_daily -t dev
+#            databricks bundle run medallion_ps3_daily -t dev
 #
 # See docs/deployment/Databricks_on_AWS_Deployment_Guide.md for workspace setup.
 
@@ -15,7 +16,7 @@ variables:
     description: S3 bucket for gold / cross-wire parquet exports
     default: cubic-mars-pm-s3-datalake-dev-gold-170202974600
   artifact_bucket:
-    description: S3 bucket for SageMaker ML artifacts (PS1 cross-wired scores)
+    description: S3 bucket for SageMaker ML artifacts (PS1 features + scores)
     default: cubic-mars-pm-s3-datalake-dev-artifacts-170202974600
 
 targets:
@@ -24,6 +25,7 @@ targets:
     mode: development
     workspace:
       host: https://dbc-c05ec222-36c5.cloud.databricks.com
+      profile: Sathish.Sankaran@cubic.com
 
 resources:
   jobs:
@@ -31,6 +33,8 @@ resources:
       name: "[${bundle.target}] cubic-mars cross-wire daily"
       description: |
         Unified PS1–PS5 cross-wire export to S3 for Dispatcher → Handler → RDS.
+        In the event-driven PS1 path, Step Functions triggers this AFTER SageMaker
+        scoring — not from the gold-export job. Schedule stays PAUSED until SFN is live.
         Spec: docs/architecture/Cross_Wire_Databricks_Daily_Job_Column_Manifest.md
       schedule:
         quartz_cron_expression: "0 30 6 * * ?"
@@ -62,8 +66,20 @@ resources:
             data_security_mode: SINGLE_USER
           timeout_seconds: 3600
 
-    medallion_and_cross_wire:
-      name: "[${bundle.target}] cubic-mars gold export + cross-wire"
+    medallion_ps1_daily:
+      name: "[${bundle.target}] cubic-mars gold + PS1 daily pre-score"
+      description: |
+        Daily medallion export plus PS1 feature build and Gold Layer Complete event.
+        Chain: run_layer_gold -> export_gold_to_s3 -> ps1_build_features_daily
+        -> ps1_gold_complete_event (PutEvents). Cross-wire is NOT included here;
+        it runs after SageMaker scoring via Step Functions (see ps1_eventbridge_build.sh).
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: America/Chicago
+        pause_status: PAUSED
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
       tasks:
         - task_key: gold_build
           notebook_task:
@@ -88,17 +104,218 @@ resources:
               mode: overwrite
           new_cluster: *medallion_cluster
 
-        - task_key: cross_wired_export
+        - task_key: ps1_build_features
+          description: |
+            PS1 daily feature frames (97d lookback, pinned contract).
+            Requires s3://<artifact_bucket>/chicago/ps1/contracts/ps1_*_feature_contract.json
           depends_on:
             - task_key: export_gold_s3
           notebook_task:
-            notebook_path: ./notebooks/cross_wired_daily_job.py
+            notebook_path: ./notebooks/ps1_build_features_daily.py
+            base_parameters:
+              catalog: ${var.catalog}
+              artifact_bucket: ${var.artifact_bucket}
+              asof_date: ""
+              fleet: ALL
+              dry_run: "false"
+          new_cluster: *medallion_cluster
+          timeout_seconds: 7200
+
+        - task_key: ps1_gold_complete_event
+          description: Verify gold row counts, then emit Gold Layer Complete to EventBridge
+          depends_on:
+            - task_key: ps1_build_features
+          notebook_task:
+            notebook_path: ./notebooks/ps1_gold_complete_event.py
+            base_parameters:
+              catalog: ${var.catalog}
+              city_id: CHI
+              asof_date: ""
+              dry_run: "false"
+          new_cluster: *medallion_cluster
+          timeout_seconds: 600
+
+    medallion_ps3_daily:
+      name: "[${bundle.target}] cubic-mars PS3 daily pre-score"
+      description: |
+        PS3 silver+gold incremental refresh, S3 export, and PutEvents for batch scoring.
+        Chain: ps3_daily_incremental -> export_gold_ps3_incremental_to_s3
+        -> ps3_gold_complete_event. SageMaker Batch Transform + RDS load run on AWS
+        via EventBridge (see tooling/sfn/ps3_daily_scoring.asl.json).
+      schedule:
+        quartz_cron_expression: "0 0 7 * * ?"
+        timezone_id: America/Chicago
+        pause_status: PAUSED
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+      tasks:
+        - task_key: ps3_silver_gold_incremental
+          description: MERGE gold.device_ps3_incident on availability_event_id
+          notebook_task:
+            notebook_path: ./notebooks/ps3_root_cause_analysis/databricks_daily/ps3_daily_incremental.py
+            base_parameters:
+              catalog: ${var.catalog}
+              INCREMENTAL_MODE: merge
+              DRY_RUN: "false"
+          new_cluster: *medallion_cluster
+          timeout_seconds: 7200
+
+        - task_key: export_ps3_to_s3
+          depends_on:
+            - task_key: ps3_silver_gold_incremental
+          notebook_task:
+            notebook_path: ./notebooks/ps3_root_cause_analysis/databricks_daily/export_gold_ps3_incremental_to_s3.py
             base_parameters:
               catalog: ${var.catalog}
               bucket: ${var.gold_bucket}
-              artifact_bucket: ${var.artifact_bucket}
-              cross_wire_prefix: chicago/cross_wired
-              city_id: CHI
-              lookback_days: "1"
-              register_delta: "true"
+              prefix: chicago/gold
+              since_date: ""
           new_cluster: *medallion_cluster
+          timeout_seconds: 3600
+
+        - task_key: ps3_gold_complete_event
+          description: Verify PS3 gold rows, emit PS3 Gold Export Complete to EventBridge
+          depends_on:
+            - task_key: export_ps3_to_s3
+          notebook_task:
+            notebook_path: ./notebooks/ps3_gold_complete_event.py
+            base_parameters:
+              catalog: ${var.catalog}
+              city_id: CHI
+              bucket: ${var.gold_bucket}
+              asof_date: ""
+              incr_s3_uri: ""
+              dry_run: "false"
+          new_cluster: *medallion_cluster
+          timeout_seconds: 600
+
+    ps3_daily_pre_score:
+      name: "[${bundle.target}] cubic-mars PS3 export + event only"
+      description: |
+        Standalone PS3 chain when gold is already refreshed: S3 export -> PutEvents.
+        Use for manual reruns or when ps3_daily_incremental ran separately.
+      schedule:
+        quartz_cron_expression: "0 30 7 * * ?"
+        timezone_id: America/Chicago
+        pause_status: PAUSED
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+      tasks:
+        - task_key: export_ps3_to_s3
+          notebook_task:
+            notebook_path: ./notebooks/ps3_root_cause_analysis/databricks_daily/export_gold_ps3_incremental_to_s3.py
+            base_parameters:
+              catalog: ${var.catalog}
+              bucket: ${var.gold_bucket}
+              prefix: chicago/gold
+              since_date: ""
+          new_cluster: *cross_wire_cluster
+          timeout_seconds: 3600
+
+        - task_key: ps3_gold_complete_event
+          depends_on:
+            - task_key: export_ps3_to_s3
+          notebook_task:
+            notebook_path: ./notebooks/ps3_gold_complete_event.py
+            base_parameters:
+              catalog: ${var.catalog}
+              city_id: CHI
+              bucket: ${var.gold_bucket}
+              asof_date: ""
+              incr_s3_uri: ""
+              dry_run: "false"
+          new_cluster: *cross_wire_cluster
+          timeout_seconds: 600
+
+    ps1_daily_pre_score:
+      name: "[${bundle.target}] cubic-mars PS1 pre-score only"
+      description: |
+        Standalone PS1 chain when gold is already exported: features -> PutEvents.
+        Use for manual reruns or when medallion ran separately.
+      schedule:
+        quartz_cron_expression: "0 0 7 * * ?"
+        timezone_id: America/Chicago
+        pause_status: PAUSED
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+      tasks:
+        - task_key: ps1_build_features
+          notebook_task:
+            notebook_path: ./notebooks/ps1_build_features_daily.py
+            base_parameters:
+              catalog: ${var.catalog}
+              artifact_bucket: ${var.artifact_bucket}
+              asof_date: ""
+              fleet: ALL
+              dry_run: "false"
+          new_cluster: *cross_wire_cluster
+          timeout_seconds: 7200
+
+        - task_key: ps1_gold_complete_event
+          depends_on:
+            - task_key: ps1_build_features
+          notebook_task:
+            notebook_path: ./notebooks/ps1_gold_complete_event.py
+            base_parameters:
+              catalog: ${var.catalog}
+              city_id: CHI
+              asof_date: ""
+              dry_run: "false"
+          new_cluster: *cross_wire_cluster
+          timeout_seconds: 600
+
+    # Legacy alias — same job as medallion_ps1_daily (cross-wire task removed).
+    medallion_and_cross_wire:
+      name: "[${bundle.target}] cubic-mars gold export + PS1 (legacy job name)"
+      description: |
+        Renamed behaviour: gold export + PS1 pre-score only. cross_wired_export was
+        removed — running cross-wire before SageMaker scoring would join stale scores.
+      tasks:
+        - task_key: gold_build
+          notebook_task:
+            notebook_path: ./notebooks/run_layer_gold.py
+            base_parameters:
+              catalog: ${var.catalog}
+          new_cluster: *medallion_cluster
+
+        - task_key: export_gold_s3
+          depends_on:
+            - task_key: gold_build
+          notebook_task:
+            notebook_path: ./notebooks/export_gold_to_s3.py
+            base_parameters:
+              catalog: ${var.catalog}
+              bucket: ${var.gold_bucket}
+              prefix: chicago/gold
+              mode: overwrite
+          new_cluster: *medallion_cluster
+
+        - task_key: ps1_build_features
+          depends_on:
+            - task_key: export_gold_s3
+          notebook_task:
+            notebook_path: ./notebooks/ps1_build_features_daily.py
+            base_parameters:
+              catalog: ${var.catalog}
+              artifact_bucket: ${var.artifact_bucket}
+              asof_date: ""
+              fleet: ALL
+              dry_run: "false"
+          new_cluster: *medallion_cluster
+          timeout_seconds: 7200
+
+        - task_key: ps1_gold_complete_event
+          depends_on:
+            - task_key: ps1_build_features
+          notebook_task:
+            notebook_path: ./notebooks/ps1_gold_complete_event.py
+            base_parameters:
+              catalog: ${var.catalog}
+              city_id: CHI
+              asof_date: ""
+              dry_run: "false"
+          new_cluster: *medallion_cluster
+          timeout_seconds: 600

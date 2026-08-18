@@ -1,4 +1,5 @@
 {
+  "_comment": "Reference workflow — deploy via databricks.yml (medallion_ps3_daily). SageMaker scoring + RDS run on AWS via EventBridge, not inside this Databricks job.",
   "name": "cubic-chicago-ps3-daily",
   "tags": {"program": "cubic-mars", "city": "chicago", "ps": "ps3", "env": "dev"},
   "timeout_seconds": 10800,
@@ -6,7 +7,7 @@
   "schedule": {
     "quartz_cron_expression": "0 0 7 * * ?",
     "timezone_id": "America/Chicago",
-    "pause_status": "UNPAUSED"
+    "pause_status": "PAUSED"
   },
   "email_notifications": {"on_failure": ["pavan.kumar@mars-techs.com"]},
   "job_clusters": [
@@ -24,21 +25,11 @@
   ],
   "tasks": [
     {
-      "task_key": "bronze_cdc_incremental",
-      "description": "NB75 contract-driven bronze incremental (catches new Oracle inserts+updates).",
-      "job_cluster_key": "ps3_daily_cluster",
-      "notebook_task": {
-        "notebook_path": "/Workspace/Repos/mars/Chicago-Ventra-Mars-Cubic-Analysis/notebooks/ingestion/75_CDC_INCREMENTAL_ENGINE",
-        "base_parameters": {"DRY_RUN": "False"}
-      }
-    },
-    {
       "task_key": "ps3_silver_gold_incremental",
-      "description": "Refresh PS3 silver chain + MERGE gold.device_ps3_incident on availability_event_id.",
-      "depends_on": [{"task_key": "bronze_cdc_incremental"}],
+      "description": "Refresh PS3 silver chain + MERGE gold.device_ps3_incident on availability_event_id. Run after bronze CDC when ingest is live.",
       "job_cluster_key": "ps3_daily_cluster",
       "notebook_task": {
-        "notebook_path": "/Workspace/Repos/mars/Chicago-Ventra-Mars-Cubic-Analysis/notebooks/ps3_root_cause_analysis/ps3_daily_incremental",
+        "notebook_path": "/Workspace/Repos/mars/Chicago-Ventra-Mars-Cubic-Analysis/notebooks/ps3_root_cause_analysis/databricks_daily/ps3_daily_incremental",
         "base_parameters": {"INCREMENTAL_MODE": "merge", "DRY_RUN": "false"}
       }
     },
@@ -48,30 +39,21 @@
       "depends_on": [{"task_key": "ps3_silver_gold_incremental"}],
       "job_cluster_key": "ps3_daily_cluster",
       "notebook_task": {
-        "notebook_path": "/Workspace/Repos/mars/Chicago-Ventra-Mars-Cubic-Analysis/notebooks/ps3_root_cause_analysis/export_gold_ps3_incremental_to_s3"
+        "notebook_path": "/Workspace/Repos/mars/Chicago-Ventra-Mars-Cubic-Analysis/notebooks/ps3_root_cause_analysis/databricks_daily/export_gold_ps3_incremental_to_s3"
       }
     },
     {
-      "task_key": "sagemaker_batch_score",
-      "description": "Trigger the SageMaker Batch Transform (both heads) on the new-incident slice.",
+      "task_key": "ps3_gold_complete_event",
+      "description": "Verify PS3 gold rows, emit PS3 Gold Export Complete to EventBridge.",
       "depends_on": [{"task_key": "export_ps3_to_s3"}],
       "job_cluster_key": "ps3_daily_cluster",
-      "spark_python_task": {
-        "python_file": "/Workspace/Repos/mars/Chicago-Ventra-Mars-Cubic-Analysis/sagemaker/ps3/batch_transform_daily.py",
-        "parameters": ["--asof", "{{tasks.export_ps3_to_s3.values.asof}}",
-                       "--input-s3", "{{tasks.export_ps3_to_s3.values.incr_s3_uri}}"]
-      }
-    },
-    {
-      "task_key": "rds_upsert",
-      "description": "Idempotent upsert of scored feeds into RDS (incident/device/serial, both heads).",
-      "depends_on": [{"task_key": "sagemaker_batch_score"}],
-      "job_cluster_key": "ps3_daily_cluster",
-      "spark_python_task": {
-        "python_file": "/Workspace/Repos/mars/Chicago-Ventra-Mars-Cubic-Analysis/databricks/ps3_rds_writer.py",
-        "parameters": ["--outputs", "s3://cubic-mars-pm-s3-datalake-dev-gold-170202974600/chicago/ps3/scored/{{tasks.export_ps3_to_s3.values.asof}}",
-                       "--city", "CHI", "--secret", "cubic/rds/dashboard",
-                       "--asof", "{{tasks.export_ps3_to_s3.values.asof}}"]
+      "notebook_task": {
+        "notebook_path": "/Workspace/Repos/mars/Chicago-Ventra-Mars-Cubic-Analysis/notebooks/ps3_gold_complete_event",
+        "base_parameters": {
+          "catalog": "mars_dev",
+          "city_id": "CHI",
+          "dry_run": "false"
+        }
       }
     }
   ]

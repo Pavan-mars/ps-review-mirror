@@ -1,0 +1,71 @@
+{
+  "Comment": "PS3 daily scoring chain — triggered by EventBridge PS3 Gold Export Complete. Fill PLACEHOLDER_* before deploy. All rules start DISABLED.",
+  "StartAt": "ParseEvent",
+  "States": {
+    "ParseEvent": {
+      "Type": "Pass",
+      "Parameters": {
+        "city.$": "$.detail.city",
+        "asof_date.$": "$.detail.asof_date",
+        "incr_s3_uri.$": "$.detail.incr_s3_uri"
+      },
+      "Next": "BatchScorePS3"
+    },
+    "BatchScorePS3": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sagemaker:createTransformJob.sync",
+      "Parameters": {
+        "TransformJobName.$": "States.Format('ps3-batch-{}', $.asof_date)",
+        "ModelName": "PLACEHOLDER_PS3_MODEL_NAME",
+        "TransformInput": {
+          "DataSource": {
+            "S3DataSource": {
+              "S3DataType": "S3Prefix",
+              "S3Uri.$": "$.incr_s3_uri"
+            }
+          },
+          "ContentType": "application/json",
+          "SplitType": "Line"
+        },
+        "TransformOutput": {
+          "S3OutputPath": "PLACEHOLDER_PS3_SCORED_S3_PREFIX",
+          "Accept": "application/json"
+        },
+        "TransformResources": {
+          "InstanceType": "ml.m5.large",
+          "InstanceCount": 1
+        }
+      },
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyFailure"
+        }
+      ],
+      "Next": "LoadRDS"
+    },
+    "LoadRDS": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "cubic-mars-ps3-v25-loader",
+        "Payload": {
+          "city.$": "$.city",
+          "asof_date.$": "$.asof_date",
+          "source": "eventbridge_sfn"
+        }
+      },
+      "End": true
+    },
+    "NotifyFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "PLACEHOLDER_SNS_TOPIC_ARN",
+        "Subject": "PS3 daily scoring failed",
+        "Message.$": "$"
+      },
+      "End": true
+    }
+  }
+}

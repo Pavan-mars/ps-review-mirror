@@ -177,3 +177,26 @@ Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_1
   from the PySpark variants (champion `P5_IF_TSNE_KMeans`, silhouette 0.6058,
   829 devices / 4 clusters, GATE asof 2026-07-28). The Databricks-scheduled-job
   recommendation for PS4 is now evidence-complete.
+
+
+---
+
+## Addendum B - Notebook housekeeping + v3-producer gap, 19-Aug-2026
+
+Non-chain files retired to `notebooks/_retired/ps4/` (see its README), same
+convention as PS1/PS2/PS3: the three plain FaultClustering notebooks, the plain
+MLflow_FeatureStore, Chicago_PS4_Anomaly_Detection, and both
+`ps4_export_to_s3.py` variants (they write `chicago/ml_outputs/ps4`, confirmed
+non-existent by the daily loader's 27-Jul header; their target tables are
+empty). Kept live: the three `_PySpark` FaultClustering notebooks +
+`ps4_cluster_s3_export.py` + `PS4_SageMaker_MLflow_FeatureStore_PySpark.ipynb`
++ `ps4_device_daily_export.py` (design asset). `notebooks/ps4_anomaly/` is now
+empty and drops out of the tree.
+
+FINDING [R 19-Aug]: no tracked code writes `chicago/ps4/v3`
+(`runs/run_id=*/READY.json`, `manifests/latest.json`) - the weekly family the
+Monday 08:00 loader serves to the dashboard (7,742 / 1,108 / 6 rows + profile 9
+/ quality 3, exact S3-RDS parity [M 16-Aug]). The producer is presumed
+Studio-only (the PS3-V26 pattern). Until it is recovered into the repo, the v3
+weekly family cannot be regenerated. Recovery hunt: the SageMaker cleanup
+script inventories stray PS4 files and greps them for ps4/v3 / READY writers.

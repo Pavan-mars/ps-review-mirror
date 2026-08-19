@@ -228,3 +228,17 @@ Full column-level schemas for every object: `docs/reference/RDS_LIVE_INVENTORY_1
 - **NEW census gap:** Lambda `cubic-mars-ps2-rds-push` exists live (25-Jul, 512 MB)
   and appears in no audit or lineage doc. Role `[U]` — investigate or retire
   (cf. the retired `ps1-rds-push`).
+
+
+---
+
+## Addendum C - Notebook housekeeping, 19-Aug-2026
+
+Non-chain notebooks retired to `notebooks/_retired/ps2/` (see its README), same
+convention as the 18-Aug PS1/PS3 retirement: v2_5_3_Storage_Safe,
+PS2_SageMaker_MLflow_FeatureStore, Episode_Closure_Diagnostic_v1,
+Overlap_Diagnostic_v2/v3/v4, Chicago_PS2_Cascade_Analysis,
+ps2_overlap_resume_cell.py. The live chain keeps
+PS2_Failure_Patterns_v2_5_4_Union_Minutes.ipynb,
+PS2_Serial_Grain_Analysis_v1_FIXED.ipynb and ps2_v254_union_verify_cell.py in
+`notebooks/ps2_cascading_failure/`. Reversible via `git mv`.

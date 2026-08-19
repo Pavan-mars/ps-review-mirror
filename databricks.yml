@@ -319,3 +319,49 @@ resources:
               dry_run: "false"
           new_cluster: *medallion_cluster
           timeout_seconds: 600
+
+
+    medallion_ps2_daily:
+      name: "[${bundle.target}] cubic-mars PS2 daily cascade analytics (DRAFT)"
+      description: |
+        DRAFT for team ratification (decision note 16-Aug, PS2 row): v2.5.4 is
+        Spark-native (31 pyspark hits), so the daily run belongs in Databricks,
+        chained after the Gold build. Final wiring once ratified: move this task
+        into the gold workflow after export_gold_s3 (same-workflow trigger).
+        Kept standalone and PAUSED until (a) the team ratifies and (b)
+        incremental ingestion is live - unpausing earlier re-analyzes the
+        2026-04-11 vintage.
+        First-run sequence, supervised:
+          1. databricks bundle validate; then a manual run with PS2_RUN_MODE
+             left at REPLAY (writes the isolated replay family; the scheduled
+             loader never sees it).
+          2. Compare the replay run's table row counts against the 03-Aug run.
+          3. Set PS2_RUN_MODE=PRODUCTION below, run once supervised; confirm a
+             new computed_date under chicago/ps2_outputs/_runs/ and the 07:10
+             UTC loader picking it up (/ps2/status advances).
+        Notebook export-prefix defaults were fixed 19-Aug (chicago/ps2_outputs);
+        the run-mode default stays REPLAY by design - production is opted into
+        HERE, not in the notebook.
+        UNVERIFIED before first run [U]: job-cluster instance profile can read
+        gold + write the artifacts bucket; how the notebook reads gold on
+        Databricks (UC vs S3 parquet); real runtime (timeout below is a guess).
+      schedule:
+        quartz_cron_expression: "0 45 6 * * ?"   # placeholder: after the 06:00 gold job, until chained
+        timezone_id: America/Chicago
+        pause_status: PAUSED
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+      tasks:
+        - task_key: ps2_failure_patterns_v254
+          description: PS2 v2.5.4 union-minutes cascade analytics + 47-table S3 export
+          notebook_task:
+            notebook_path: ./notebooks/ps2_cascading_failure/PS2_Failure_Patterns_v2_5_4_Union_Minutes.ipynb
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: m5d.2xlarge
+            num_workers: 4
+            data_security_mode: SINGLE_USER
+            spark_env_vars:
+              PS2_RUN_MODE: "REPLAY"   # flip to PRODUCTION only after the supervised replay run passes
+          timeout_seconds: 10800

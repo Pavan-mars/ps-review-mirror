@@ -400,11 +400,11 @@ function EstateOverview({ onOpen }) {
       >
         <div style={{ display: 'grid', gap: 2, padding: '4px 2px' }}>
           {[
-            ['Failure Prediction', 'ps1', 'live', 'Daily inference. Cross-wired daily tables plus the station roll-up.'],
-            ['Failure Pattern & Cascade Identification', 'ps2', 'live', '20 tables, refreshed wholesale by the daily loader. No served model.'],
-            ['Root Cause Analysis', 'ps3', 'live', '20 tables from the V26 source-first run, refreshed wholesale by the v25 loader.'],
-            ['Anomaly & Outlier Analysis', 'ps4', 'live', 'Weekly anomaly scoring at device-week grain.'],
-            ['Remaining Useful Life & SLA Breach', 'ps5', 'live', 'Survival models per fleet. Device and component remaining life served from Aurora. Registry sign-off outstanding.'],
+            ['Failure Prediction', 'ps1', 'loader', 'Daily loader 06:40 UTC. Scoring itself is run by hand -- daily inference is not enabled yet.'],
+            ['Failure Pattern & Cascade Identification', 'ps2', 'loader', '20 tables refreshed wholesale by the daily loader, 07:10 UTC. Notebook run is manual. No served model.'],
+            ['Root Cause Analysis', 'ps3', 'manual', '20 tables from the V26 source-first run. The v25 loader is invoked by hand -- it has no schedule.'],
+            ['Anomaly & Outlier Analysis', 'ps4', 'loader', 'Daily loader 07:35 UTC plus a weekly v3 loader. Anomaly scoring at device-week grain is run by hand.'],
+            ['Remaining Useful Life & SLA Breach', 'ps5', 'loader', 'Daily loader 07:20 UTC. Survival models per fleet, served from Aurora. Notebook run is manual; registry sign-off outstanding.'],
           ].map(([k, key, s, d]) => (
             <div
               key={k}
@@ -415,10 +415,23 @@ function EstateOverview({ onOpen }) {
               }}
             >
               <span style={{ width: 40, fontSize: 12.2, fontWeight: 800, color: TAB_COLOR[key] }}>{k}</span>
-              <Badge tone={s === 'live' ? 'good' : 'warning'}>{s === 'live' ? 'live' : 'in progress'}</Badge>
+              <Badge tone={s === 'loader' ? 'good' : 'warning'}>{s === 'loader' ? 'daily loader' : 'manual'}</Badge>
               <span style={{ fontSize: 12.6, color: INK_2 }}>{d}</span>
             </div>
           ))}
+          {/* 24-Aug-2026. These badges used to read "live" for all five, and PS1's
+              line claimed "Daily inference." Neither was true: the LOADERS run on a
+              daily cron and are genuinely wired end to end, but every producer --
+              notebook or scoring job -- is still started by hand, so the loaders
+              re-read the same S3 objects each morning. "live" was read as "the
+              numbers moved today"; they had not. The badge now describes the loader,
+              which is the part that is actually automated, and the note below states
+              the vintage once for all five rather than leaving it to be inferred. */}
+          <div style={{ marginTop: 8, padding: '7px 10px', fontSize: 12.2, color: INK_2 }}>
+            The loader chain is wired and runs daily. The producers are still run by hand,
+            so every panel re-reads the same source extract until the incremental feed
+            lands. <strong>Analysis as of 11 Apr 2026.</strong>
+          </div>
         </div>
       </Panel>
     </>

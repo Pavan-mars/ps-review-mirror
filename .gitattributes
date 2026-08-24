@@ -1,0 +1,56 @@
+# Line-ending policy for Chicago-Ventra-Mars-Cubic-Analysis
+#
+# WHY THIS FILE EXISTS
+# Contributors work on Windows with core.autocrlf=true, so text files were
+# checked out CRLF. That is harmless until a file is copied from the Windows
+# worktree into a Linux context -- which is exactly what `docker build` does.
+# dashboard/docker-entrypoint.sh reached the image as "#!/bin/sh\r", naming an
+# interpreter that does not exist on Linux, so the nginx entrypoint hook failed
+# silently: /config.js was never rewritten, the bundle fell back to the baked
+# VITE_API_BASE_URL, and /healthz still returned 200 because it is a static
+# nginx response. A wrong API base behind a green health check.
+#
+# Every .sh in this repo had the same latent defect (29 of them, including all
+# the Lambda deploy.sh scripts). They worked only because CloudShell clones get
+# LF. Declaring the policy here removes the dependency on each contributor's
+# local git config.
+
+# Default: git decides what is text, and text is LF in the working tree.
+* text=auto eol=lf
+
+# Anything executed by a POSIX shell or copied into a Linux image must be LF.
+*.sh        text eol=lf
+*.bash      text eol=lf
+Dockerfile  text eol=lf
+*.dockerfile text eol=lf
+*.conf      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Windows-native scripts stay CRLF.
+*.ps1       text eol=crlf
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
+# Binary: never touch, never diff as text.
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.pdf       binary
+*.zip       binary
+*.gz        binary
+*.tar       binary
+*.xlsx      binary
+*.xls       binary
+*.docx      binary
+*.pptx      binary
+*.parquet   binary
+*.joblib    binary
+*.pkl       binary
+*.woff      binary
+*.woff2     binary
+
+# Notebooks are JSON: keep them LF so diffs and nbformat round-trips are stable.
+*.ipynb     text eol=lf

@@ -29,7 +29,8 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # entrypoint rewrites /config.js from the API_BASE_URL env var on every
 # start, so a dev image can be promoted to UAT/prod without a rebuild.
 COPY docker-entrypoint.sh /docker-entrypoint.d/40-app-config.sh
-RUN chmod +x /docker-entrypoint.d/40-app-config.sh
+RUN sed -i 's/\r$//' /docker-entrypoint.d/40-app-config.sh \
+  && chmod +x /docker-entrypoint.d/40-app-config.sh
 
 # unprivileged listen port so the task can run as a non-root user if the
 # cluster's task-definition enforces it later

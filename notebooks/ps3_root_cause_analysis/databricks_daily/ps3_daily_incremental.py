@@ -25,13 +25,38 @@ dbutils: Any = globals().get("dbutils")
 spark: Any = globals().get("spark")
 
 dbutils.widgets.text("catalog", "mars_dev")
-dbutils.widgets.text("repo_sql_gold", "/Workspace/Repos/mars/Chicago-Ventra-Mars-Cubic-Analysis/sql/gold")
+# repo_sql_gold: blank (the default) resolves sql/gold RELATIVE to this
+# notebook, so the same file works from a Repos clone AND from a bundle
+# deployment (/Workspace/Users/<who>/.bundle/...). The old default hardcoded
+# one person's /Workspace/Repos/mars/... clone, and the first bundle run
+# (25-Aug) failed on it with FileNotFoundError. Set the widget only to
+# override deliberately.
+dbutils.widgets.text("repo_sql_gold", "")
 dbutils.widgets.dropdown("INCREMENTAL_MODE", "merge", ["merge", "full"])
 dbutils.widgets.text("since_date", "")          # blank -> use watermark; else override YYYY-MM-DD
 dbutils.widgets.dropdown("DRY_RUN", "true", ["true", "false"])
 
 CAT = dbutils.widgets.get("catalog").strip()
-SQL_GOLD = dbutils.widgets.get("repo_sql_gold").strip().rstrip("/")
+
+
+def _default_sql_gold() -> str:
+    # This notebook lives at <repo root>/notebooks/ps3_root_cause_analysis/
+    # databricks_daily/; sql/gold is three levels up. notebookPath() gives the
+    # workspace path without the /Workspace filesystem prefix.
+    nb = (dbutils.notebook.entry_point.getDbutils().notebook()
+          .getContext().notebookPath().get())
+    parts = nb.split("/")
+    root = "/".join(parts[:-4])            # strip nb name + 3 dirs
+    return f"/Workspace{root}/sql/gold"
+
+
+SQL_GOLD = (dbutils.widgets.get("repo_sql_gold").strip().rstrip("/")
+            or _default_sql_gold())
+import os as _os
+if not _os.path.isdir(SQL_GOLD):
+    raise FileNotFoundError(
+        f"sql/gold not found at {SQL_GOLD}. If this notebook was moved, pass "
+        f"the repo_sql_gold widget explicitly.")
 MODE = dbutils.widgets.get("INCREMENTAL_MODE").strip()
 DRY_RUN = dbutils.widgets.get("DRY_RUN").strip().lower() == "true"
 GOLD = f"{CAT}.gold.device_ps3_incident"

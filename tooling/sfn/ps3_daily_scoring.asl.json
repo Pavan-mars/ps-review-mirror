@@ -55,6 +55,12 @@
           "source": "eventbridge_sfn"
         }
       },
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NotifyFailure"
+        }
+      ],
       "End": true
     },
     "NotifyFailure": {
@@ -63,9 +69,14 @@
       "Parameters": {
         "TopicArn": "PLACEHOLDER_SNS_TOPIC_ARN",
         "Subject": "PS3 daily scoring failed",
-        "Message.$": "$"
+        "Message.$": "States.JsonToString($)"
       },
-      "End": true
+      "Next": "FailExecution"
+    },
+    "FailExecution": {
+      "Type": "Fail",
+      "Error": "PS3DailyScoringFailed",
+      "Cause": "A stage of the PS3 daily scoring chain failed. The SNS notification above carries the error payload; any ps3-sfn-failed EventBridge rule will now fire because the execution status is FAILED, not SUCCEEDED."
     }
   }
 }

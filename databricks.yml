@@ -273,6 +273,55 @@ resources:
     # the gold-complete event could fire twice and start two scoring runs for
     # the same asof_date. medallion_ps1_daily is the sole owner of that chain.
 
+    ps4_weekly_v3_draft:
+      name: "[${bundle.target}] cubic-mars PS4 weekly anomaly + clustering v3 (DRAFT)"
+      description: |
+        DRAFT for team ratification, mirroring the PS2 draft above (decision
+        note 16-Aug, PS4 row: PySpark variants ratified as the engine; the
+        chicago/ps4/v3 producer was recovered and committed 19-Aug as
+        notebooks/ps4_weekly_v3/). Weekly cadence to match the live Monday
+        08:00 UTC v3 loader; the notebook publishes READY.json last, so a
+        failed run cannot be half-loaded.
+        Scope note: this draft runs ONLY the weekly v3 producer, whose entire
+        env contract is PS4_AS_OF_DATE. The fault-clustering trio and the
+        daily scored feed are NOT included yet: the daily-feed notebook has
+        no env contract at all (buckets hardcoded, as-of derived in-notebook)
+        and must be parameterised before it can be scheduled - do not add it
+        here as-is.
+        Kept standalone and PAUSED until (a) the team ratifies and (b)
+        incremental ingestion is live - unpausing earlier re-analyzes the
+        2026-04-11 vintage.
+        First-run sequence, supervised:
+          1. databricks bundle validate; manual run with PS4_AS_OF_DATE set
+             to a known date (e.g. 2026-04-11) and compare the run_id outputs
+             under chicago/ps4/v3/runs/ against ps4-20260728T213153Z-bf4609d4.
+          2. Confirm READY.json is written LAST and the Monday 08:00 loader
+             picks the run up (/ps4/v3-status advances).
+        UNVERIFIED before first run [U]: the notebook was authored in
+        SageMaker Studio - its conditional pip bootstrap must no-op on DBR
+        (pyspark is native); the job-cluster instance profile can read gold
+        and write the artifacts bucket; real runtime (timeout is a guess).
+      schedule:
+        quartz_cron_expression: "0 30 6 ? * MON"   # Mon 06:30 America/Chicago; well before the Mon 08:00 UTC loader
+        timezone_id: America/Chicago
+        pause_status: PAUSED
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+      tasks:
+        - task_key: ps4_weekly_v3
+          description: PS4 weekly device summary + alerts + cluster profile, v3 family (READY.json-gated)
+          notebook_task:
+            notebook_path: ./notebooks/ps4_weekly_v3/PS4_SageMaker_Anomaly_Clustering_Weekly_RDS_v3_gp.ipynb
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: m5d.2xlarge
+            num_workers: 4
+            data_security_mode: SINGLE_USER
+            spark_env_vars:
+              PS4_AS_OF_DATE: ""   # blank = the notebook derives the as-of; set explicitly for a supervised replay
+          timeout_seconds: 10800
+
     medallion_ps2_daily:
       name: "[${bundle.target}] cubic-mars PS2 daily cascade analytics (DRAFT)"
       description: |

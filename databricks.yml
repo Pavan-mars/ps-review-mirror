@@ -267,59 +267,11 @@ resources:
           new_cluster: *cross_wire_cluster
           timeout_seconds: 600
 
-    # Legacy alias — same job as medallion_ps1_daily (cross-wire task removed).
-    medallion_and_cross_wire:
-      name: "[${bundle.target}] cubic-mars gold export + PS1 (legacy job name)"
-      description: |
-        Renamed behaviour: gold export + PS1 pre-score only. cross_wired_export was
-        removed — running cross-wire before SageMaker scoring would join stale scores.
-      tasks:
-        - task_key: gold_build
-          notebook_task:
-            notebook_path: ./notebooks/run_layer_gold.py
-            base_parameters:
-              catalog: ${var.catalog}
-          new_cluster: *medallion_cluster
-
-        - task_key: export_gold_s3
-          depends_on:
-            - task_key: gold_build
-          notebook_task:
-            notebook_path: ./notebooks/export_gold_to_s3.py
-            base_parameters:
-              catalog: ${var.catalog}
-              bucket: ${var.gold_bucket}
-              prefix: chicago/gold
-              mode: overwrite
-          new_cluster: *medallion_cluster
-
-        - task_key: ps1_build_features
-          depends_on:
-            - task_key: export_gold_s3
-          notebook_task:
-            notebook_path: ./notebooks/ps1_build_features_daily.py
-            base_parameters:
-              catalog: ${var.catalog}
-              artifact_bucket: ${var.artifact_bucket}
-              asof_date: ""
-              fleet: ALL
-              dry_run: "false"
-          new_cluster: *medallion_cluster
-          timeout_seconds: 7200
-
-        - task_key: ps1_gold_complete_event
-          depends_on:
-            - task_key: ps1_build_features
-          notebook_task:
-            notebook_path: ./notebooks/ps1_gold_complete_event.py
-            base_parameters:
-              catalog: ${var.catalog}
-              city_id: CHI
-              asof_date: ""
-              dry_run: "false"
-          new_cluster: *medallion_cluster
-          timeout_seconds: 600
-
+    # medallion_and_cross_wire (legacy alias) was REMOVED 25-Aug-2026.
+    # It was an unscheduled full duplicate of medallion_ps1_daily INCLUDING the
+    # ps1_gold_complete_event task -- deploying both and triggering either meant
+    # the gold-complete event could fire twice and start two scoring runs for
+    # the same asof_date. medallion_ps1_daily is the sole owner of that chain.
 
     medallion_ps2_daily:
       name: "[${bundle.target}] cubic-mars PS2 daily cascade analytics (DRAFT)"

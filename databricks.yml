@@ -25,7 +25,10 @@ targets:
     mode: development
     workspace:
       host: https://dbc-c05ec222-36c5.cloud.databricks.com
-      profile: Sathish.Sankaran@cubic.com
+      # No profile pinned here: a shared bundle must not hardcode one person's
+      # ~/.databrickscfg entry (deploys failed for anyone else until 25-Aug).
+      # Pass your own with -p <profile>, e.g.:
+      #   databricks bundle deploy -t dev -p chicago
 
 resources:
   jobs:

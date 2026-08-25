@@ -218,9 +218,14 @@ fi
 aws lambda wait function-updated --function-name "$FN"
 echo "   Lambda ready"
 
-echo ">> [6/7] EventBridge schedule (07:10 UTC daily — after the PS1 push at 06:15)"
+# 25-Aug-2026: aligned to the LIVE rule, which fires 07:35 and had drifted
+# from this script's 07:10. The live time is the intended one (it follows the
+# 07:10 PS2 load); the script was stale. If the time ever changes again,
+# change it HERE FIRST -- rerunning an out-of-date deploy script silently
+# re-points the schedule, which is how the 08-Aug PS3 incident started.
+echo ">> [6/7] EventBridge schedule (07:35 UTC daily — after the PS1 push at 06:15)"
 RULE=cubic-mars-ps4-daily-load
-aws events put-rule --name $RULE --schedule-expression "cron(10 7 * * ? *)" \
+aws events put-rule --name $RULE --schedule-expression "cron(35 7 * * ? *)" \
   --description "Daily PS4 run outputs -> Aurora" --state ENABLED >/dev/null
 aws lambda add-permission --function-name "$FN" --statement-id ${RULE}-invoke \
   --action lambda:InvokeFunction --principal events.amazonaws.com \

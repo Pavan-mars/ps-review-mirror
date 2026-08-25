@@ -1,5 +1,5 @@
 {
-  "Comment": "PS3 daily scoring chain — triggered by EventBridge PS3 Gold Export Complete. Fill PLACEHOLDER_* before deploy. All rules start DISABLED.",
+  "Comment": "PS3 daily scoring chain — triggered by EventBridge PS3 Gold Export Complete. Values pinned 25-Aug-2026: Model = the retained chicago-ps3-root-cause Model object (endpoint deleted under D-4, Model kept; pins model package v14). Scored prefix per PS3_GO_LIVE_GUIDE section 4. SNS = the shared alerts topic, which gained its first confirmed subscriber 25-Aug. All rules start DISABLED.",
   "StartAt": "ParseEvent",
   "States": {
     "ParseEvent": {
@@ -16,7 +16,7 @@
       "Resource": "arn:aws:states:::sagemaker:createTransformJob.sync",
       "Parameters": {
         "TransformJobName.$": "States.Format('ps3-batch-{}', $.asof_date)",
-        "ModelName": "PLACEHOLDER_PS3_MODEL_NAME",
+        "ModelName": "chicago-ps3-root-cause-2026-07-13-07-02-42-300",
         "TransformInput": {
           "DataSource": {
             "S3DataSource": {
@@ -28,7 +28,7 @@
           "SplitType": "Line"
         },
         "TransformOutput": {
-          "S3OutputPath": "PLACEHOLDER_PS3_SCORED_S3_PREFIX",
+          "S3OutputPath": "s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/chicago/ps3/scored/",
           "Accept": "application/json"
         },
         "TransformResources": {
@@ -67,7 +67,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
-        "TopicArn": "PLACEHOLDER_SNS_TOPIC_ARN",
+        "TopicArn": "arn:aws:sns:us-east-1:170202974600:cubic-mars-ps1-alerts",
         "Subject": "PS3 daily scoring failed",
         "Message.$": "States.JsonToString($)"
       },

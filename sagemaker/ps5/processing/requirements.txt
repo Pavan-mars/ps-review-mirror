@@ -1,0 +1,23 @@
+# PS5 Processing-job image stack.
+# Mirrors notebook Cell 1's pins EXACTLY where the notebook pins, and stays
+# loose exactly where the notebook is loose - the whole point of the image is
+# that Cell 1's import check passes and the notebook Run-Alls with no install
+# and no kernel restart.
+numpy<2
+scikit-survival==0.26.0
+scikit-learn<1.8,>=1.6.1
+pandas>=2.0,<3
+lifelines
+pyarrow
+s3fs
+# The publish cell (Cell 7) uses boto3 directly. Left unpinned so pip can
+# co-resolve botocore between boto3 and s3fs's aiobotocore requirement.
+boto3
+# Execution layer. papermill over `jupyter nbconvert --execute`, for two
+# reasons: (1) parameter injection - if CONFIG ever moves off env vars, a
+# parameters cell needs no image change; (2) per-cell logging - with
+# --log-output each cell's stdout reaches the CloudWatch stream as it
+# finishes, so a stalled cell is visible mid-run rather than post-mortem.
+papermill
+# Kernel the notebook executes under (papermill talks to a jupyter kernel).
+ipykernel

@@ -28,20 +28,42 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 
+# ---------------------------------------------------------------------------
+# Runtime overrides from the environment (2026-08-25).
+# WHY: this engine now also runs headless as a SageMaker Processing job
+# (papermill inside the cubic-mars-ps5-processing image), and Boston reuse
+# means city/bucket must not require editing this file. A job sets PS5_* in
+# its container environment; an interactive Studio run sets nothing and gets
+# exactly the values this engine has always hard-coded.
+#
+#   env var               CONFIG key        default (unset or empty keeps it)
+#   PS5_CITY_ID           CITY_ID           CHI
+#   PS5_RUN_DATE          RUN_DATE          2026-04-11 (telemetry hygiene
+#                         cutoff; a scheduled job passes the real date
+#                         explicitly - PS5_RUN_DATE="" keeps the default)
+#   PS5_GOLD_BUCKET       GOLD_BUCKET       cubic-mars-pm-s3-datalake-dev-gold-170202974600
+#   PS5_TELEMETRY_START   TELEMETRY_START   2024-01-01
+#   PS5_CINDEX_FLOOR      CINDEX_FLOOR      0.65 (parsed as float)
+#
+# PS5_PUBLISH is read by the publish cell (Cell 7), not here.
+def _env(name, default):
+    val = os.environ.get(name, "").strip()
+    return val if val else default
+
 CONFIG = {
-    "CITY_ID": "CHI",
+    "CITY_ID": _env("PS5_CITY_ID", "CHI"),
     "DEVICE_SCOPE": ["TVM", "GATE", "VALIDATOR"],
-    "CINDEX_FLOOR": 0.65,
+    "CINDEX_FLOOR": float(_env("PS5_CINDEX_FLOOR", "0.65")),
     "MIN_EVENTS_TO_MODEL": 40,
-    "RUN_DATE": "2026-04-11",              # hygiene: drop telemetry dated after this (future/sentinel rows)
+    "RUN_DATE": _env("PS5_RUN_DATE", "2026-04-11"),   # hygiene: drop telemetry dated after this (future/sentinel rows)
 
     # ---- the v3/v4 lever: model where the live device telemetry actually exists ----
     "WINDOW_MODE": "telemetry_era",        # "telemetry_era" (fix) | "all_years" (legacy pooled)
-    "TELEMETRY_START": "2024-01-01",       # edw_device_event / read_tap / tap_event / tvm_sale / incident feats start here
+    "TELEMETRY_START": _env("PS5_TELEMETRY_START", "2024-01-01"),   # edw_device_event / read_tap / tap_event / tvm_sale / incident feats start here
     "ERA_MIN_EVENTS": 120,                 # if telemetry-era has fewer events, fall back to all_years for that type
 
     "DATA_SOURCE": "auto",
-    "GOLD_BUCKET": "cubic-mars-pm-s3-datalake-dev-gold-170202974600",
+    "GOLD_BUCKET": _env("PS5_GOLD_BUCKET", "cubic-mars-pm-s3-datalake-dev-gold-170202974600"),
     "S3_REGION": "us-east-1",
     "SURVIVAL_TABLE": "mars_dev.silver.device_survival_intervals",   # 175,447 rows (fallback interval grain)
     "FAILURE_TABLE": "mars_dev.silver.device_event_enriched",       # queried directly (S16) for is_hardware_oos_event -- 

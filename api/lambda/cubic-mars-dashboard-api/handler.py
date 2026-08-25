@@ -735,6 +735,56 @@ def _safe_rows(sql, **kw):
         return []
 
 
+# The concordance a survival model has to clear before it may drive a work
+# order. Same figure the front end holds (V4PS5Overview CINDEX_FLOOR); the
+# blockers text below is where the API states it, so the two must agree.
+_PS5_CINDEX_FLOOR = 0.65
+
+
+def _ps5_registry_rows(city):
+    """Category-level PS5 registry state, DERIVED from ps5_cindex_leaderboard.
+
+    Until 25-Aug-2026 this data came from ps5_reliability_status -- three rows
+    hand-seeded by sql/02 on 11-Jul with v1-era C-indexes (gates 0.5906, tvms
+    0.5071 'broken_champion_selection', validators 0.5970). No loader ever
+    refreshed them, so every deploy's migrate() replay re-asserted numbers the
+    v5.6 run had long since beaten and the dashboard understated our own
+    models. The leaderboard IS refreshed (daily 07:20 UTC by the PS5 RDS
+    loader), so the champion row per fleet -- best oot_cindex -- cannot go
+    stale the same way.
+
+    The shape is byte-compatible with the old table so no front-end file
+    changes: device_type keeps the lowercase-plural naming this feed always
+    used, and dashboard_ready stays FALSE for every fleet. That last part is
+    deliberate, not an oversight -- no fleet is signed off in the model
+    registry, and this feed is what lets the overview card say the model is a
+    prioritisation aid, not a scheduler. Do not flip it here; sign-off is a
+    registry event, not a query result.
+
+    Degrades to [] on a missing or empty leaderboard (via _safe_rows) -- the
+    old rows() call 500'd the whole response when its table was absent, which
+    matters now that a manual DROP TABLE ps5_reliability_status is pending.
+    """
+    best = _safe_rows(
+        "SELECT DISTINCT ON (device_type) device_type, oot_cindex "
+        "FROM ps5_cindex_leaderboard WHERE city_id=:c AND oot_cindex IS NOT NULL "
+        "ORDER BY device_type, oot_cindex DESC", c=city)
+    out = []
+    for r in best:
+        ci = float(r["oot_cindex"])
+        gap = _PS5_CINDEX_FLOOR - ci
+        out.append({
+            "device_type": _PS5_TYPE.get(str(r["device_type"]).upper(),
+                                         str(r["device_type"]).lower()),
+            "concordance_index": ci,
+            "registry_status": "v5_6_champion",
+            "dashboard_ready": False,
+            "blockers": ("misses the %.2f C-index floor by %.3f"
+                         % (_PS5_CINDEX_FLOOR, gap)) if gap > 0 else "",
+        })
+    return out
+
+
 # =====================================================================
 # PARALLEL DEVICE-360  (opt-in, reversible)                 06-Aug-2026
 #
@@ -1290,8 +1340,10 @@ def _device_360(city, dev):
         ps5["found"] = False
     if cat:
         p5 = _PS5_TYPE.get(str(cat).upper(), str(cat).lower())
-        _allrel = _safe_rows("SELECT device_type,concordance_index,registry_status,dashboard_ready,blockers FROM ps5_reliability_status WHERE city_id=:c", c=city)
-        rel = [r for r in _allrel if str(r.get("device_type")).lower() == p5]  # filter in python: no enum::text cast (pg8000.native-safe)
+        # 25-Aug-2026 -- same repoint as /ps5/status: derived from the daily
+        # leaderboard, not the stale hand-seeded ps5_reliability_status rows.
+        _allrel = _ps5_registry_rows(city)
+        rel = [r for r in _allrel if str(r.get("device_type")).lower() == p5]
         ps5["reliability"] = rel[0] if rel else None
         if not d5:
             ps5["note"] = ("No remaining-life row for this device in either the survival "
@@ -3080,10 +3132,18 @@ def route(method, path, params, body, headers=None):
                        "WHERE city_id=:c AND incident_id NOT LIKE 'INC-PS1-%' "
                        "ORDER BY incident_dtm DESC LIMIT 200", c=city))
     if path == "/ps5/status":
-        return ok(rows("SELECT device_type,concordance_index,registry_status,dashboard_ready,blockers FROM ps5_reliability_status WHERE city_id=:c", c=city))
+        # 25-Aug-2026 -- REPOINTED off ps5_reliability_status. That table held
+        # three rows sql/02 seeded on 11-Jul and nothing ever updated, so this
+        # route kept reporting v1-era C-indexes long after the v5.6 champions
+        # beat them. Rows now derive from ps5_cindex_leaderboard (refreshed
+        # daily), same shape, dashboard_ready still FALSE -- see
+        # _ps5_registry_rows for the full reasoning. The sql/02 seed INSERT is
+        # deleted; a manual DROP TABLE ps5_reliability_status is pending once
+        # this is deployed (nothing reads it after this change).
+        return ok(_ps5_registry_rows(city))
     # ==== PS5 v5 NOTEBOOK OUTPUTS (sql/29 + sql/30, loaded 27-Jul: 29,441 rows) ====
-    # These serve the REAL survival run. /ps5/status above is the older
-    # category-level registry state and is kept as-is; it answers "is the model
+    # These serve the REAL survival run. /ps5/status above is category-level
+    # registry state derived from the same leaderboard; it answers "is the model
     # shippable", not "what does it say about this device".
     if path == "/ps5/device-rul":
         # act_now (overdue AND <=30 days RUL) leads, then shortest RUL. Ranks in

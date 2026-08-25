@@ -120,16 +120,6 @@ INSERT INTO ps2_hmm_regimes (city_id, regime, pct, dwell_days_min, dwell_days_ma
   ('CHI','Moderate',76.4, 3.8, 6.3, DATE '2026-07-11')
 ON CONFLICT (city_id, regime, computed_date) DO UPDATE SET pct = EXCLUDED.pct;
 
--- ---------- backfill: PS5 reliability STATUS (concordance only; gate CLOSED) ----------
-INSERT INTO ps5_reliability_status
-  (city_id, device_type, concordance_index, registry_status, dashboard_ready, blockers, as_of_date) VALUES
-  ('CHI','gates',     0.5906,'clean_v1',                   FALSE,'', DATE '2026-07-11'),
-  ('CHI','tvms',      0.5071,'broken_champion_selection',  FALSE,'#89 TVM MLflow registry CI=nan churn', DATE '2026-07-11'),
-  ('CHI','validators',0.5970,'clean_v1',                   FALSE,'incomplete artifact export (cox_ph_model.pkl missing, 369MB .crdownload)', DATE '2026-07-11')
-ON CONFLICT (city_id, device_type, as_of_date) DO UPDATE
-  SET concordance_index = EXCLUDED.concordance_index, registry_status = EXCLUDED.registry_status;
-
-
 -- NOTE (execution-surfaced, do NOT auto-apply the v4 view until fixed):
 -- docs/schema.sql section 14 CREATE VIEW v_executive_summary references
 -- ml_models.primary_metric_value and ml_models.is_champion, plus

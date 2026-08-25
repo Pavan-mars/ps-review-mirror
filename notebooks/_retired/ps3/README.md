@@ -58,3 +58,12 @@ Moved here 2026-08-18 — not part of the live daily pipeline. Nothing deleted; 
 | `gold_device_ps3_incident_incremental.sql` | Human reference; driver uses `sql/gold/device_ps3_incident__create.sql` |
 
 See [docs/PS3_GO_LIVE_GUIDE.md](../../docs/PS3_GO_LIVE_GUIDE.md).
+
+## eventbridge_schedule_cron_alternative.json (retired 25-Aug-2026)
+A 26-Jul "belt-and-suspenders" CRON trigger design for the PS3 daily chain. Retired
+because (a) it references databricks/job_ps3_daily_workflow.json, which does not exist
+on any branch - the companion never landed; (b) it creates the rule ENABLED, against
+the DISABLED-first convention; and (c) the event-driven path it was a fallback for is
+now DEPLOYED: state machine cubic-mars-ps3-daily-scoring + three DISABLED rules
+(cubic-mars-ps3-gold-export-complete / -sfn-failed / -batch-failed), stood up 25-Aug.
+Do not resurrect the cron path; the gold-complete event is the trigger of record.

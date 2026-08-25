@@ -241,7 +241,10 @@ run aws events put-rule --name cubic-mars-ps1-gold-complete \
     --event-pattern "$PATTERN_GOLD" --state DISABLED --region "$REGION" \
     --description "PS1 daily scoring trigger. Gold-layer completion, not a clock. Created DISABLED 2026-08-11."
 run aws events put-targets --rule cubic-mars-ps1-gold-complete --region "$REGION" \
-    --targets "Id=ps1-sfn,Arn=${SFN_ARN},RoleArn=arn:aws:iam::${ACCT}:role/REPLACE_EVENTS_INVOKE_SFN_ROLE,Input={\"fleets\":[\"GATE\",\"TVM\",\"VALIDATOR\"]}"
+    --targets "Id=ps1-sfn,Arn=${SFN_ARN},RoleArn=arn:aws:iam::${ACCT}:role/REPLACE_EVENTS_INVOKE_SFN_ROLE"
+# No Input= on purpose: a static Input REPLACES the whole event, so the
+# state machine never saw asof_date or city (S1, found 24-Aug). The ASL's
+# ParseEvent state now lifts detail.* itself and injects the fleet list.
 
 # ---------------------------------------------------------------------
 step "4  RULE 2  Step Functions failure -> SNS   (created DISABLED)"

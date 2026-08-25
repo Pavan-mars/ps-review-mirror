@@ -1,7 +1,21 @@
 {
   "Comment": "PS1 daily scoring. Triggered by Gold-layer completion, NOT by a clock. asof_date arrives in the event and is passed down -- two components independently guessing the same date is a race.",
-  "StartAt": "ScoreFleets",
+  "StartAt": "ParseEvent",
   "States": {
+    "ParseEvent": {
+      "Type": "Pass",
+      "Comment": "EventBridge delivers the raw gold-complete event. This lifts detail.* to the top level and injects the fleet list, so the rule needs NO static Input= (a static Input REPLACES the event and starved this machine of asof_date - the S1 defect, fixed 25-Aug; the PS3 machine had this state from day one).",
+      "Parameters": {
+        "fleets": [
+          "GATE",
+          "TVM",
+          "VALIDATOR"
+        ],
+        "asof_date.$": "$.detail.asof_date",
+        "city.$": "$.detail.city"
+      },
+      "Next": "ScoreFleets"
+    },
     "ScoreFleets": {
       "Type": "Map",
       "ItemsPath": "$.fleets",
@@ -21,7 +35,10 @@
               "ProcessingJobName.$": "States.Format('ps1-score-{}-{}', $.fleet, $.asof_date)",
               "AppSpecification": {
                 "ImageUri": "REPLACE_WITH_MANAGED_DLC_URI",
-                "ContainerEntrypoint": ["python3", "/opt/ml/processing/input/code/ps1_batch_score_daily.py"]
+                "ContainerEntrypoint": [
+                  "python3",
+                  "/opt/ml/processing/input/code/ps1_batch_score_daily.py"
+                ]
               },
               "RoleArn": "REPLACE_WITH_SAGEMAKER_EXECUTION_ROLE",
               "ProcessingResources": {
@@ -31,11 +48,15 @@
                   "VolumeSizeInGB": 50
                 }
               },
-              "StoppingCondition": { "MaxRuntimeInSeconds": 3600 }
+              "StoppingCondition": {
+                "MaxRuntimeInSeconds": 3600
+              }
             },
             "Retry": [
               {
-                "ErrorEquals": ["SageMaker.AmazonSageMakerException"],
+                "ErrorEquals": [
+                  "SageMaker.AmazonSageMakerException"
+                ],
                 "IntervalSeconds": 60,
                 "MaxAttempts": 2,
                 "BackoffRate": 2
@@ -46,11 +67,16 @@
         }
       },
       "Catch": [
-        { "ErrorEquals": ["States.ALL"], "Next": "NotifyFailure", "ResultPath": "$.error" }
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "NotifyFailure",
+          "ResultPath": "$.error"
+        }
       ],
       "Next": "TriggerCrossWire"
     },
-
     "TriggerCrossWire": {
       "Comment": "Databricks cross_wired_daily_job, with asof_date passed EXPLICITLY. Do not let the job re-derive 'latest transit_day' -- that is a second guess at the same fact.",
       "Type": "Task",
@@ -65,11 +91,16 @@
         }
       },
       "Catch": [
-        { "ErrorEquals": ["States.ALL"], "Next": "NotifyFailure", "ResultPath": "$.error" }
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "NotifyFailure",
+          "ResultPath": "$.error"
+        }
       ],
       "End": true
     },
-
     "NotifyFailure": {
       "Type": "Task",
       "Resource": "arn:aws:states:::sns:publish",
@@ -80,7 +111,9 @@
       },
       "Next": "Fail"
     },
-
-    "Fail": { "Type": "Fail", "Error": "PS1DailyScoringFailed" }
+    "Fail": {
+      "Type": "Fail",
+      "Error": "PS1DailyScoringFailed"
+    }
   }
 }

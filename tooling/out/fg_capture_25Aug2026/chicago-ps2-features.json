@@ -1,0 +1,106 @@
+{
+    "FeatureGroupArn": "arn:aws:sagemaker:us-east-1:170202974600:feature-group/chicago-ps2-features",
+    "FeatureGroupName": "chicago-ps2-features",
+    "RecordIdentifierFeatureName": "DEVICE_ID",
+    "EventTimeFeatureName": "event_time",
+    "FeatureDefinitions": [
+        {
+            "FeatureName": "chain_length",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "critical_in_chain",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "oos_in_chain",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "distinct_subsystems",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "has_dopp_in_chain",
+            "FeatureType": "String"
+        },
+        {
+            "FeatureName": "has_scrst_in_chain",
+            "FeatureType": "String"
+        },
+        {
+            "FeatureName": "cashbox_events",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "bill_cashbox_events",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "coin_cashbox_events",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "bus_cashbox_events",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "total_cash_value_cents",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "total_dump_count",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "has_cash_cascade",
+            "FeatureType": "String"
+        },
+        {
+            "FeatureName": "has_gate_mech_in_chain",
+            "FeatureType": "String"
+        },
+        {
+            "FeatureName": "has_printer_in_chain",
+            "FeatureType": "String"
+        },
+        {
+            "FeatureName": "has_csc_reader_in_chain",
+            "FeatureType": "String"
+        },
+        {
+            "FeatureName": "DEVICE_ID",
+            "FeatureType": "String"
+        },
+        {
+            "FeatureName": "event_time",
+            "FeatureType": "String"
+        }
+    ],
+    "CreationTime": "2026-06-29T09:00:12.756000+00:00",
+    "OnlineStoreConfig": {
+        "EnableOnlineStore": true
+    },
+    "OfflineStoreConfig": {
+        "S3StorageConfig": {
+            "S3Uri": "s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/feature-store/chicago-ps2-features",
+            "ResolvedOutputS3Uri": "s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/feature-store/chicago-ps2-features/170202974600/sagemaker/us-east-1/offline-store/chicago-ps2-features-1782723612/data"
+        },
+        "DisableGlueTableCreation": false,
+        "DataCatalogConfig": {
+            "TableName": "chicago_ps2_features_1782723612",
+            "Catalog": "AwsDataCatalog",
+            "Database": "sagemaker_featurestore"
+        }
+    },
+    "ThroughputConfig": {
+        "ThroughputMode": "OnDemand"
+    },
+    "RoleArn": "arn:aws:iam::170202974600:role/cubic-mars-role-sagemaker-exec-dev",
+    "FeatureGroupStatus": "Created",
+    "OfflineStoreStatus": {
+        "Status": "Active"
+    },
+    "Description": "PS2 cascade chain features — Chicago Ventra",
+    "OnlineStoreTotalSizeBytes": 1042530
+}

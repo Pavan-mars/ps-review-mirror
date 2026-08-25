@@ -1,0 +1,106 @@
+{
+    "FeatureGroupArn": "arn:aws:sagemaker:us-east-1:170202974600:feature-group/chicago-ps3-features",
+    "FeatureGroupName": "chicago-ps3-features",
+    "RecordIdentifierFeatureName": "DEVICE_ID",
+    "EventTimeFeatureName": "event_time",
+    "FeatureDefinitions": [
+        {
+            "FeatureName": "events_24h_prior",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "oos_onsets_24h",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "bhu_events_24h",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "chu_events_24h",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "printer_events_24h",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "gate_mech_events_24h",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "csc_reader_events_24h",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "comms_events_24h",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "oos_onsets_7d_prior",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "events_7d_prior",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "component_age_days",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "from_cta_sn_mirror",
+            "FeatureType": "String"
+        },
+        {
+            "FeatureName": "from_svn_stage",
+            "FeatureType": "String"
+        },
+        {
+            "FeatureName": "sn_priority",
+            "FeatureType": "Fractional"
+        },
+        {
+            "FeatureName": "sn_event_code_id",
+            "FeatureType": "Fractional"
+        },
+        {
+            "FeatureName": "failure_level_label",
+            "FeatureType": "Integral"
+        },
+        {
+            "FeatureName": "DEVICE_ID",
+            "FeatureType": "String"
+        },
+        {
+            "FeatureName": "event_time",
+            "FeatureType": "String"
+        }
+    ],
+    "CreationTime": "2026-07-13T06:50:11.178000+00:00",
+    "OnlineStoreConfig": {
+        "EnableOnlineStore": true
+    },
+    "OfflineStoreConfig": {
+        "S3StorageConfig": {
+            "S3Uri": "s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/feature-store/chicago-ps3-features",
+            "ResolvedOutputS3Uri": "s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/feature-store/chicago-ps3-features/170202974600/sagemaker/us-east-1/offline-store/chicago-ps3-features-1783925411/data"
+        },
+        "DisableGlueTableCreation": false,
+        "DataCatalogConfig": {
+            "TableName": "chicago_ps3_features_1783925411",
+            "Catalog": "AwsDataCatalog",
+            "Database": "sagemaker_featurestore"
+        }
+    },
+    "ThroughputConfig": {
+        "ThroughputMode": "OnDemand"
+    },
+    "RoleArn": "arn:aws:iam::170202974600:role/cubic-mars-role-sagemaker-exec-dev",
+    "FeatureGroupStatus": "Created",
+    "OfflineStoreStatus": {
+        "Status": "Active"
+    },
+    "Description": "PS3 root cause classification features — Chicago Ventra",
+    "OnlineStoreTotalSizeBytes": 187455
+}

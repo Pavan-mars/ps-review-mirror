@@ -1,0 +1,29 @@
+{
+    "ModelName": "sagemaker-scikit-learn-2026-07-24-07-42-41-792",
+    "PrimaryContainer": {
+        "Image": "683313688378.dkr.ecr.us-east-1.amazonaws.com/sagemaker-scikit-learn:1.2-1-cpu-py3",
+        "Mode": "SingleModel",
+        "ModelDataUrl": "s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/sagemaker/ps1-3d/tvm/spark-model-v1/model.tar.gz",
+        "ModelDataSource": {
+            "S3DataSource": {
+                "S3Uri": "s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/sagemaker/ps1-3d/tvm/spark-model-v1/model.tar.gz",
+                "S3DataType": "S3Object",
+                "CompressionType": "Gzip"
+            }
+        },
+        "Environment": {
+            "SAGEMAKER_CONTAINER_LOG_LEVEL": "20",
+            "SAGEMAKER_MODEL_SERVER_TIMEOUT": "3600",
+            "SAGEMAKER_PROGRAM": "inference.py",
+            "SAGEMAKER_REGION": "us-east-1",
+            "SAGEMAKER_SUBMIT_DIRECTORY": "s3://sagemaker-us-east-1-170202974600/sagemaker-scikit-learn-2026-07-24-07-42-41-346/sourcedir.tar.gz"
+        }
+    },
+    "ExecutionRoleArn": "arn:aws:iam::170202974600:role/cubic-mars-role-sagemaker-exec-dev",
+    "CreationTime": "2026-07-24T07:42:42.339000+00:00",
+    "ModelArn": "arn:aws:sagemaker:us-east-1:170202974600:model/sagemaker-scikit-learn-2026-07-24-07-42-41-792",
+    "EnableNetworkIsolation": false,
+    "DeploymentRecommendation": {
+        "RecommendationStatus": "FAILED"
+    }
+}

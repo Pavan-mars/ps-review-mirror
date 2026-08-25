@@ -1,0 +1,18 @@
+{
+    "EndpointConfigName": "chicago-ps1-3d-validator-failure-v1",
+    "EndpointConfigArn": "arn:aws:sagemaker:us-east-1:170202974600:endpoint-config/chicago-ps1-3d-validator-failure-v1",
+    "ProductionVariants": [
+        {
+            "VariantName": "AllTraffic",
+            "ModelName": "sagemaker-scikit-learn-2026-07-24-09-30-07-703",
+            "InitialInstanceCount": 1,
+            "InstanceType": "ml.m5.large",
+            "InitialVariantWeight": 1.0
+        }
+    ],
+    "CreationTime": "2026-07-24T09:30:08.675000+00:00",
+    "EnableNetworkIsolation": false,
+    "MetricsConfig": {
+        "EnableDetailedObservability": true
+    }
+}

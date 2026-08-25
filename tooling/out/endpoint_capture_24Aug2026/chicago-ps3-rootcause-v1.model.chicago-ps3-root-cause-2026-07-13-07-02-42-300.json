@@ -1,0 +1,16 @@
+{
+    "ModelName": "chicago-ps3-root-cause-2026-07-13-07-02-42-300",
+    "Containers": [
+        {
+            "Mode": "SingleModel",
+            "ModelPackageName": "arn:aws:sagemaker:us-east-1:170202974600:model-package/chicago-ps3-root-cause/14"
+        }
+    ],
+    "ExecutionRoleArn": "arn:aws:iam::170202974600:role/cubic-mars-role-sagemaker-exec-dev",
+    "CreationTime": "2026-07-13T07:02:43.136000+00:00",
+    "ModelArn": "arn:aws:sagemaker:us-east-1:170202974600:model/chicago-ps3-root-cause-2026-07-13-07-02-42-300",
+    "EnableNetworkIsolation": false,
+    "DeploymentRecommendation": {
+        "RecommendationStatus": "FAILED"
+    }
+}

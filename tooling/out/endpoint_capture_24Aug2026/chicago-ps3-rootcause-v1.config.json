@@ -1,0 +1,40 @@
+{
+    "EndpointConfigName": "chicago-ps3-rootcause-v1",
+    "EndpointConfigArn": "arn:aws:sagemaker:us-east-1:170202974600:endpoint-config/chicago-ps3-rootcause-v1",
+    "ProductionVariants": [
+        {
+            "VariantName": "AllTraffic",
+            "ModelName": "chicago-ps3-root-cause-2026-07-13-07-02-42-300",
+            "InitialInstanceCount": 1,
+            "InstanceType": "ml.m5.large",
+            "InitialVariantWeight": 1.0,
+            "VolumeSizeInGB": 8
+        }
+    ],
+    "DataCaptureConfig": {
+        "EnableCapture": true,
+        "InitialSamplingPercentage": 100,
+        "DestinationS3Uri": "s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/sagemaker/ps3/data-capture/",
+        "CaptureOptions": [
+            {
+                "CaptureMode": "Input"
+            },
+            {
+                "CaptureMode": "Output"
+            }
+        ],
+        "CaptureContentTypeHeader": {
+            "CsvContentTypes": [
+                "text/csv"
+            ],
+            "JsonContentTypes": [
+                "application/json"
+            ]
+        }
+    },
+    "CreationTime": "2026-07-13T07:02:43.582000+00:00",
+    "EnableNetworkIsolation": false,
+    "MetricsConfig": {
+        "EnableDetailedObservability": true
+    }
+}

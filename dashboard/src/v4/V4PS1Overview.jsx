@@ -685,7 +685,7 @@ function Inner({ city }) {
                 side and the screen gains ~200px -- the tabs below now start
                 above the fold instead of one scroll down. */}
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(340px,1fr) minmax(300px,0.85fr)', gap: 12, alignItems: 'stretch' }}>
-            <Panel title="From fleet to work order"
+            <Panel title="From fleet to ServiceNow ticket"
                    hint="Each stage is a subset of the one above it.">
               <Feed feed={F.stations} onRetry={() => refetch('stations')} height={100}>
                 <FunnelView data={funnel} />
@@ -695,7 +695,7 @@ function Inner({ city }) {
             <Feed feed={F.stations} onRetry={() => refetch('stations')} height={90}>
               <StatRow style={{ height: '100%' }}>
                 <Stat label="Devices in service" value={nfmt(fleet.devices)} tone="neutral" foot={`${nfmt(fleet.depots)} depots`} />
-                <Stat label="Needing a work order" value={nfmt(fleet.flagged)} tone="warning"
+                <Stat label="Needing a ServiceNow ticket" value={nfmt(fleet.flagged)} tone="warning"
                       foot={fleet.devices ? `${((fleet.flagged / fleet.devices) * 100).toFixed(0)}% of the fleet` : null} />
                 <Stat label="Critical band" value={nfmt(fleet.critical)} tone="critical" foot="Highest urgency" />
                 <Stat label="Repeat offenders" value={nfmt((F.chronic.rows || []).length)} tone="serious"
@@ -741,7 +741,7 @@ function Inner({ city }) {
         <Section accent={TAB_COLOR.ps1} eyebrow="Where the work is" title="Depots and stations"
                  sub="Real device counts per depot. Click any depot to narrow every other tab to it.">
           <Grid cols="minmax(340px,1.1fr) minmax(320px,1fr)" style={{ marginBottom: 14 }}>
-            <Panel title="Depots by devices needing a work order" hint="Click a bar to drill into that depot.">
+            <Panel title="Depots by devices needing a ServiceNow ticket" hint="Click a bar to drill into that depot.">
               <Feed feed={F.stations} onRetry={() => refetch('stations')} height={320}>
                 <RankBars data={depots.slice(0, 12).map((d) => ({ name: d.name, value: d.flagged, facility_id: d.facility_id }))}
                           xKey="value" yKey="name" height={320} color={CAT[0]} unit="Flagged"

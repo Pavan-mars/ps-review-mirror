@@ -62,6 +62,11 @@ resources:
               asof_date: ""
           new_cluster: &cross_wire_cluster
             spark_version: "15.4.x-scala2.12"
+            # 26-Aug: job clusters ran with NO AWS identity; the S3 export and
+            # the boto3 PutEvents emitter both need one. Same profile the
+            # interactive cluster has always used.
+            aws_attributes:
+              instance_profile_arn: arn:aws:iam::170202974600:instance-profile/mars-databricks-cluster-role
             node_type_id: m5d.xlarge
             num_workers: 2
             spark_conf:
@@ -91,6 +96,11 @@ resources:
               catalog: ${var.catalog}
           new_cluster: &medallion_cluster
             spark_version: "15.4.x-scala2.12"
+            # 26-Aug: job clusters ran with NO AWS identity; the S3 export and
+            # the boto3 PutEvents emitter both need one. Same profile the
+            # interactive cluster has always used.
+            aws_attributes:
+              instance_profile_arn: arn:aws:iam::170202974600:instance-profile/mars-databricks-cluster-role
             node_type_id: m5d.2xlarge
             num_workers: 4
             data_security_mode: SINGLE_USER
@@ -318,6 +328,8 @@ resources:
             notebook_path: ./notebooks/ps4_weekly_v3/PS4_SageMaker_Anomaly_Clustering_Weekly_RDS_v3_gp.ipynb
           new_cluster:
             spark_version: "15.4.x-scala2.12"
+            aws_attributes:
+              instance_profile_arn: arn:aws:iam::170202974600:instance-profile/mars-databricks-cluster-role
             node_type_id: m5d.2xlarge
             num_workers: 4
             data_security_mode: SINGLE_USER
@@ -363,6 +375,8 @@ resources:
             notebook_path: ./notebooks/ps2_cascading_failure/PS2_Failure_Patterns_v2_5_4_Union_Minutes.ipynb
           new_cluster:
             spark_version: "15.4.x-scala2.12"
+            aws_attributes:
+              instance_profile_arn: arn:aws:iam::170202974600:instance-profile/mars-databricks-cluster-role
             node_type_id: m5d.2xlarge
             num_workers: 4
             data_security_mode: SINGLE_USER

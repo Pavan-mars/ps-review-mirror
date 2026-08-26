@@ -540,7 +540,7 @@ export default function Device360Popup({ city = 'CHI', deviceId, onClose, onOpen
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 14.5, fontWeight: 780, color: IND, letterSpacing: '-0.01em' }}>Take action</div>
                   <div style={{ fontSize: 12, color: INK_2, marginTop: 1 }}>
-                    Stage a work order for review. No ticket is raised.
+                    Stage a ServiceNow ticket for review. Nothing is sent to ServiceNow yet.
                   </div>
                 </div>
                 <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -565,7 +565,7 @@ export default function Device360Popup({ city = 'CHI', deviceId, onClose, onOpen
                       cursor: staging || !d.servicenow_payload ? 'default' : 'pointer',
                     }}>
                     {staging ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
-                    {staging ? 'Staging' : 'Create work order'}
+                    {staging ? 'Staging' : 'Create ServiceNow Ticket'}
                   </button>
                 </div>
               </div>

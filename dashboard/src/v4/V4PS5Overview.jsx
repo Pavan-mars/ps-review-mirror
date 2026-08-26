@@ -495,7 +495,7 @@ function FleetStatus({ feeds }) {
 
       <Panel
         style={{ marginTop: 18 }}
-        title="Is this model allowed to drive a work order yet?"
+        title="Is this model allowed to raise a ServiceNow ticket yet?"
         hint={`The bar is a concordance of ${CINDEX_FLOOR} out of time. Below it, the ranking is not reliable enough to schedule against.`}
       >
         <div style={{ display: 'grid', gap: 10 }}>

@@ -108,8 +108,19 @@ def load_canonical_gold_select():
     # keep everything from the first WITH/SELECT after CREATE TABLE ... AS
     marker = "CREATE TABLE mars_dev.gold.device_ps3_incident AS"
     body = raw.split(marker, 1)[1] if marker in raw else raw
-    body = body.split(";")[0]                       # first statement only
-    return body.strip()
+    # First CODE semicolon ends the statement. A bare split(";") truncated the
+    # select at a semicolon INSIDE a comment (FIX 9's changelog line), handing
+    # the merge path a 290-char fragment -- the real cause of the 26-Aug
+    # PARSE_SYNTAX_ERROR. Comments are stripped only for FINDING the
+    # terminator; the returned SQL keeps them.
+    stmt_lines = []
+    for line in body.split("\n"):
+        code = line.split("--", 1)[0]
+        if ";" in code:
+            stmt_lines.append(line[:code.index(";")])
+            break
+        stmt_lines.append(line)
+    return "\n".join(stmt_lines).strip()
 
 n_added = 0
 if MODE == "full":
@@ -120,11 +131,17 @@ if MODE == "full":
 else:
     # MERGE: bound the canonical select's all_incidents CTE to new transit_days
     sel = load_canonical_gold_select()
-    bounded = sel.replace("AND transit_day >= '2024-01-01'",
-                          f"AND transit_day >= '2024-01-01' AND transit_day >= DATE '{SINCE}'", 1)
-    if "transit_day >= DATE" not in bounded:        # safety: ensure the bound was injected
-        bounded = bounded.replace("FROM mars_dev.silver.incident_root_cause",
-                                  f"FROM mars_dev.silver.incident_root_cause WHERE transit_day >= DATE '{SINCE}'", 1)
+    # Primary: extend the canonical file's own date floor (FIX 9 moved it to
+    # 2023-07-01; keep this anchor in sync with device_ps3_incident__create.sql).
+    bounded = sel.replace("AND transit_day >= '2023-07-01'",
+                          f"AND transit_day >= '2023-07-01' AND transit_day >= DATE '{SINCE}'", 1)
+    if "transit_day >= DATE" not in bounded:
+        # Fallback that cannot emit invalid SQL, whatever the canonical file
+        # looks like: wrap the whole select and bound its OUTPUT. Same rows
+        # reach the MERGE; the only cost is an unpruned scan. The old fallback
+        # spliced a WHERE ahead of an existing WHERE and did not parse.
+        bounded = f"SELECT * FROM (\n{sel}\n) __ps3_canonical WHERE transit_day >= DATE '{SINCE}'"
+        print("  [note] canonical date-floor anchor not found; bounding the outer select (unpruned but exact)")
     print(f"  gold [merge] -> bounding all_incidents to transit_day >= {SINCE}")
     if not DRY_RUN:
         spark.sql(f"CREATE OR REPLACE TEMP VIEW _ps3_incr AS {bounded}")

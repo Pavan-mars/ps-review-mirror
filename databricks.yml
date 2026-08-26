@@ -162,6 +162,14 @@ resources:
       email_notifications:
         on_failure:
           - ${workspace.current_user.userName}
+      # 26-Aug: one shared cluster for all three tasks. Per-task new_cluster
+      # meant THREE separate m5d.2xlarge x4 acquisitions per run; the third
+      # hung until the task timeout twice in a row (runs 779825167758356 and
+      # 218747713162332 - the emitter never got a cluster). Sharing also cuts
+      # ~15 min of provisioning per run.
+      job_clusters:
+        - job_cluster_key: ps3_daily
+          new_cluster: *medallion_cluster
       tasks:
         - task_key: ps3_silver_gold_incremental
           description: MERGE gold.device_ps3_incident on availability_event_id
@@ -171,7 +179,7 @@ resources:
               catalog: ${var.catalog}
               INCREMENTAL_MODE: merge
               DRY_RUN: "false"
-          new_cluster: *medallion_cluster
+          job_cluster_key: ps3_daily
           timeout_seconds: 7200
 
         - task_key: export_ps3_to_s3
@@ -184,7 +192,7 @@ resources:
               bucket: ${var.gold_bucket}
               prefix: chicago/gold
               since_date: ""
-          new_cluster: *medallion_cluster
+          job_cluster_key: ps3_daily
           timeout_seconds: 3600
 
         - task_key: ps3_gold_complete_event
@@ -200,7 +208,7 @@ resources:
               asof_date: ""
               incr_s3_uri: ""
               dry_run: "false"
-          new_cluster: *medallion_cluster
+          job_cluster_key: ps3_daily
           timeout_seconds: 1800   # 26-Aug: was 600; each task spins its own cluster and ~5-8 min of provisioning counts against the cap - run 779825167758356 timed out on the emitter before its one boto3 call ran
 
     ps3_daily_pre_score:

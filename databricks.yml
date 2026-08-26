@@ -146,7 +146,7 @@ resources:
               asof_date: ""
               dry_run: "false"
           new_cluster: *medallion_cluster
-          timeout_seconds: 600
+          timeout_seconds: 1800   # 26-Aug: was 600; each task spins its own cluster and ~5-8 min of provisioning counts against the cap - run 779825167758356 timed out on the emitter before its one boto3 call ran
 
     medallion_ps3_daily:
       name: "[${bundle.target}] cubic-mars PS3 daily pre-score"
@@ -201,7 +201,7 @@ resources:
               incr_s3_uri: ""
               dry_run: "false"
           new_cluster: *medallion_cluster
-          timeout_seconds: 600
+          timeout_seconds: 1800   # 26-Aug: was 600; each task spins its own cluster and ~5-8 min of provisioning counts against the cap - run 779825167758356 timed out on the emitter before its one boto3 call ran
 
     ps3_daily_pre_score:
       name: "[${bundle.target}] cubic-mars PS3 export + event only"
@@ -240,7 +240,7 @@ resources:
               incr_s3_uri: ""
               dry_run: "false"
           new_cluster: *cross_wire_cluster
-          timeout_seconds: 600
+          timeout_seconds: 1800   # 26-Aug: was 600; each task spins its own cluster and ~5-8 min of provisioning counts against the cap - run 779825167758356 timed out on the emitter before its one boto3 call ran
 
     ps1_daily_pre_score:
       name: "[${bundle.target}] cubic-mars PS1 pre-score only"
@@ -278,7 +278,7 @@ resources:
               asof_date: ""
               dry_run: "false"
           new_cluster: *cross_wire_cluster
-          timeout_seconds: 600
+          timeout_seconds: 1800   # 26-Aug: was 600; each task spins its own cluster and ~5-8 min of provisioning counts against the cap - run 779825167758356 timed out on the emitter before its one boto3 call ran
 
     # medallion_and_cross_wire (legacy alias) was REMOVED 25-Aug-2026.
     # It was an unscheduled full duplicate of medallion_ps1_daily INCLUDING the

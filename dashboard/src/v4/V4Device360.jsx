@@ -151,6 +151,13 @@ function DevicePicker({ city, value, onPick }) {
     if (cached) { setRoster(cached); setState({ loading: false, error: null }); return () => {}; }
     const timer = setTimeout(() => {
       (async () => {
+        // 27-Aug-2026: the conformed device dimension covers the WHOLE estate
+        // (6,619 devices) where the PS5 feed covers 1,536. Try it first; if the
+        // deployed API predates the /device/central route (or it returns
+        // nothing), fall back to the original per-fleet PS5 roster so the
+        // picker never regresses. Same one-connection-at-a-time discipline.
+        const central = await getRows('/device/central', { city, roster: 1 }).catch(() => []);
+        if (central && central.length) return [central];
         const res = [];
         for (const t of PICKER_TYPES) {
           if (!alive) return;

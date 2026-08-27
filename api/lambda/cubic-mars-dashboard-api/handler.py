@@ -1462,6 +1462,30 @@ def _device_360(city, dev):
                       "peers. That is not a probability of failure.")
     out["ps4_v3_360"] = ps4v3
 
+    # ---- Conformed identity + ServiceNow history (sql/56, added 2026-08-27) --
+    # dim_device_incident_cmdb is the loader-owned device -> incident -> CMDB CI
+    # spine. Read once here: the outbound ServiceNow payload needs the REAL
+    # cmdb_ci sys_id, serial and facility (it used to send the device_id string
+    # with u_serial/u_facility null -- the error-604 class), and the ticket
+    # history is evidence the per-PS sections cannot see: their "incidents" are
+    # availability-feed OOS episodes, not ServiceNow tickets.
+    _idr = _safe_rows(
+        "SELECT device_name, mars_device_category, device_type_name, facility_id,"
+        " facility_name, operator_name, serial_number, component_serial_nbr,"
+        " component_type, cmdb_ci_sys_id, incident_number, incident_sys_id,"
+        " opened_at, closed_at, incident_count, as_of_date"
+        " FROM v_device_central WHERE city_id=:c AND device_id=:d LIMIT 1", c=city, d=dev)
+    out["identity"] = _idr[0] if _idr else None
+    out["servicenow_history"] = ({
+        "incident_count": _idr[0].get("incident_count"),
+        "latest_incident": _idr[0].get("incident_number"),
+        "latest_opened_at": _idr[0].get("opened_at"),
+        "latest_closed_at": _idr[0].get("closed_at"),
+        "cmdb_ci_sys_id": _idr[0].get("cmdb_ci_sys_id"),
+        "note": "ServiceNow tickets linked via CMDB CI / task_ci -- distinct from "
+                "the availability-feed OOS counts in the PS sections.",
+    } if _idr else None)
+
     # ---- Cross-PS corroboration (added 2026-07-27) ----
     # The modal previously stacked five independent panels and left the reader to
     # spot the connection. This computes it: PS2 knows which SUBSYSTEM the
@@ -1575,17 +1599,31 @@ def _reco(o, prob, thr):
 
 def _sn_payload(dev, cat, o):
     ps1 = o.get("ps1", {}); ps2 = o.get("ps2", {})
+    # 2026-08-27. Identity now comes from dim_device_incident_cmdb (sql/56):
+    # cmdb_ci used to be the device_id STRING, which ServiceNow cannot match to
+    # a CI (the error-604 class), and u_serial/u_facility were null because PS2
+    # only carries them for its top-200. The dim covers the whole fleet; the
+    # old values remain as fallbacks so a missing dim row degrades, not breaks.
+    ident = o.get("identity") or {}
+    hist = o.get("servicenow_history") or {}
     prob = ps1.get("failure_probability"); band = ps1.get("risk_band", "")
     urg = {"Critical": "1", "High": "2", "Medium": "3", "Low": "3"}.get(band, "3")
+    notes = "MARS PS1 predictive signal (quality gate %s). Risk band %s. Cross-PS: PS2 cascade_days=%s in_top=%s, PS4 alerts=%s." % (
+        ps1.get("quality_gate") or "unknown",
+        band, ps2.get("cascade_days"), ps2.get("in_top_devices"), o.get("ps4", {}).get("alert_count"))
+    if hist.get("incident_count"):
+        notes += " ServiceNow history: %s ticket(s), latest %s." % (
+            hist.get("incident_count"), hist.get("latest_incident") or "n/a")
     return {
         "short_description": "Scheduled maintenance - %s (%s) PS1 3-day failure risk %s%%" % (dev, cat or "device", round((prob or 0)*100, 1)),
-        "cmdb_ci": dev, "u_device_category": cat, "u_facility": ps2.get("facility"), "u_serial": ps2.get("serial"),
+        "cmdb_ci": ident.get("cmdb_ci_sys_id") or dev,
+        "u_device_category": cat,
+        "u_facility": ident.get("facility_name") or ps2.get("facility"),
+        "u_serial": ident.get("serial_number") or ps2.get("serial"),
         "urgency": urg, "impact": urg, "category": "Hardware", "subcategory": "Predictive Maintenance",
         "u_predicted_probability": prob, "u_decision_threshold": ps1.get("decision_threshold"),
         "u_dominant_error_code": ps2.get("dom_error_code"), "u_dominant_subsystem": ps2.get("dom_subsystem"),
-        "work_notes": "MARS PS1 predictive signal (quality gate %s). Risk band %s. Cross-PS: PS2 cascade_days=%s in_top=%s, PS4 alerts=%s." % (
-            ps1.get("quality_gate") or "unknown",
-            band, ps2.get("cascade_days"), ps2.get("in_top_devices"), o.get("ps4", {}).get("alert_count")),
+        "work_notes": notes,
         "u_source": "MARS-predictive", "u_state": "staged", "caller_id": "mars.integration"}
 
 
@@ -3512,6 +3550,79 @@ def route(method, path, params, body, headers=None):
         return ok({"id": aid, "status": new})
     if path == "/overview/summary":
         return err(501, "v_executive_summary deferred to Phase 2 (needs PS1/PS3/PS4 tables)")
+    # ---- Device-central family (sql/56 + sql/57, added 2026-08-27) ----------
+    # Reads the conformed device dimension (dim_device_incident_cmdb via
+    # v_device_central) and the cross-PS v_device_360 view. Purely additive:
+    # no existing route or panel reads these. All four are read-only, and each
+    # is one view query -- no per-PS fan-out (the /ps1/xw-state-mix lesson).
+    if path == "/device/central":
+        # roster=1 -> the Device 360 picker's whole-fleet list: 4 columns, one
+        # query, bare array. Band = PS5's where scored, else PS1's, else
+        # UNSCORED -- a ROSTER convenience, not a finding (the picker's rule).
+        if str((params or {}).get("roster", "")).strip() in ("1", "true", "yes"):
+            return ok(_safe_rows(
+                "SELECT device_id, mars_device_category AS device_type, facility_id,"
+                " COALESCE(ps5_risk_band, ps1_risk_tier, 'UNSCORED') AS risk_band"
+                " FROM v_device_360 WHERE city_id = :c ORDER BY device_id", c=city))
+        cat = _PS1_CATEGORY.get(str((params or {}).get("category", "")).strip().upper())
+        fac = str((params or {}).get("facility", "")).strip()
+        q = str((params or {}).get("q", "")).strip()
+        limit = _clamp_int((params or {}).get("limit"), 200, 1, 1000)
+        offset = _clamp_int((params or {}).get("offset"), 0, 0, 100000)
+        where, kw = ["city_id = :c"], {"c": city}
+        if cat:
+            where.append("mars_device_category = :cat"); kw["cat"] = cat
+        if fac:
+            where.append("facility_id = :f"); kw["f"] = fac
+        if q:
+            where.append("(device_id ILIKE :q OR device_name ILIKE :q OR serial_number ILIKE :q)")
+            kw["q"] = "%" + q + "%"
+        w = " AND ".join(where)
+        head = _safe_rows("SELECT COUNT(*) AS n, MAX(as_of_date) AS as_of"
+                          " FROM v_device_central WHERE " + w, **kw)
+        body_rows = _safe_rows(
+            "SELECT device_id, device_key, device_name, mars_device_category,"
+            " device_type_name, facility_id, facility_name, operator_name,"
+            " serial_number, component_serial_nbr, cmdb_ci_sys_id,"
+            " incident_number, opened_at, incident_count"
+            " FROM v_device_central WHERE " + w +
+            " ORDER BY device_id LIMIT :lim OFFSET :off", lim=limit, off=offset, **kw)
+        return ok({"rows": body_rows,
+                   "total": head[0]["n"] if head else None,
+                   "as_of": str(head[0]["as_of"]) if head else None,
+                   "limit": limit, "offset": offset})
+
+    if path == "/device/360":
+        dev = (params or {}).get("device_id", "")
+        if not dev: return err(400, "device_id required")
+        if not _DEVICE_ID_RE.match(str(dev)): return err(400, "bad device_id")
+        r = _safe_rows("SELECT * FROM v_device_360 WHERE city_id = :c AND device_id = :d LIMIT 1",
+                       c=city, d=str(dev).strip().upper())
+        return ok(dict(r[0], found=True) if r else {"device_id": dev, "found": False})
+
+    if path == "/device/360/risk":
+        cat = _PS1_CATEGORY.get(str((params or {}).get("category", "")).strip().upper())
+        limit = _clamp_int((params or {}).get("limit"), 200, 1, 1000)
+        w = "city_id = :c" + (" AND mars_device_category = :cat" if cat else "")
+        kw = {"c": city}
+        if cat:
+            kw["cat"] = cat
+        # Ordering only -- no new scoring logic in SQL. PS1 fields carry the
+        # state-not-onset caveat until the relabel lands; the front end keeps
+        # its banner.
+        return ok(_safe_rows(
+            "SELECT device_id, mars_device_category, facility_name, ps1_risk_tier,"
+            " ps1_fail_prob, ps3_action_band, ps3_risk_band, ps4_severity,"
+            " ps5_risk_band, ps5_is_overdue, sn_incident_count"
+            " FROM v_device_360 WHERE " + w +
+            " ORDER BY ps1_fail_prob DESC NULLS LAST,"
+            " ps3_action_priority DESC NULLS LAST LIMIT :lim", lim=limit, **kw))
+
+    if path == "/device/360/validation":
+        return ok(_safe_rows(
+            "SELECT check_name, metric, value, computed_at FROM device_360_validation"
+            " ORDER BY check_name, metric"))
+
     if path == "/ps1/device-360":
         dev = (params or {}).get("device_id", "")
         if not dev: return err(400, "device_id required")

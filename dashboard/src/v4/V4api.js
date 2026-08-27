@@ -120,6 +120,9 @@ export const ps1 = {
   xwActNow: (city) => getRows('/ps1/xw-act-now', { city }),
   device360: (city, deviceId) => getObj('/ps1/device-360', { city, device_id: deviceId }),
   componentInventory: (city) => getRows('/fleet/component-inventory', { city }),
+  // Whole-fleet roster off the conformed device dimension (dim_device_incident_cmdb,
+  // 27-Aug): 6,619 devices vs the 1,536 the PS5 feed covers. Four columns, one call.
+  deviceCentralRoster: (city) => getRows('/device/central', { city, roster: 1 }),
 };
 
 

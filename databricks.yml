@@ -391,3 +391,55 @@ resources:
             spark_env_vars:
               PS2_RUN_MODE: "REPLAY"   # flip to PRODUCTION only after the supervised replay run passes
           timeout_seconds: 10800
+
+    dim_incident_cmdb_daily:
+      name: "[${bundle.target}] cubic-mars device-incident-CMDB dim daily"
+      description: |
+        Daily rebuild + S3 export of dim_device_incident_cmdb -- the conformed
+        device -> incident -> CMDB CI dimension (the July device_incidents CSV,
+        now pipeline-owned; that one-time upload never reached RDS). Replicates
+        the canonical join logic of PS1_VALIDATOR_Device_Bus_Serial_Map:
+        VALIDATOR incidents via silver.incident_task_ci_link x
+        bronze.servicenow_task_ci (ci_item_sys_id); TVM/GATE via
+        silver.incident_history (wm_asset), CI-enriched through
+        servicenow_incident_conformed + task_ci.task.
+        Writes gold.dim_device_incident_cmdb (Delta) and parquet + manifest to
+        chicago/dim/device_incident_cmdb/ for cubic-mars-dim-incident-loader
+        (manifest LAST -- the loader never fires on a half-written folder).
+        Kept PAUSED until one supervised run + loader round-trip is ratified;
+        upstream is frozen at the 2026-04-11 vintage until incremental
+        ingestion lands, so daily runs reproduce the same output until then.
+        First-run sequence, supervised:
+          1. databricks bundle validate; manual run; check devices=6,619-ish,
+             per-category totals, and the HBG00011 spot-check row (104
+             incidents, CI c97cb829...).
+          2. Invoke cubic-mars-dim-incident-loader dry_run, then real; expect
+             rows_loaded == the run's OUT rows.
+          3. Confirm dim_device_incident_cmdb appears in the catalog action.
+      schedule:
+        quartz_cron_expression: "0 15 0 * * ?"   # 00:15 America/Chicago = 05:15 UTC, before the loader window
+        timezone_id: America/Chicago
+        pause_status: PAUSED
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+      tasks:
+        - task_key: build_and_export
+          description: Build the device-incident-CMDB dim, write Delta + S3 parquet + manifest
+          notebook_task:
+            notebook_path: ./notebooks/dim/export_device_incident_cmdb_daily.py
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            aws_attributes:
+              instance_profile_arn: arn:aws:iam::170202974600:instance-profile/mars-databricks-cluster-role
+            node_type_id: m5d.xlarge
+            num_workers: 2
+            data_security_mode: SINGLE_USER
+            spark_env_vars:
+              DIC_CATALOG: ${var.catalog}
+              DIC_GOLD_BUCKET: ${var.gold_bucket}
+              DIC_S3_PREFIX: chicago/dim/device_incident_cmdb
+              DIC_AS_OF_DATE: ""          # blank = today UTC; set for a supervised replay
+              DIC_ENABLE_S3_EXPORT: "true"
+              DIC_WRITE_DELTA: "true"
+          timeout_seconds: 3600

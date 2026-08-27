@@ -1,0 +1,73 @@
+# CodeBuild spec for the PS3 V26 Processing image.
+#
+# Self-testing, like the dashboard image's buildspec: the image is BOOTED here
+# and only pushed if it proves it can do the things the notebook needs. A green
+# build that pushes a broken image costs a whole supervised run to discover.
+#
+# Requires a privileged (docker) amazonlinux2-x86_64-standard:5.0 project.
+# Env: ACCOUNT, REGION, REPO (must be cubic-mars-ps3-processing -- NOT
+# cubic-pdm/mars-ps3, which is the endpoint-serving image), TAG.
+version: 0.2
+
+env:
+  variables:
+    REGION: us-east-1
+    REPO: cubic-mars-ps3-processing
+    TAG: v26
+
+phases:
+  pre_build:
+    commands:
+      - set -eu
+      - ACCOUNT=${ACCOUNT:-$(aws sts get-caller-identity --query Account --output text)}
+      - URI="$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$REPO"
+      - echo "target $URI:$TAG"
+      # Refuse to push over a serving repo even if REPO is mis-set.
+      - case "$REPO" in cubic-pdm/*) echo "REPO must not be a cubic-pdm serving repo"; exit 1;; esac
+      - aws ecr describe-repositories --repository-names "$REPO" --region "$REGION" >/dev/null 2>&1
+        || aws ecr create-repository --repository-name "$REPO" --region "$REGION"
+        --image-tag-mutability IMMUTABLE --image-scanning-configuration scanOnPush=true
+      - aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
+
+  build:
+    commands:
+      - docker build -t "$REPO:$TAG" .
+
+  post_build:
+    commands:
+      # --- gate 1: the python stack the notebook imports is present ---
+      - |
+        docker run --rm --entrypoint python "$REPO:$TAG" -c "
+        import pyspark, pandas, numpy, pyarrow, sklearn, shap, boto3, papermill
+        assert numpy.__version__.startswith('1.'), 'numpy must be <2, got ' + numpy.__version__
+        print('imports OK | pyspark', pyspark.__version__, '| numpy', numpy.__version__)
+        "
+      # --- gate 2: the S3A jars are actually baked in, matched pair ---
+      - |
+        docker run --rm --entrypoint bash "$REPO:$TAG" -c '
+        ls "$SPARK_HOME/jars/" | grep -q "^hadoop-aws-3\.3\.4\.jar$" || { echo "hadoop-aws jar missing"; exit 1; }
+        ls "$SPARK_HOME/jars/" | grep -q "^aws-java-sdk-bundle-1\.12\.262\.jar$" || { echo "aws sdk bundle missing"; exit 1; }
+        echo "S3A jars OK"'
+      # --- gate 3: a local[*] session really starts, offline, and can name S3A ---
+      # This is the gate that matters. It proves JAVA_HOME resolves, the baked
+      # jars satisfy the connector, and no Ivy resolve is attempted -- the whole
+      # reason for baking them.
+      - |
+        docker run --rm --entrypoint python -e PS3_SPARK_JARS_PACKAGES= "$REPO:$TAG" -c "
+        import os
+        from pyspark.sql import SparkSession
+        pkgs = os.environ.get('PS3_SPARK_JARS_PACKAGES', 'unset')
+        assert pkgs == '', 'expected empty PS3_SPARK_JARS_PACKAGES in the image, got ' + repr(pkgs)
+        s = (SparkSession.builder.appName('gate').master('local[*]')
+             .config('spark.sql.session.timeZone','UTC').getOrCreate())
+        assert s.range(5).count() == 5
+        cls = s._jvm.java.lang.Class.forName('org.apache.hadoop.fs.s3a.S3AFileSystem')
+        print('spark OK', s.version, '| S3AFileSystem loadable:', cls is not None)
+        s.stop()
+        "
+      # --- only now does it leave the building ---
+      - docker tag "$REPO:$TAG" "$URI:$TAG"
+      - docker push "$URI:$TAG"
+      - echo "pushed $URI:$TAG"
+      - |
+        echo "next: python sagemaker/ps3/processing/run_processing_job.py --role-arn <role> --image-uri $URI:$TAG --dry-run"

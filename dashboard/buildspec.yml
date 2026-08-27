@@ -1,0 +1,56 @@
+version: 0.2
+
+# CUBIC MARS Chicago dashboard image build (CodeBuild, S3 source zip).
+# Tag comes in as IMAGE_TAG via start-build --environment-variables-override,
+# because an S3 source has no git SHA to derive one from. Never ':latest' --
+# the mutable-tag defect on the PS3 side is the reason.
+#
+# THE SMOKE GATE IS THE POINT. Revision 6 of the task definition shipped an
+# image whose /config.js served apiBaseUrl:"" -- green /healthz, dead dashboard.
+# This build FAILS if /healthz is not ok or if /config.js does not contain the
+# real API base, so that class of defect cannot reach ECR again.
+
+env:
+  variables:
+    ACCOUNT: "170202974600"
+    REGION: "us-east-1"
+    REPO: "dashboard/reactui"
+    API_BASE: "https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com"
+
+phases:
+  pre_build:
+    commands:
+      - echo "IMAGE_TAG=$IMAGE_TAG"
+      - test -n "$IMAGE_TAG" || (echo "IMAGE_TAG must be supplied" && exit 1)
+      - IMG=$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$REPO:$IMAGE_TAG
+      - echo "target $IMG"
+      - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.$REGION.amazonaws.com
+
+  build:
+    commands:
+      - IMG=$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$REPO:$IMAGE_TAG
+      - docker build --build-arg VITE_API_BASE_URL=$API_BASE -t $IMG .
+      # ---- smoke gate: the container must actually serve ----
+      - docker run -d --name smoke -e API_BASE_URL=$API_BASE -p 8080:8080 $IMG
+      - sleep 10
+      - echo "--- /healthz ---"
+      - curl -fsS http://127.0.0.1:8080/healthz
+      - echo "--- /config.js ---"
+      - curl -fsS http://127.0.0.1:8080/config.js | tee /tmp/config.js
+      # NB no "colon-space" anywhere in these command strings -- YAML reads it
+      # as a mapping separator inside a plain scalar and the whole buildspec
+      # fails to parse at DOWNLOAD_SOURCE (bitten 27-Aug).
+      - grep -q "$API_BASE" /tmp/config.js || (echo "GATE FAILED - config.js does not carry the API base" && docker logs smoke && exit 1)
+      - echo "--- SPA entry point ---"
+      - curl -fsS -o /dev/null -w "index %{http_code}\n" http://127.0.0.1:8080/v4
+      - docker rm -f smoke
+
+  post_build:
+    commands:
+      - IMG=$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$REPO:$IMAGE_TAG
+      - docker push $IMG
+      - echo "pushed $IMG"
+      # Informational only. The build role can push but may not hold
+      # ecr:DescribeImages -- a 254 here once failed an otherwise good build
+      # AFTER the push had succeeded (27-Aug). Never let it fail the build.
+      - aws ecr describe-images --repository-name $REPO --image-ids imageTag=$IMAGE_TAG --region $REGION --query 'imageDetails[0].imageDigest' --output text || echo "digest lookup unavailable to the build role - check from a shell"

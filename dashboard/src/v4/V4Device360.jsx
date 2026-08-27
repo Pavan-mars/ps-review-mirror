@@ -315,6 +315,11 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
   const ps4v3 = (d360 && d360.ps4_v3_360) || {};
   const ps5 = (d360 && d360.ps5) || {};
   const xps = (d360 && d360.cross_ps) || {};
+  // Conformed identity + ServiceNow ticket history, from dim_device_incident_cmdb
+  // (sql/56). Both sections are absent on an API that predates them, so every
+  // read below is optional and the panel simply does not render.
+  const ident = (d360 && d360.identity) || null;
+  const snh = (d360 && d360.servicenow_history) || null;
   // Same words as the popup: both read V4Evidence, so the two views of one
   // device cannot describe it differently.
   const why = useMemo(() => evidenceLines(d360), [d360]);
@@ -512,6 +517,42 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
               <KV k="Average component age" v={ps3.avg_component_age_days ? `${nfmt(ps3.avg_component_age_days)} days` : null} />
               <KV k="Last incident" v={ps3.last_incident_dtm ? dfmt(ps3.last_incident_dtm) : null} />
             </SourcePanel>
+
+            {/* SERVICENOW HISTORY IS NOT A PROBLEM STATEMENT.        27-Aug-2026
+                It is the maintenance record Cubic already holds, joined to this
+                device through the CMDB CI. It sits with the PS blocks because a
+                reader asking "what do we know about this device" wants it here,
+                but it carries no model output and says so.
+
+                THE COUNT ON THIS PANEL AND THE ONE ON ROOT CAUSE ANALYSIS ARE
+                DIFFERENT THINGS. Root Cause Analysis counts out-of-service
+                episodes from the availability feed; this counts ServiceNow
+                tickets raised against the CI. For HBG00011 that is 70 against
+                104 -- two true numbers measuring two different events. Printing
+                them without that sentence would read as a contradiction. */}
+            {(snh || ident) && (
+              <SourcePanel
+                ps="ServiceNow" title="Maintenance ticket history"
+                found={snh && snh.incident_count > 0 ? undefined : false}
+                absence={"No ServiceNow ticket is linked to this device's CMDB CI. "
+                  + "Roughly a third of the fleet is reachable from the CI map, so an "
+                  + "absence here is usually an unmapped device rather than a device "
+                  + "that has never needed attention."}
+                note={"Tickets are counted from ServiceNow via the CMDB configuration item, "
+                  + "not from the availability feed. The out-of-service episode count on the "
+                  + "Root Cause Analysis panel measures a different event and will not match."}
+              >
+                <KV k="Tickets on this CI" v={snh && snh.incident_count != null ? nfmt(snh.incident_count) : null} />
+                <KV k="Most recent ticket" v={snh && snh.latest_incident} />
+                <KV k="Raised" v={snh && snh.latest_opened_at ? dfmt(snh.latest_opened_at) : null} />
+                <KV k="Closed" v={snh && snh.latest_closed_at ? dfmt(snh.latest_closed_at) : null} />
+                <KV k="CMDB configuration item" v={(snh && snh.cmdb_ci_sys_id) || (ident && ident.cmdb_ci_sys_id)} />
+                <KV k="Serial" v={ident && (ident.serial_number || ident.component_serial_nbr)} />
+                <KV k="Component" v={ident && ident.component_type} />
+                <KV k="Station" v={ident && ident.facility_name} />
+                <KV k="Operator" v={ident && ident.operator_name} />
+              </SourcePanel>
+            )}
 
             <SourcePanel
               ps="Anomaly & Outlier Analysis" title="Anomaly detection"

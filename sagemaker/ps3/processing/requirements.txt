@@ -1,0 +1,24 @@
+# PS3 V26 Processing-job image stack.
+# The notebook installs NOTHING at run time, so whatever it imports must be
+# here: pyspark, pandas, numpy, pyarrow, sklearn, shap, boto3.
+
+# Pinned deliberately: pyspark 3.5.x ships the Hadoop 3.3.4 client that the
+# baked hadoop-aws jar must match. Do not float this without moving the two
+# jar versions in the Dockerfile with it.
+pyspark==3.5.1
+
+# numpy<2 is a project-wide rule, not a guess: numpy 2.x broke the SageMaker
+# Studio kernels outright (the "_globals has no attribute _signature_descriptor"
+# trap) and the shap/sklearn wheels in use here are built against 1.x.
+numpy<2
+pandas>=2.0,<3
+pyarrow
+scikit-learn
+shap
+boto3
+
+# Execution layer. papermill over `nbconvert --execute` for per-cell logging:
+# with --log-output each cell's stdout reaches CloudWatch as it finishes, so a
+# stalled cell is visible mid-run instead of post-mortem.
+papermill
+ipykernel

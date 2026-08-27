@@ -3614,16 +3614,34 @@ def route(method, path, params, body, headers=None):
         kw = {"c": city}
         if cat:
             kw["cat"] = cat
-        # Ordering only -- no new scoring logic in SQL. PS1 fields carry the
-        # state-not-onset caveat until the relabel lands; the front end keeps
-        # its banner.
+        # ORDERING, NOT SCORING -- and deliberately NOT led by PS1.
+        #
+        # This first ordered by ps1_fail_prob DESC. Measured 27-Aug: 398 of
+        # 1,000 devices come back at >= 0.999, because the PS1 label marks days
+        # a device was ALREADY out of service rather than the day it failed. So
+        # the top of the list was one arbitrary slice of a 398-way tie -- which
+        # looks like a ranking and is not one.
+        #
+        # signal_count is a COUNT OF INDEPENDENT ANALYSES that flagged the
+        # device, not a risk score and not a weighting: severity queued it, the
+        # anomaly run called it something other than Normal, survival says it is
+        # past its interval, ServiceNow holds a ticket. PS1 is excluded from the
+        # count on purpose -- a model that has not passed its quality gate must
+        # not decide what a reader looks at first. Its probability is still
+        # returned and shown, just not trusted to sort.
         return ok(_safe_rows(
             "SELECT device_id, mars_device_category, facility_name, ps1_risk_tier,"
             " ps1_fail_prob, ps3_action_band, ps3_risk_band, ps4_severity,"
-            " ps5_risk_band, ps5_is_overdue, sn_incident_count"
+            " ps5_risk_band, ps5_is_overdue, sn_incident_count,"
+            " ((ps3_action_band IS NOT NULL)::int"
+            "  + (ps4_severity IS NOT NULL AND ps4_severity <> 'Normal')::int"
+            "  + COALESCE(ps5_is_overdue, false)::int"
+            "  + (COALESCE(sn_incident_count, 0) > 0)::int) AS signal_count"
             " FROM v_device_360 WHERE " + w +
-            " ORDER BY ps1_fail_prob DESC NULLS LAST,"
-            " ps3_action_priority DESC NULLS LAST LIMIT :lim", lim=limit, **kw))
+            " ORDER BY signal_count DESC,"
+            " sn_incident_count DESC NULLS LAST,"
+            " ps3_action_priority DESC NULLS LAST,"
+            " ps1_fail_prob DESC NULLS LAST LIMIT :lim", lim=limit, **kw))
 
     if path == "/device/360/validation":
         return ok(_safe_rows(

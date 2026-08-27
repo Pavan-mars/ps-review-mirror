@@ -20,7 +20,7 @@
 //
 // THE SERVICENOW BUTTON STAGES. It does not raise a ticket. The label says so.
 // =====================================================================
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getObj, getRows, post, ps5 } from './V4api';
 import { Badge, Card, Chip, Empty, Grid, Loading, Note, Panel, Section, TextField, Toolbar, Rule, Tabs, V2Style,
 } from './V4Kit';
@@ -103,6 +103,101 @@ function SourcePanel({ ps, title, found, children, note, absence }) {
 
 
 const PICKER_TYPES = ['GATE', 'TVM', 'VALIDATOR'];
+
+// ---------------------------------------------------------------------
+// TRIAGE LIST -- the cold-start view for this tab.
+//
+// One row per device off v_device_360, so every column comes from the same
+// joined row and no cell can disagree with the device page it opens.
+// Fleet filter only: the point is a short list to click into, not a second
+// analysis surface. Absent values render blank rather than as zero -- a
+// device the anomaly run never scored has NO severity, which is not the
+// same as a severity of none.
+// ---------------------------------------------------------------------
+function TriageList({ city, onPick }) {
+  const [rows, setRows] = useState([]);
+  const [fleet, setFleet] = useState('ALL');
+  const [st, setSt] = useState({ loading: true, error: null });
+
+  useEffect(() => {
+    let alive = true;
+    setSt({ loading: true, error: null });
+    getRows('/device/360/risk', { city, limit: 300, ...(fleet === 'ALL' ? {} : { category: fleet }) })
+      .then((r) => { if (alive) { setRows(Array.isArray(r) ? r : []); setSt({ loading: false, error: null }); } })
+      .catch((e) => { if (alive) setSt({ loading: false, error: String((e && e.message) || e) }); });
+    return () => { alive = false; };
+  }, [city, fleet]);
+
+  // NB DataTable calls render(ROW), not render(value) -- see V4DataTable's
+  // `c.render(r)`. Passing a value-shaped callback hands the row object
+  // straight to React and blanks the page with error #31.
+  const blank = (v) => (v === null || v === undefined || v === '' ? '' : String(v));
+  const columns = useMemo(() => ([
+    { key: 'signal_count', label: 'Signals', num: true, width: 84,
+      render: (r) => (r.signal_count === null || r.signal_count === undefined
+        ? '' : `${r.signal_count} of 4`) },
+    { key: 'device_id', label: 'Device', flex: 1.1 },
+    { key: 'mars_device_category', label: 'Fleet', width: 96,
+      render: (r) => deviceShort(r.mars_device_category) },
+    { key: 'facility_name', label: 'Station', flex: 1.4,
+      render: (r) => blank(r.facility_name) },
+    { key: 'ps1_fail_prob', label: 'Failure prob.', num: true, width: 110,
+      render: (r) => (r.ps1_fail_prob === null || r.ps1_fail_prob === undefined
+        ? '' : pct(r.ps1_fail_prob)) },
+    { key: 'ps1_risk_tier', label: 'Failure band', width: 110, render: (r) => blank(r.ps1_risk_tier) },
+    { key: 'ps3_action_band', label: 'Severity action', flex: 1, render: (r) => blank(r.ps3_action_band) },
+    { key: 'ps4_severity', label: 'Anomaly', width: 96, render: (r) => blank(r.ps4_severity) },
+    { key: 'ps5_risk_band', label: 'Life band', width: 96, render: (r) => blank(r.ps5_risk_band) },
+    { key: 'sn_incident_count', label: 'SN tickets', num: true, width: 96,
+      render: (r) => (r.sn_incident_count ? nfmt(r.sn_incident_count) : '') },
+  ]), []);
+
+  return (
+    <Section accent={TAB_COLOR.device}
+      eyebrow="Where to start"
+      title="Devices with the most signals against them"
+      sub="One row per device, every column read from the same cross-problem-statement row this page opens."
+      right={
+        <Toolbar>
+          {['ALL', ...PICKER_TYPES].map((f) => (
+            <Chip key={f} active={fleet === f} onClick={() => setFleet(f)}>
+              {f === 'ALL' ? 'All fleets' : deviceShort(f)}
+            </Chip>
+          ))}
+        </Toolbar>
+      }
+    >
+      {st.loading && <Loading height={180} label="Loading the shortlist" />}
+      {st.error && <Empty height={120}>{`The shortlist could not be loaded (${st.error}). The device lookup above still works.`}</Empty>}
+      {!st.loading && !st.error && (
+        <>
+          <DataTable
+            rows={rows}
+            columns={columns}
+            height={380}
+            rowKey={(r) => r.device_id}
+            onRowClick={(r) => onPick && onPick(r.device_id)}
+            emptyText="No devices for this fleet."
+            exportName={`device_triage_${city}`}
+          />
+          <Note>
+            Signals counts how many analyses flagged this device out of four --
+            a severity action was queued, the anomaly run called it something
+            other than Normal, survival says it is past its typical interval, or
+            ServiceNow holds a ticket against it. It is a count of agreement, not
+            a risk score, and nothing here is weighted. Failure Prediction is
+            deliberately NOT counted: its label marks days a device was already
+            out of service rather than the day it failed, so 398 devices share a
+            probability of 100% and sorting on it returns an arbitrary slice of
+            that tie. The probability is still shown; it just does not decide the
+            order. Blank cells mean the analysis did not score this device, which
+            is not the same as a score of zero.
+          </Note>
+        </>
+      )}
+    </Section>
+  );
+}
 
 // FETCHED ONCE PER SESSION, NOT PER VISIT. The roster is ~560 KB across the
 // three fleets and never changes while the page is open, so re-pulling and
@@ -290,9 +385,17 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
   // React to a device pushed in from another screen. Device 360 previously
   // took initialDevice as seed state only, so arriving from an Analyse modal
   // landed on an empty search box with the id in the URL and nothing loaded.
+  //
+  // 27-Aug-2026. The guard used to be `d !== device`, and `device` is SEEDED
+  // from initialDevice above -- so a deep link already present at mount made
+  // the two equal and the load never fired. The id sat in the box and the
+  // reader had to press Look up. Timing hid it: the hash used to arrive after
+  // mount, so the values differed. Tracking the id we last loaded fires on
+  // mount AND on change, and cannot double-fetch the same device.
+  const loadedIdRef = useRef('');
   useEffect(() => {
     const d = String(initialDevice || '').trim().toUpperCase();
-    if (d && d !== device) { setQ(d); load(d); }
+    if (d && loadedIdRef.current !== d) { loadedIdRef.current = d; setQ(d); load(d); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialDevice]);
 
@@ -391,6 +494,22 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
       />
 
       {!device && <Note>Enter a device id above. Ids look like RVG06302 (fare gate), BMV03868 (bus validator) or TVM03402.</Note>}
+
+      {/* WHERE TO START WHEN YOU DO NOT ALREADY KNOW A DEVICE.  27-Aug-2026
+          Every other route into this page assumes a device id in hand -- a
+          deep link, the Analyse button, the picker. Someone opening the tab
+          cold had a text box and nothing else. This is the one screen where
+          all five problem statements are already joined per device, so a
+          cross-PS shortlist costs one query.
+
+          THE ORDER IS NOT A RANKING OF RISK. It sorts by the Failure
+          Prediction probability, and that model has not passed its quality
+          gate: its label marks days a device was ALREADY out of service, not
+          the day it went out, which inflates positives roughly nineteenfold.
+          Saying "start here" would be dressing an unresolved defect as a work
+          queue. The note below says what the order is, so a reader can
+          discount it. */}
+      {!device && <TriageList city={city} onPick={(id) => { setQ(id); load(id); }} />}
 
       {state.loading && <Loading height={200} label={`Loading ${device}`} />}
 

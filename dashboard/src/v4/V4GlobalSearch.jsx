@@ -75,12 +75,21 @@ export function useSearchIndex(base, city = 'CHI', enabled = true) {
     if (!enabled) return undefined;
     if (!base) { setReady(true); return undefined; }
     (async () => {
-      const [preds, ps2dev, serials, stations, buses] = await Promise.all([
+      const [preds, ps2dev, serials, stations, buses, central] = await Promise.all([
         safeGet(base, `/ps1/predictions?city=${city}`),
         safeGet(base, `/ps2/devices?city=${city}`),
         safeGet(base, `/fleet/device-serials?city=${city}`),
         safeGet(base, `/ps1/station-summary?city=${city}`),
         safeGet(base, `/fleet/device-bus?city=${city}`),
+        // 27-Aug-2026. THE INDEX USED TO BE THE UNION OF WHAT THE MODELS SCORED.
+        // Devices came from /ps1/predictions (a top-N list) and /ps2/devices
+        // (the 200-device cascade catalogue), so a device no model had scored
+        // was UNFINDABLE -- typing its exact id returned nothing, which reads
+        // as "no such device" rather than "not scored". The conformed device
+        // dimension is the whole in-scope estate, 6,619 rows in one call.
+        // Optional like every other source here: an API without the route
+        // falls back to the old, narrower index rather than failing the box.
+        safeGet(base, `/device/central?city=${city}&roster=1`),
       ]);
       if (!alive) return;
 
@@ -89,6 +98,10 @@ export function useSearchIndex(base, city = 'CHI', enabled = true) {
         if (!id) return;
         byDevice.set(id, { ...(byDevice.get(id) || {}), ...patch });
       };
+      // Seeded FIRST so the richer per-model sources below overwrite its
+      // fields rather than the other way round -- the dimension supplies
+      // breadth, the model feeds supply detail.
+      central.forEach((r) => add(r.device_id, { type: r.device_type, depot: r.facility_id }));
       preds.forEach((r) => add(r.device_id, { type: r.device_category, depot: r.facility_id, risk: r.failure_probability }));
       ps2dev.forEach((r) => add(r.device_id, { type: r.category || undefined, name: r.device_name, depot: r.facility, operator: r.operator }));
       buses.forEach((r) => add(r.device_id, { bus: r.bus_id, depot: r.facility_name || undefined, type: r.device_category || undefined }));

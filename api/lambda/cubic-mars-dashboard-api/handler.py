@@ -3591,9 +3591,12 @@ def route(method, path, params, body, headers=None):
             " incident_number, opened_at, incident_count"
             " FROM v_device_central WHERE " + w +
             " ORDER BY device_id LIMIT :lim OFFSET :off", lim=limit, off=offset, **kw)
+        # as_of stays NULL when nothing matched. str(None) would ship the STRING
+        # "None", which is truthy in JS and would render as a date on screen.
+        _as_of = head[0]["as_of"] if head else None
         return ok({"rows": body_rows,
                    "total": head[0]["n"] if head else None,
-                   "as_of": str(head[0]["as_of"]) if head else None,
+                   "as_of": str(_as_of) if _as_of is not None else None,
                    "limit": limit, "offset": offset})
 
     if path == "/device/360":

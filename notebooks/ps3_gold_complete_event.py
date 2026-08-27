@@ -80,7 +80,9 @@ if n_asof == 0:
 
 if not incr_uri:
     bucket = dbutils.widgets.get("bucket").strip()
-    incr_uri = f"s3://{bucket}/chicago/gold/device_ps3_incident_incr/asof={asof_date}"
+    # Default to the JSONL scoring feed: the Batch Transform reads JSON lines,
+    # not the parquet slice (execution 53495197 proved it the hard way).
+    incr_uri = f"s3://{bucket}/chicago/gold/device_ps3_incident_incr_jsonl/asof={asof_date}"
 
 detail = {
     "city": city_id,

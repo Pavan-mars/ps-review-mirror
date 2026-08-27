@@ -47,8 +47,38 @@ slice_df = spark.table(GOLD).where(f"transit_day >= DATE '{since}'")
 n_incr = slice_df.count()
 slice_df.write.format("parquet").mode("overwrite").save(incr_dest)
 print(f"[incr]  {n_incr:,} new incidents (since {since}) -> {incr_dest}")
+
+# 3) JSON-lines scoring feed for SageMaker Batch Transform.
+#    The transform is ContentType application/json + SplitType LINE, and the
+#    container's input_fn parses JSON records -- it cannot eat the parquet
+#    slice (execution 53495197 failed exactly there, AlgorithmError 48s in).
+#    predict_fn fills missing feature columns itself, so raw gold rows are a
+#    valid payload. Written per-part via boto3 so NO _SUCCESS/_committed
+#    marker files land in the prefix -- the transform ingests every object
+#    under its S3Prefix, and a marker file would poison the batch.
+jsonl_dest = f"s3://{BUCKET}/{PREFIX}/device_ps3_incident_incr_jsonl/asof={TODAY}"
+if n_incr == 0:
+    print("[jsonl] 0 new incidents -- no scoring feed written (nothing to score)")
+else:
+    import boto3
+    _s3 = boto3.client("s3")
+    _prefix_key = jsonl_dest.replace(f"s3://{BUCKET}/", "")
+    _part, _rows, _n = 0, [], 0
+    for _r in slice_df.toJSON().toLocalIterator():
+        _rows.append(_r); _n += 1
+        if len(_rows) >= 100000:
+            _s3.put_object(Bucket=BUCKET, Key=f"{_prefix_key}/scoring_input_{_part:04d}.jsonl",
+                           Body="\n".join(_rows).encode("utf-8"))
+            _part += 1; _rows = []
+    if _rows:
+        _s3.put_object(Bucket=BUCKET, Key=f"{_prefix_key}/scoring_input_{_part:04d}.jsonl",
+                       Body="\n".join(_rows).encode("utf-8"))
+        _part += 1
+    print(f"[jsonl] {_n:,} records in {_part} file(s) -> {jsonl_dest}")
+
 print(f"\nScorer input : s3://{BUCKET}/{PREFIX}/device_ps3_incident_incr/asof={TODAY}")
 print(f"Notebook input: s3://{BUCKET}/{PREFIX}/device_ps3_incident")
 # emit for the job's downstream task
-dbutils.jobs.taskValues.set(key="incr_s3_uri", value=incr_dest) if hasattr(dbutils, "jobs") else None
+# The scorer consumes the JSONL feed, not the parquet slice.
+dbutils.jobs.taskValues.set(key="incr_s3_uri", value=jsonl_dest) if hasattr(dbutils, "jobs") else None
 dbutils.jobs.taskValues.set(key="asof", value=TODAY) if hasattr(dbutils, "jobs") else None

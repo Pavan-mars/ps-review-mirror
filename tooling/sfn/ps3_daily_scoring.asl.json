@@ -1,5 +1,5 @@
 {
-  "Comment": "PS3 daily scoring chain — triggered by EventBridge PS3 Gold Export Complete. Values pinned 25-Aug-2026: Model = the retained chicago-ps3-root-cause Model object (endpoint deleted under D-4, Model kept; pins model package v14). Scored prefix per PS3_GO_LIVE_GUIDE section 4. SNS = the shared alerts topic, which gained its first confirmed subscriber 25-Aug. All rules start DISABLED. The transform job name carries the execution name because SageMaker job names are unique per account+region forever, including names taken by FAILED jobs — a date-only name makes every same-day retry impossible.",
+  "Comment": "PS3 daily scoring chain — triggered by EventBridge PS3 Gold Export Complete. Values pinned 25-Aug-2026: Model = the retained chicago-ps3-root-cause Model object (endpoint deleted under D-4, Model kept; pins model package v14). Scored prefix per PS3_GO_LIVE_GUIDE section 4. SNS = the shared alerts topic, which gained its first confirmed subscriber 25-Aug. All rules start DISABLED. The transform job name carries the execution name because SageMaker job names are unique per account+region forever, including names taken by FAILED jobs — a date-only name makes every same-day retry impossible. NOT READY TO ENABLE: LoadRDS still targets cubic-mars-ps3-v25-loader, which reads chicago/ps3_outputs parquet and is fenced against this scored prefix, and which signals failure by RETURNING statusCode 500 rather than raising - so it neither loads these scores nor fails the execution when it loads nothing. Build the scored-prefix loader and repoint this state before enabling any rule.",
   "StartAt": "ParseEvent",
   "States": {
     "ParseEvent": {
@@ -27,8 +27,9 @@
           "ContentType": "application/json",
           "SplitType": "Line"
         },
+        "BatchStrategy": "SingleRecord",
         "TransformOutput": {
-          "S3OutputPath": "s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/chicago/ps3/scored/",
+          "S3OutputPath.$": "States.Format('s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/chicago/ps3/scored/asof={}/', $.asof_date)",
           "Accept": "application/json"
         },
         "TransformResources": {
@@ -36,9 +37,11 @@
           "InstanceCount": 1
         }
       },
+      "ResultPath": "$.transform",
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
           "Next": "NotifyFailure"
         }
       ],
@@ -58,6 +61,7 @@
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
           "Next": "NotifyFailure"
         }
       ],

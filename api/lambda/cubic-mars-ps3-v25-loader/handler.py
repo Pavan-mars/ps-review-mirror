@@ -373,6 +373,22 @@ def read_parts(bucket, key_prefix):
     return rows, len(keys)
 
 
+class PS3LoadFailed(Exception):
+    """Raised so the caller sees a FUNCTION ERROR, not a 500 body.
+
+    Returning {"statusCode": 500} from a Lambda is a SUCCESSFUL invocation.
+    Step Functions' lambda:invoke fails only on a function error, so every
+    fatal refusal below used to reach the state machine as a green step and
+    the execution terminated SUCCEEDED having loaded nothing.
+    """
+
+
+def _fail(res):
+    log.error("PS3v25 FAILED %s", json.dumps(res.get("summary") or {}, default=str))
+    log.info(json.dumps(res, default=str)[:3000])
+    raise PS3LoadFailed(res.get("error") or "ps3 v25 load failed")
+
+
 def lambda_handler(event, context):
     event = event or {}
     dry = bool(event.get("dry_run"))
@@ -385,7 +401,7 @@ def lambda_handler(event, context):
     if not found:
         res["status"] = "failed"
         res["error"] = f"no computed_date=/run_id= partitions under {res['prefix']}/"
-        return {"statusCode": 500, "body": json.dumps(res)}
+        _fail(res)
 
     chosen, run_report = choose_run(found, event.get("computed_date"), event.get("run_id"))
     res["runs_considered"] = run_report[:8]
@@ -397,7 +413,7 @@ def lambda_handler(event, context):
         res["error"] = ("no run under the prefix carries all "
                         f"{len(EXPECTED_TABLES)} expected tables; see runs_considered. "
                         "Refusing rather than loading a partial run.")
-        return {"statusCode": 500, "body": json.dumps(res, default=str)}
+        _fail(res)
 
     cdate, run_id = chosen
     res["computed_date"], res["run_id"] = cdate, run_id
@@ -542,9 +558,24 @@ def lambda_handler(event, context):
             res["loaded"][src_table] = entry
             del shaped
 
-        if not dry:
-            c.run("COMMIT")
-        res["status"] = "dry_run_ok" if dry else "committed"
+        if dry:
+            res["status"] = "dry_run_ok"
+        else:
+            # All-or-nothing, matching the run-selection gate's stated intent.
+            # Every per-table guard above `continue`s BEFORE that table's DELETE,
+            # so a refusal leaves the previous run's rows in place while its
+            # siblings are replaced. Committing that publishes a mixed-vintage
+            # dashboard, and /ps3/status cannot reveal it because each v25 route
+            # resolves its own MAX(computed_date) per table.
+            partial = sorted(set(res["refused"]) | set(res["errors"]) | set(res["no_target"]))
+            if partial:
+                c.run("ROLLBACK")
+                res["status"] = "failed"
+                res["error"] = ("refusing a partial load; NO table was written. "
+                                "Offending: " + ", ".join(partial))
+            else:
+                c.run("COMMIT")
+                res["status"] = "committed"
     except Exception as e:
         if not dry:
             try:
@@ -566,5 +597,6 @@ def lambda_handler(event, context):
     # answer "did it commit".
     log.info("PS3v25 %s %s", res.get("status"), json.dumps(res["summary"]))
     log.info(json.dumps(res, default=str)[:3000])
-    return {"statusCode": 200 if res.get("status") != "failed" else 500,
-            "body": json.dumps(res, default=str)}
+    if res.get("status") == "failed":
+        raise PS3LoadFailed(res.get("error") or "ps3 v25 load failed")
+    return {"statusCode": 200, "body": json.dumps(res, default=str)}

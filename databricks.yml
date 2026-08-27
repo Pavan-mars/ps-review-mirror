@@ -191,7 +191,9 @@ resources:
               catalog: ${var.catalog}
               bucket: ${var.gold_bucket}
               prefix: chicago/gold
-              since_date: ""
+              # the PRE-merge watermark, published by the task above; blank here
+              # would re-read the watermark the merge just advanced
+              since_date: "{{tasks.ps3_silver_gold_incremental.values.since}}"
           job_cluster_key: ps3_daily
           timeout_seconds: 3600
 
@@ -205,8 +207,12 @@ resources:
               catalog: ${var.catalog}
               city_id: CHI
               bucket: ${var.gold_bucket}
-              asof_date: ""
-              incr_s3_uri: ""
+              # forwarded from the exporter, NOT re-derived. The exporter
+              # partitions the feed on the cluster's calendar date; the emitter
+              # falls back to MAX(transit_day), the data date. Whenever those
+              # differ, a re-derived URI names a prefix that holds no objects.
+              asof_date: "{{tasks.export_ps3_to_s3.values.asof}}"
+              incr_s3_uri: "{{tasks.export_ps3_to_s3.values.incr_s3_uri}}"
               dry_run: "false"
           job_cluster_key: ps3_daily
           timeout_seconds: 1800   # 26-Aug: was 600; each task spins its own cluster and ~5-8 min of provisioning counts against the cap - run 779825167758356 timed out on the emitter before its one boto3 call ran
@@ -244,8 +250,8 @@ resources:
               catalog: ${var.catalog}
               city_id: CHI
               bucket: ${var.gold_bucket}
-              asof_date: ""
-              incr_s3_uri: ""
+              asof_date: "{{tasks.export_ps3_to_s3.values.asof}}"
+              incr_s3_uri: "{{tasks.export_ps3_to_s3.values.incr_s3_uri}}"
               dry_run: "false"
           new_cluster: *cross_wire_cluster
           timeout_seconds: 1800   # 26-Aug: was 600; each task spins its own cluster and ~5-8 min of provisioning counts against the cap - run 779825167758356 timed out on the emitter before its one boto3 call ran

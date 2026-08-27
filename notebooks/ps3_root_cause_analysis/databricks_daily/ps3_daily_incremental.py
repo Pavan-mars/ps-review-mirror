@@ -82,6 +82,16 @@ def current_watermark():
 SINCE = current_watermark()
 print(f"ps3_daily_incremental | mode={MODE} | since={SINCE} | DRY_RUN={DRY_RUN}")
 
+# Publish the PRE-merge watermark for the export task. The merge below appends a
+# new row to WM_TABLE, so an export that re-reads MAX(last_transit_day) sees the
+# ADVANCED value and slices only the newest transit_day -- incidents merged for
+# any earlier day in this same run would never be exported, and because the
+# watermark only moves forward they would never be scored at all.
+try:
+    dbutils.jobs.taskValues.set(key="since", value=SINCE)
+except Exception:
+    pass
+
 # --- silver dependency refresh (S16/S17/S09 feed PS3 gold) -------------------
 # The repo silver builders are idempotent CREATE OR REPLACE; at silver scale a
 # daily refresh of the PS3 chain is cheap and keeps the feature contract exact.

@@ -31,8 +31,9 @@
           "ScoreOneFleet": {
             "Type": "Task",
             "Resource": "arn:aws:states:::sagemaker:createProcessingJob.sync",
+            "Comment": "The job name carries the execution name because SageMaker holds job names per account+region forever, including names taken by FAILED jobs - a fleet+date name makes every same-day retry fail with ResourceInUse (PS3 hit exactly this, 27-Aug). Name budget is 63 chars: 'ps1-' + fleet (<=9, VALIDATOR) + '-' + date (10) + '-' + a 36-char execution UUID = 61. Do not re-add the 'score-' segment; it overflows.",
             "Parameters": {
-              "ProcessingJobName.$": "States.Format('ps1-score-{}-{}', $.fleet, $.asof_date)",
+              "ProcessingJobName.$": "States.Format('ps1-{}-{}-{}', $.fleet, $.asof_date, $$.Execution.Name)",
               "AppSpecification": {
                 "ImageUri": "REPLACE_WITH_MANAGED_DLC_URI",
                 "ContainerEntrypoint": [

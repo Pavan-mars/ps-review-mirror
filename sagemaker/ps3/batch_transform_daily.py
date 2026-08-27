@@ -14,7 +14,7 @@
 # All three produce identical output: s3://.../ps3/scored/<asof>/{tvm,gates}/
 #   {cat}_incident_predictions.csv, {cat}_device_predictions.csv, {cat}_serial_predictions.csv
 # =============================================================================
-import os, sys, json, argparse, io
+import os, sys, json, argparse, io, uuid
 import numpy as np
 import pandas as pd
 
@@ -115,11 +115,16 @@ def run_batch_transform(a):
     in_uri = f"{a.out_base.rstrip('/')}/_transform_input/{a.asof}.jsonl"
     pd.Series([jsonl]).to_csv(in_uri, index=False, header=False, storage_options=so)
     out_uri = f"{a.out_base.rstrip('/')}/_transform_output/{a.asof}/"
-    job = f"ps3-batch-{a.asof.replace('-', '')}"
+    # SageMaker holds transform job names per account+region forever, names taken
+    # by FAILED jobs included, so a date-only name makes same-day retries impossible.
+    job = f"ps3-batch-{a.asof.replace('-', '')}-{uuid.uuid4().hex[:8]}"
     sm.create_transform_job(
         TransformJobName=job, ModelName=a.model_name,
         TransformInput={"DataSource": {"S3DataSource": {"S3DataType": "S3Prefix", "S3Uri": in_uri}},
                         "ContentType": "application/json", "SplitType": "Line"},
+        # SingleRecord: the MultiRecord default joins many lines into one payload,
+        # which the container parses with a single json.loads and rejects.
+        BatchStrategy="SingleRecord",
         TransformOutput={"S3OutputPath": out_uri, "Accept": "application/json"},
         TransformResources={"InstanceType": a.instance_type, "InstanceCount": 1})
     print(f"[batch_transform] launched {job} -> {out_uri}")

@@ -52,8 +52,12 @@ print(f"[incr]  {n_incr:,} new incidents (since {since}) -> {incr_dest}")
 #    The transform is ContentType application/json + SplitType LINE, and the
 #    container's input_fn parses JSON records -- it cannot eat the parquet
 #    slice (execution 53495197 failed exactly there, AlgorithmError 48s in).
-#    predict_fn fills missing feature columns itself, so raw gold rows are a
-#    valid payload. Written per-part via boto3 so NO _SUCCESS/_committed
+#    predict_fn tolerates missing feature columns, so raw gold rows will not
+#    crash the container -- but a declared feature the payload lacks is imputed
+#    to a training median, producing a confident-looking label derived from a
+#    constant. Parity between the champion bundle's feature list and these
+#    columns is UNVERIFIED; verify before trusting any score.
+#    Written per-part via boto3 so NO _SUCCESS/_committed
 #    marker files land in the prefix -- the transform ingests every object
 #    under its S3Prefix, and a marker file would poison the batch.
 jsonl_dest = f"s3://{BUCKET}/{PREFIX}/device_ps3_incident_incr_jsonl/asof={TODAY}"

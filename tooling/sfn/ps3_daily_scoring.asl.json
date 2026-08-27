@@ -1,5 +1,5 @@
 {
-  "Comment": "PS3 daily scoring chain — triggered by EventBridge PS3 Gold Export Complete. Values pinned 25-Aug-2026: Model = the retained chicago-ps3-root-cause Model object (endpoint deleted under D-4, Model kept; pins model package v14). Scored prefix per PS3_GO_LIVE_GUIDE section 4. SNS = the shared alerts topic, which gained its first confirmed subscriber 25-Aug. All rules start DISABLED.",
+  "Comment": "PS3 daily scoring chain — triggered by EventBridge PS3 Gold Export Complete. Values pinned 25-Aug-2026: Model = the retained chicago-ps3-root-cause Model object (endpoint deleted under D-4, Model kept; pins model package v14). Scored prefix per PS3_GO_LIVE_GUIDE section 4. SNS = the shared alerts topic, which gained its first confirmed subscriber 25-Aug. All rules start DISABLED. The transform job name carries the execution name because SageMaker job names are unique per account+region forever, including names taken by FAILED jobs — a date-only name makes every same-day retry impossible.",
   "StartAt": "ParseEvent",
   "States": {
     "ParseEvent": {
@@ -15,7 +15,7 @@
       "Type": "Task",
       "Resource": "arn:aws:states:::sagemaker:createTransformJob.sync",
       "Parameters": {
-        "TransformJobName.$": "States.Format('ps3-batch-{}', $.asof_date)",
+        "TransformJobName.$": "States.Format('ps3-batch-{}-{}', $.asof_date, $$.Execution.Name)",
         "ModelName": "chicago-ps3-root-cause-2026-07-13-07-02-42-300",
         "TransformInput": {
           "DataSource": {

@@ -3566,7 +3566,11 @@ def route(method, path, params, body, headers=None):
                 " FROM v_device_360 WHERE city_id = :c ORDER BY device_id", c=city))
         cat = _PS1_CATEGORY.get(str((params or {}).get("category", "")).strip().upper())
         fac = str((params or {}).get("facility", "")).strip()
-        q = str((params or {}).get("q", "")).strip()
+        # NB: the free-text param is deliberately NOT bound to a local named `q`
+        # -- q() is the module-level city sanitizer route() calls on line one,
+        # and a local assignment anywhere in this function shadows it for the
+        # WHOLE function (UnboundLocalError on every request; bitten 27-Aug).
+        qtext = str((params or {}).get("q", "")).strip()
         limit = _clamp_int((params or {}).get("limit"), 200, 1, 1000)
         offset = _clamp_int((params or {}).get("offset"), 0, 0, 100000)
         where, kw = ["city_id = :c"], {"c": city}
@@ -3574,9 +3578,9 @@ def route(method, path, params, body, headers=None):
             where.append("mars_device_category = :cat"); kw["cat"] = cat
         if fac:
             where.append("facility_id = :f"); kw["f"] = fac
-        if q:
+        if qtext:
             where.append("(device_id ILIKE :q OR device_name ILIKE :q OR serial_number ILIKE :q)")
-            kw["q"] = "%" + q + "%"
+            kw["q"] = "%" + qtext + "%"
         w = " AND ".join(where)
         head = _safe_rows("SELECT COUNT(*) AS n, MAX(as_of_date) AS as_of"
                           " FROM v_device_central WHERE " + w, **kw)

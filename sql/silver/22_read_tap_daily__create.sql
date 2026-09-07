@@ -39,11 +39,11 @@ WITH tap_agg AS (
         TO_DATE(CAST(CAST(rt.TRANSIT_DAY_KEY AS BIGINT) AS STRING), 'yyyyMMdd')
                                                                 AS transit_day,
         rt.TRANSIT_DAY_KEY,
-        rt.OPERATOR_ID,
-        rt.FACILITY_ID,
-        rt.BUS_ID,
+        MAX(rt.OPERATOR_ID)                                     AS OPERATOR_ID,
+        MAX(rt.FACILITY_ID)                                     AS FACILITY_ID,
+        MAX(rt.BUS_ID)                                          AS BUS_ID,
 
-        -- Volume
+        -- Volume (device-day grain per DQ spec; finer splits live in S30 read_tap_device_daily)
         COUNT(*)                                                AS daily_read_count,
         COUNT(DISTINCT rt.TOKEN_ID)                             AS unique_tokens,
 
@@ -89,10 +89,7 @@ WITH tap_agg AS (
       AND rt.TRANSIT_DAY_KEY  <  20270101                       -- exclude 2032 sentinel (max=20321214)
     GROUP BY
         rt.DEVICE_ID,
-        rt.TRANSIT_DAY_KEY,
-        rt.OPERATOR_ID,
-        rt.FACILITY_ID,
-        rt.BUS_ID
+        rt.TRANSIT_DAY_KEY
 )
 SELECT
     -- -- Keys -----------------------------------------------------------------

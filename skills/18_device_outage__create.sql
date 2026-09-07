@@ -96,7 +96,26 @@ with_end AS (
 -- MAX(AE_FAILURE_LEVEL) per device+day resolves M:1 when device has multiple
 -- availability events on the same day.
 -- failure_level > 0 = real hardware failure chargeable to SLA
--- Distinguish: no incident (0/FALSE) vs incident with unknown level (NULL)
+-- failure_level = 0 or NULL = operational / non-chargeable
+--
+-- FIX 2026-09-04 (DQ finding: null_vs_zero_conflation_check found 74% of device-days where an
+-- incident genuinely occurred with AE_FAILURE_LEVEL unknown were being silently shown as
+-- failure_level=0 / is_chargeable=FALSE downstream -- i.e. "we don't know" was being trained as
+-- "confirmed no failure". gold_ps1_null_zero_impact_check confirmed 100% of these (31,593/31,593)
+-- reached Gold's device_ps1_daily feature columns, and device_ps5_component pulls the same
+-- defective columns directly. Root cause: the original COALESCE(...,0) below could not distinguish
+-- "no incident at all" (0 is correct) from "an incident exists but its failure level is unknown"
+-- (should stay NULL, not become 0). Fix adds two extra aggregates so the final SELECT below can
+-- tell the two cases apart. OLD version commented out, not deleted:
+--
+-- fail_lvl AS (
+--     SELECT
+--         device_id,
+--         transit_day,
+--         MAX(AE_FAILURE_LEVEL)                   AS max_failure_level
+--     FROM mars_dev.silver.incident_root_cause
+--     GROUP BY device_id, transit_day
+-- )
 fail_lvl AS (
     SELECT
         device_id,
@@ -142,16 +161,35 @@ SELECT
 
     -- Chargeable / PS1 label (Michael R2-1)
     -- PS1 positive failure label = is_hardware_oos_event = TRUE AND is_chargeable = TRUE
+    --
+    -- FIX 2026-09-04: see the fail_lvl CTE comment above for full context. This now distinguishes
+    -- three real cases instead of collapsing two different ones into the same 0/FALSE value:
+    --   1. No incident row at all for this device-day       -> failure_level=0, is_chargeable=FALSE
+    --      (genuinely correct -- nothing happened, this is a real negative)
+    --   2. Incident row(s) exist, but AE_FAILURE_LEVEL unknown for all of them
+    --      -> failure_level=NULL, is_chargeable=NULL (stays an honest "unknown", not a false 0)
+    --   3. Incident row(s) exist with a known AE_FAILURE_LEVEL -> use the real value
+    -- NOTE FOR REVIEWERS: is_chargeable can now be NULL, where it was previously always TRUE/FALSE.
+    -- Downstream code filtering WHERE is_chargeable = TRUE is unaffected. Code filtering
+    -- WHERE is_chargeable = FALSE will now correctly exclude the "unknown" rows too (previously
+    -- those rows were wrongly included as if confirmed non-chargeable) -- this is the intended
+    -- fix, but please confirm no downstream logic depends on the old (incorrect) FALSE behavior
+    -- before this is deployed. device_ps5_component pulls these columns directly and will see this
+    -- change; device_ps1_daily's will_fail_Xd label itself is unaffected (already confirmed to not
+    -- depend on failure_level/is_chargeable, see R7-1 in device_ps1_daily__create.sql).
+    -- OLD version commented out, not deleted:
+    -- COALESCE(fl.max_failure_level, 0)           AS failure_level,
+    -- (COALESCE(fl.max_failure_level, 0) > 0)     AS is_chargeable,
     CASE
         WHEN fl.device_id IS NULL THEN 0
         WHEN fl.known_failure_level_count = 0 THEN NULL
         ELSE fl.max_failure_level
-    END                                         AS failure_level,
+    END                                          AS failure_level,
     CASE
         WHEN fl.device_id IS NULL THEN FALSE
         WHEN fl.known_failure_level_count = 0 THEN NULL
         ELSE (fl.max_failure_level > 0)
-    END                                         AS is_chargeable,
+    END                                          AS is_chargeable,
 
     -- Event classification
     we.component_subsystem,

@@ -63,21 +63,46 @@ WITH last_state AS (
         )                               AS is_silent_device
     FROM mars_dev.bronze.edw_device_last_state ls
 ),
+-- FIX 2026-09-04 (DQ finding: this table's PK check on (DEVICE_KEY, eod_date) found real
+-- duplicates -- e.g. DEVICE_KEY 3346863 had 4 rows for the same eod_date. Root cause isolated by
+-- direct testing: dim_device's join was suspected first (a documented SCD2 issue elsewhere in this
+-- codebase) but confirmed CLEAN via direct query -- zero duplicate is_current=TRUE rows. With that
+-- ruled out, and given the source-system team has separately confirmed Bronze itself contains
+-- duplicates, the remaining explanation is that ncs_stage_device_end_of_day has duplicate
+-- (DEVICE_ID, TRANSIT_DAY_KEY) rows and this CTE never deduped them -- unlike other tables in this
+-- codebase that already dedupe their Bronze source (e.g. device_event_enriched on
+-- DW_DEVICE_EVENT_ID). Added a ROW_NUMBER() dedup, preferring the row with COMPLETE_FLAG=1 (a
+-- completed EOD report is more likely to be the trustworthy version of the day's record) when more
+-- than one row exists for the same device+day.
+-- REVIEWER NOTE: this tiebreaker choice (COMPLETE_FLAG DESC) was the best available signal from
+-- the columns already used in this file -- if ncs_stage_device_end_of_day has a more reliable
+-- "last updated" timestamp column not currently selected here, that would be a better ORDER BY
+-- and should be confirmed with whoever owns that Bronze table before this is approved.
+-- OLD version commented out, not deleted:
+-- end_of_day_daily AS (
+--     SELECT
+--         eod.DEVICE_ID,
+--         eod.DEVICE_KEY,
+--         eod.TRANSIT_DAY_KEY,
+--         TO_DATE(CAST(eod.TRANSIT_DAY_KEY AS STRING), 'yyyyMMdd') AS eod_date,
+--         eod.COMPLETE_FLAG,
+--         eod.COUNT_MESSAGES              AS eod_count_messages,
+--         eod.COUNT_RECEIVED_MESSAGES     AS eod_count_received_messages,
+--         CAST(NULL AS BIGINT)            AS UPTIME_SECONDS,
+--         CAST(NULL AS BIGINT)            AS DOWNTIME_SECONDS,
+--         CAST(NULL AS BIGINT)            AS TOTAL_SECONDS,
+--         CAST(NULL AS DOUBLE)            AS uptime_pct,
+--         CAST(NULL AS DOUBLE)            AS uptime_hours,
+--         CAST(NULL AS DOUBLE)            AS downtime_hours
+--     FROM mars_dev.bronze.ncs_stage_device_end_of_day eod
+--     WHERE eod.TRANSIT_DAY_KEY IS NOT NULL
+--       AND TO_DATE(CAST(eod.TRANSIT_DAY_KEY AS STRING), 'yyyyMMdd') <= CURRENT_DATE()
+-- ),
 end_of_day_daily AS (
     SELECT
-        DEVICE_ID,
-        DEVICE_KEY,
-        TRANSIT_DAY_KEY,
-        eod_date,
-        COMPLETE_FLAG,
-        eod_count_messages,
-        eod_count_received_messages,
-        UPTIME_SECONDS,
-        DOWNTIME_SECONDS,
-        TOTAL_SECONDS,
-        uptime_pct,
-        uptime_hours,
-        downtime_hours
+        DEVICE_ID, DEVICE_KEY, TRANSIT_DAY_KEY, eod_date, COMPLETE_FLAG,
+        eod_count_messages, eod_count_received_messages,
+        UPTIME_SECONDS, DOWNTIME_SECONDS, TOTAL_SECONDS, uptime_pct, uptime_hours, downtime_hours
     FROM (
         SELECT
             eod.DEVICE_ID,
@@ -94,16 +119,16 @@ end_of_day_daily AS (
             CAST(NULL AS DOUBLE)            AS uptime_hours,
             CAST(NULL AS DOUBLE)            AS downtime_hours,
             ROW_NUMBER() OVER (
-                PARTITION BY eod.DEVICE_KEY, eod.TRANSIT_DAY_KEY
-                ORDER BY eod.COMPLETE_FLAG DESC NULLS LAST,
-                         eod.COUNT_MESSAGES DESC NULLS LAST
-            )                               AS rn
+                PARTITION BY eod.DEVICE_ID, eod.TRANSIT_DAY_KEY
+                ORDER BY eod.COMPLETE_FLAG DESC
+            ) AS rn
         FROM mars_dev.bronze.ncs_stage_device_end_of_day eod
         WHERE eod.TRANSIT_DAY_KEY IS NOT NULL
           AND TO_DATE(CAST(eod.TRANSIT_DAY_KEY AS STRING), 'yyyyMMdd') <= CURRENT_DATE()
-    ) d
+    ) ranked
     WHERE rn = 1
 ),
+
 msg_counts AS (
     SELECT
         mc.DEVICE_ID,
@@ -150,11 +175,7 @@ LEFT JOIN last_state ls
     ON ls.DEVICE_KEY = dd.DEVICE_KEY
 LEFT JOIN msg_counts mc
     ON mc.DEVICE_ID  = eod.DEVICE_ID
-   AND mc.TRANSIT_DAY_KEY = eod.TRANSIT_DAY_KEY
-QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY dd.DEVICE_KEY, eod.eod_date
-    ORDER BY eod.COMPLETE_FLAG DESC NULLS LAST, eod.eod_count_messages DESC NULLS LAST
-) = 1;
+   AND mc.TRANSIT_DAY_KEY = eod.TRANSIT_DAY_KEY;
 
 -- Post-load optimisation:
 -- OPTIMIZE mars_dev.silver.device_uptime_intervals ZORDER BY (DEVICE_ID, eod_date);

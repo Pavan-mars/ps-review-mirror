@@ -80,6 +80,19 @@ WITH tvm_gate_failures AS (
         CAST(ae.START_DTM AS DATE)                          AS failure_date,
         COUNT(*)                                             AS failure_event_count,
         MIN(ae.START_DTM)                                   AS first_failure_dtm,
+        -- FIX 2026-09-04 (DQ finding: temporal_pair check found last_failure_dtm before
+        -- first_failure_dtm on a small number of rows -- root cause: these are two independent
+        -- aggregates (MIN of START_DTM, MAX of END_DTM) that can legitimately draw from different
+        -- individual events within the same device+day group when a day has multiple failure
+        -- episodes with inconsistent resolution status (some ended, some still open with a NULL
+        -- END_DTM excluded from the MAX). LOW CONFIDENCE FIX, FLAGGING FOR REVIEW: this is a
+        -- minimal defensive guard (ensures last is never reported before first), not a redesign of
+        -- what these two columns actually mean -- volume is small (a handful of rows) and severity
+        -- is warning-only, so a full semantic redesign (e.g. deciding whether "first/last" should
+        -- track a single episode vs. span multiple) was not attempted here and should be a
+        -- separate decision if this needs to be more precise than a defensive floor.
+        -- OLD version commented out, not deleted:
+        -- MAX(ae.END_DTM)                                     AS last_failure_dtm,
         GREATEST(MAX(ae.END_DTM), MIN(ae.START_DTM))        AS last_failure_dtm,
         LEAST(
             SUM(
@@ -126,6 +139,9 @@ validator_failures AS (
         CAST(dee.EVENT_DTM AS DATE)                         AS failure_date,
         COUNT(*)                                             AS failure_event_count,
         MIN(dee.EVENT_DTM)                                  AS first_failure_dtm,
+        -- FIX 2026-09-04: same defensive guard and reasoning as the TVM/GATE branch above -- see
+        -- that comment for full context. OLD version commented out, not deleted:
+        -- MAX(COALESCE(dee.CLEAR_DTM, dee.EVENT_DTM))        AS last_failure_dtm,
         GREATEST(MAX(COALESCE(dee.CLEAR_DTM, dee.EVENT_DTM)), MIN(dee.EVENT_DTM)) AS last_failure_dtm,
         LEAST(
             SUM(LEAST(COALESCE(dee.duration_to_clear_min, 0), 10080)),

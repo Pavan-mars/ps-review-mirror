@@ -102,7 +102,7 @@ SILVER = {
     "maintenance_ledger":            dict(date_cols=["ledger_date"], notnull=["DEVICE_ID"]),
     "usage_lifecycle_daily":         dict(grain=["DEVICE_KEY", "transit_day"], date_cols=["transit_day"], notnull=["DEVICE_KEY"]),
     "use_revenue_daily":             dict(grain=["DEVICE_ID", "transit_day"], date_cols=["transit_day"], notnull=["DEVICE_ID"]),
-    "read_tap_daily":                dict(grain=["DEVICE_ID", "transit_day", "OPERATOR_ID", "FACILITY_ID", "BUS_ID"],
+    "read_tap_daily":                dict(grain=["DEVICE_ID", "transit_day"],
                                          date_cols=["transit_day"], notnull=["DEVICE_ID"]),
     # S30: device-day collapse of read_tap_daily (SIL-H2 2026-07-22)
     "read_tap_device_daily":         dict(grain=["DEVICE_ID", "transit_day"], date_cols=["transit_day"],

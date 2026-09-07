@@ -182,11 +182,12 @@ SELECT
   current_timestamp()                   AS _silver_load_ts
 
 FROM task_link t
-LEFT JOIN inc i
+INNER JOIN inc i
   ON i.incident_sys_id = t.linked_incident_sys_id
 LEFT JOIN mars_dev.silver.dim_device d
   ON d.DEVICE_ID = t.constructed_device_id
- AND d.is_current = TRUE;
+ AND d.is_current = TRUE
+WHERE i.incident_number IS NOT NULL;
 
 -- Post-build verification:
 -- SELECT

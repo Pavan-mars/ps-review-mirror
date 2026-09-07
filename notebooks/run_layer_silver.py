@@ -12,11 +12,14 @@
 #   NB100 + NB101 → bronze/silver servicenow_incident_conformed
 #
 # Recommended full rebuild order after SQL changes:
+#   0. notebooks/data_quality/data_quality_framework_bronze.py (optional, post-ingest)
 #   1. run_layer_silver (this notebook)
-#   2. validate_silver
-#   3. run_layer_gold
-#   4. validate_gold
-#   5. export_silver_to_s3 → export_gold_to_s3
+#   2. notebooks/data_quality/Silver_dq_framework.py
+#   3. notebooks/validation/validate_silver.py (optional)
+#   4. run_layer_gold
+#   5. notebooks/data_quality/Gold_dq_framework.py
+#   6. notebooks/validation/validate_gold.py (optional)
+#   7. export_silver_to_s3 → export_gold_to_s3
 #
 # Widgets: catalog (mars_dev), repo_root (auto-detected)
 import os
@@ -78,4 +81,4 @@ for idx, fn in enumerate(files, 1):
 
 print("-" * 70)
 print(f"[silver] done — {len(files)} script(s) executed successfully")
-print("[silver] next: validate_silver → run_layer_gold → validate_gold → export_*_to_s3")
+print("[silver] next: data_quality/Silver_dq_framework → validate_silver → run_layer_gold → …")

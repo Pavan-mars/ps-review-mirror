@@ -68,4 +68,4 @@ for idx, fn in enumerate(files, 1):
 
 print("-" * 70)
 print(f"[gold] done — {len(files)} script(s) executed successfully")
-print("[gold] next: validate_gold → export_gold_to_s3")
+print("[gold] next: notebooks/data_quality/Gold_dq_framework.py → validate_gold → export_gold_to_s3")

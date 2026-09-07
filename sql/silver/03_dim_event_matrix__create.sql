@@ -61,7 +61,7 @@ SELECT
     t.is_oos,
     t.is_set_clear,
     t.requires_service_call,
-    t.event_priority,
+    COALESCE(t.event_priority, 4)                                         AS event_priority,
     t.is_commanded_oos,
     -- is_reader_event: CSC_READER subsystem (200-299 range, all device types)
     (t.event_code_id BETWEEN 200 AND 299)                  AS is_reader_event,

@@ -87,6 +87,9 @@ WITH sn_base AS (
         sn.EDW_UPDATED_DTM
     FROM mars_dev.bronze.cta_servicenow_availability_events sn
     WHERE sn.AE_DEVICE_ID IS NOT NULL
+      AND sn.AE_EVENT_ID IS NOT NULL
+      AND TRIM(sn.AE_EVENT_ID) <> ''
+      AND sn.AE_TRANSIT_DAY_KEY IS NOT NULL
 ),
 jb_base AS (
     -- CTA.SERVICENOW_DATA_FROM_JUMPBOX: supplemental fields (604 rows, 2026 extract)
@@ -167,7 +170,7 @@ classified AS (
         END                                     AS root_cause_category,
 
         -- Ventra KPI failure level taxonomy (Michael 2026-06-22 confirmed)
-        CASE sb.AE_FAILURE_LEVEL
+        CASE COALESCE(sb.AE_FAILURE_LEVEL, 0)
             WHEN 0  THEN 'FULLY_FUNCTIONAL'
             WHEN 1  THEN 'NONPAYMENT'
             WHEN 2  THEN 'PURCHASE_CARD'
@@ -182,10 +185,10 @@ classified AS (
         END                                     AS failure_level_label,
 
         -- is_chargeable: failure_level > 0 = real hardware failure chargeable to SLA (R2-1)
-        (sb.AE_FAILURE_LEVEL > 0)               AS is_chargeable,
+        (COALESCE(sb.AE_FAILURE_LEVEL, 0) > 0)               AS is_chargeable,
 
         -- is_device_fault: Category-2 hardware levels only (PS3 training scope)
-        sb.AE_FAILURE_LEVEL IN (1, 2, 3, 4, 5, 16) AS is_device_fault
+        COALESCE(sb.AE_FAILURE_LEVEL, 0) IN (1, 2, 3, 4, 5, 16) AS is_device_fault
 
     FROM sn_base sb
 ),
@@ -204,7 +207,7 @@ SELECT
     c.transit_day,
     c.AE_EVENT_ID               AS availability_event_id,
     c.AE_FAULT_STATE,
-    c.AE_FAILURE_LEVEL,
+    COALESCE(c.AE_FAILURE_LEVEL, 0) AS AE_FAILURE_LEVEL,
     c.failure_level_label,
     c.is_chargeable,
     c.is_device_fault,
@@ -279,8 +282,11 @@ LEFT JOIN s17_first s17
 
 SELECT *
 FROM enriched
+WHERE availability_event_id IS NOT NULL
+  AND TRIM(availability_event_id) <> ''
+  AND transit_day IS NOT NULL
 QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY availability_event_id
+    PARTITION BY UPPER(TRIM(availability_event_id))
     ORDER BY EDW_UPDATED_DTM DESC NULLS LAST, from_cta_sn_mirror DESC
 ) = 1;
 

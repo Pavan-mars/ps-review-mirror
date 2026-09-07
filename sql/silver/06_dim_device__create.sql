@@ -171,7 +171,7 @@ SELECT
 
     -- is_current: exactly one TRUE row per DEVICE_ID (effective_to IS NULL = still active)
     (LEAD(CAST(d.INSERTED_DTM AS DATE)) OVER (PARTITION BY d.DEVICE_ID ORDER BY d.INSERTED_DTM) IS NULL) AS is_current,
-    (d.DEVICE_STATUS_ID = 1)                                              AS is_active
+    COALESCE(d.DEVICE_STATUS_ID = 1, FALSE)                               AS is_active
 
 FROM      mars_dev.bronze.edw_device_dimension                            d
 LEFT JOIN mars_dev.bronze.ncs_stage_device                                nd  ON nd.DEVICE_ID      = d.DEVICE_ID

@@ -248,7 +248,7 @@ SELECT
     -- PS5-GAP fix: COALESCE with derived_component_type_hw for censored components
     COALESCE(cf.COMPONENT_TYPE_NAME, hw.derived_component_type_hw)     AS COMPONENT_TYPE_NAME,
     -- FIX 10: hw.COMPONENT_TYPE_DESC -> removed (not in any silver table)
-    hw.component_age_days,
+    GREATEST(0, hw.component_age_days)                                  AS component_age_days,
     hw.LAST_REPORTED_DTM,
     hw.REPORTED_CHANGED_DTM,
     hw.hw_source,

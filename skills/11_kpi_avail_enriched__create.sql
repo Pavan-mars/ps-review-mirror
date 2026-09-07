@@ -123,6 +123,41 @@ relief_lookup AS (
         ar.NOTES                                        AS relief_notes
     FROM mars_dev.bronze.edw_availability_relief ar
 ),
+-- FIX 2026-09-04 (DQ finding: kpi_avail_enriched.EVENT_ID showed 915 duplicate rows, confirmed via
+-- join_fanout_check -- Bronze edw_availability_events itself is clean/1:1, root cause isolated to
+-- two specific joins below. Part 1: sn_events had no dedup, unlike its sibling sn_jumpbox, which
+-- already had a ROW_NUMBER()/dedup fix for the exact same class of problem (see BUG S11-A below).
+-- Bronze cta_servicenow_availability_events itself has 711 duplicate AE_EVENT_ID rows (confirmed);
+-- this fans directly into Silver with no dedup step. OLD version commented out, not deleted:
+--
+-- sn_events AS (
+--     SELECT
+--         sn.AE_EVENT_ID,
+--         sn.SN_U_EVENT_ID,
+--         sn.SN_SYS_ID,
+--         sn.SN_U_DEVICE_TYPE,
+--         sn.SN_U_DEVICE_ID,
+--         sn.AE_DEVICE_ID,
+--         sn.AE_FAULT_STATE,
+--         sn.AE_FAILURE_LEVEL,
+--         sn.AE_START_DTM,
+--         sn.AE_END_DTM,
+--         sn.AE_FAULT_DESCRIPTION,
+--         sn.AE_SYMPTOM,
+--         sn.AE_PROBLEM,
+--         sn.AE_RESOLUTION,
+--         sn.AE_DEVICE_TYPE_NAME,
+--         sn.AE_OPERATOR_ID,
+--         sn.AE_OPERATOR_NAME,
+--         sn.AE_FACILITY_ID,
+--         sn.AE_FACILITY_NAME,
+--         sn.SN_U_AFFECTED_COMPONENT,
+--         sn.SN_U_WOT_STATE,
+--         sn.SN_U_REQUEST_TYPE,
+--         sn.EDW_INSERTED_DTM                             AS sn_edw_inserted_dtm,
+--         sn.EDW_UPDATED_DTM                              AS sn_edw_updated_dtm
+--     FROM mars_dev.bronze.cta_servicenow_availability_events sn
+-- ),
 sn_events AS (
     SELECT
         AE_EVENT_ID, SN_U_EVENT_ID, SN_SYS_ID, SN_U_DEVICE_TYPE, SN_U_DEVICE_ID, AE_DEVICE_ID,
@@ -143,6 +178,7 @@ sn_events AS (
     ) ranked
     WHERE rn = 1
 ),
+
 sn_jumpbox AS (
     -- BUG S11-A (CRITICAL): Pre-build dry-run 2026-06-18 found max_rows_per_device=17
     -- in jumpbox (356 rows / 355 devices). SELECT DISTINCT on all columns keeps all 17
@@ -263,11 +299,18 @@ LEFT JOIN sn_events sn
     ON sn.AE_EVENT_ID = ab.EVENT_ID
 LEFT JOIN sn_jumpbox jb
     ON jb.jb_device_id = ab.DEVICE_ID
+-- FIX 2026-09-04 (DQ finding, part 2 of 2): relief_lookup's join is a date-range overlap
+-- (DEVICE_ID + FAILURE_LEVEL + relief window contains the event start), not a 1:1 key match, so
+-- more than one relief record can legitimately match the same availability event -- this is the
+-- second confirmed source of the 915-row fan-out (the first, sn_events, is fixed above). Added as
+-- a belt-and-braces QUALIFY here (rather than inside relief_lookup's own CTE) because the range
+-- condition itself depends on ab.START_DTM from the outer query, so it can't be resolved purely
+-- within relief_lookup alone. Picks the most recent matching relief window per event; also acts as
+-- a final safety net confirming no other join in this query can produce more than one row per
+-- EVENT_ID, even if a future change reintroduces a fan-out elsewhere.
 QUALIFY ROW_NUMBER() OVER (
     PARTITION BY ab.EVENT_ID
-    ORDER BY rl.relief_start_dtm DESC NULLS LAST,
-             ab.UPDATED_DTM DESC NULLS LAST,
-             ab.START_DTM DESC NULLS LAST
+    ORDER BY rl.relief_start_dtm DESC NULLS LAST
 ) = 1;
 
 -- Post-load optimisation:

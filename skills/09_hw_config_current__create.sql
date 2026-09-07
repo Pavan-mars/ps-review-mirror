@@ -11,8 +11,7 @@
 -- Notes:
 --   - COMPONENT_SERIAL_NBR: NULLIF(TRIM(...), '') cleans blank strings
 --   - REPORTED_CHANGED_DTM = component install/swap date; may be NULL for legacy components
---   - component_age_days: days from install (or last_reported if install unknown) to today;
---     future-dated sentinel timestamps (e.g. 2032) yield NULL instead of negative age
+--   - component_age_days: days from install (or last_reported if install unknown) to today
 --   - Partitioned by city_id for multi-tenant extension (all Chicago rows = 'CHICAGO')
 --   - Coverage: 11.7K rows - not all devices have HW config records
 --
@@ -56,12 +55,22 @@ SELECT
     dd.OPERATOR_ID,
     dd.FACILITY_ID,
     CASE WHEN e.DEVICE_ID IS NOT NULL THEN 'EDW' END AS hw_source,
+    -- FIX 2026-09-04 (DQ finding: component_age_days showed a minimum of -2097 -- 6 rows with
+    -- REPORTED_CHANGED_DTM up to 2032-05-25, a future sentinel/garbage date, same class of issue
+    -- already guarded against elsewhere in this codebase (metric_daily, device_uptime_intervals
+    -- both already cap future-dated rows -- this table never got the same guard). A negative age
+    -- is not a valid value under any real interpretation. OLD version commented out, not deleted:
+    -- CASE
+    --     WHEN e.REPORTED_CHANGED_DTM IS NOT NULL
+    --     THEN DATEDIFF(CURRENT_DATE(), CAST(e.REPORTED_CHANGED_DTM AS DATE))
+    --     WHEN e.LAST_REPORTED_DTM IS NOT NULL
+    --     THEN DATEDIFF(CURRENT_DATE(), CAST(e.LAST_REPORTED_DTM  AS DATE))
+    --     ELSE NULL
+    -- END                                       AS component_age_days,
     CASE
-        WHEN e.REPORTED_CHANGED_DTM IS NOT NULL
-         AND CAST(e.REPORTED_CHANGED_DTM AS DATE) <= CURRENT_DATE()
+        WHEN e.REPORTED_CHANGED_DTM IS NOT NULL AND CAST(e.REPORTED_CHANGED_DTM AS DATE) <= CURRENT_DATE()
         THEN DATEDIFF(CURRENT_DATE(), CAST(e.REPORTED_CHANGED_DTM AS DATE))
-        WHEN e.LAST_REPORTED_DTM IS NOT NULL
-         AND CAST(e.LAST_REPORTED_DTM AS DATE) <= CURRENT_DATE()
+        WHEN e.LAST_REPORTED_DTM IS NOT NULL AND CAST(e.LAST_REPORTED_DTM AS DATE) <= CURRENT_DATE()
         THEN DATEDIFF(CURRENT_DATE(), CAST(e.LAST_REPORTED_DTM  AS DATE))
         ELSE NULL
     END                                       AS component_age_days,

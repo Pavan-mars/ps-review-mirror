@@ -89,6 +89,7 @@ LEFT JOIN mars_dev.silver.dim_device dd
     ON  dd.DEVICE_ID  = ut.DEVICE_ID
     AND dd.is_current = TRUE
 WHERE ut.REVENUE_OR_TEST = 'REVENUE'                           -- exclude test transactions
+  AND ut.DEVICE_ID IS NOT NULL
   AND ut.TRANSIT_DAY_KEY >= 20240101;                          -- ML training window
 
 -- Post-load verification:

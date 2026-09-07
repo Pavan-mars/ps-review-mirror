@@ -127,7 +127,7 @@ INSERT INTO device_level_aggregation (
   ps1_drivers_json, ps3_components_json, ps5_components_json
 )
 SELECT
-  v.city_id, v.device_id, v.device_key, v.device_name, c.bus_id,
+  v.city_id::text, v.device_id, v.device_key, v.device_name, c.bus_id,
   c.bus_device_flag,
   v.serial_number, v.component_serial_nbr, v.component_type, v.cmdb_ci_sys_id,
   v.sn_latest_incident,
@@ -174,7 +174,7 @@ SELECT
             'recurrence_30d', c.recurrence_30d,
             'latest_incident_at', c.latest_incident_at))
      FROM ps3_v2_device_serial_component c
-    WHERE c.city_id = v.city_id AND c.device_id = v.device_id),
+    WHERE c.city_id::text = v.city_id::text AND c.device_id = v.device_id),
   (SELECT jsonb_agg(jsonb_build_object(
             'component_serial_nbr', r.component_serial_nbr,
             'component_type_name', r.component_type_name,
@@ -186,7 +186,7 @@ SELECT
             'is_overdue', r.is_overdue,
             'serial_source', r.serial_source))
      FROM ps5_serial_rul r
-    WHERE r.city_id = v.city_id AND r.device_id = v.device_id)
+    WHERE r.city_id::text = v.city_id::text AND r.device_id = v.device_id)
 FROM v_device_360 v
 -- bus_id and bus_device_flag live on the dimension, not on v_device_360's
 -- projection -- the view was written for the cross-PS columns and never
@@ -194,11 +194,11 @@ FROM v_device_360 v
 -- because CREATE OR REPLACE VIEW cannot change a view's column set and
 -- widening it would mean dropping and rebuilding every dependent object.
 LEFT JOIN v_device_central c
-       ON c.city_id = v.city_id AND c.device_id = v.device_id
+       ON c.city_id::text = v.city_id::text AND c.device_id = v.device_id
 LEFT JOIN LATERAL (
   SELECT w.shap_feat1, w.shap_val1, w.shap_feat2, w.shap_val2, w.shap_feat3, w.shap_val3
     FROM ps1_cross_wired_daily w
-   WHERE w.city_id::text = v.city_id AND w.device_id = v.device_id
+   WHERE w.city_id::text = v.city_id::text AND w.device_id = v.device_id
    ORDER BY w.transit_day DESC, w.asof_date DESC
    LIMIT 1
 ) x ON TRUE;

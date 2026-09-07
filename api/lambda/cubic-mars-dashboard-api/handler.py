@@ -3643,6 +3643,37 @@ def route(method, path, params, body, headers=None):
             " ps3_action_priority DESC NULLS LAST,"
             " ps1_fail_prob DESC NULLS LAST LIMIT :lim", lim=limit, **kw))
 
+    if path == "/device/aggregate":
+        # The precomputed device row (sql/59). One row per device, so the popup
+        # renders from a single indexed lookup instead of the ~6s composite.
+        # It carries identity, the four W dimensions, the headline measures and
+        # the component lists as JSONB. It does NOT carry the causation matrices
+        # or the ps3_v2 rootcause family -- those are derived in Python by
+        # _device_360, and the front end still falls back to it for them. That
+        # fallback is the reason this route may be added without risk.
+        dev = (params or {}).get("device_id", "")
+        if dev:
+            if not _DEVICE_ID_RE.match(str(dev)):
+                return err(400, "bad device_id")
+            r = _safe_rows("SELECT * FROM device_level_aggregation"
+                           " WHERE city_id = :c AND device_id = :d LIMIT 1",
+                           c=city, d=str(dev).strip().upper())
+            return ok(dict(r[0], found=True) if r else {"device_id": dev, "found": False})
+        cat = _PS1_CATEGORY.get(str((params or {}).get("category", "")).strip().upper())
+        limit = _clamp_int((params or {}).get("limit"), 200, 1, 2000)
+        w2 = "city_id = :c" + (" AND mars_device_category = :cat" if cat else "")
+        kw2 = {"c": city}
+        if cat:
+            kw2["cat"] = cat
+        return ok(_safe_rows(
+            "SELECT device_id, device_name, mars_device_category, facility_name,"
+            " serial_number, cmdb_ci_sys_id, sn_incident_count, signal_count,"
+            " ps1_risk_tier, ps3_action_band, ps4_severity, ps5_risk_band,"
+            " vintage_spread_days, computed_at"
+            " FROM device_level_aggregation WHERE " + w2 +
+            " ORDER BY signal_count DESC, sn_incident_count DESC NULLS LAST"
+            " LIMIT :lim", lim=limit, **kw2))
+
     if path == "/device/360/validation":
         return ok(_safe_rows(
             "SELECT check_name, metric, value, computed_at FROM device_360_validation"

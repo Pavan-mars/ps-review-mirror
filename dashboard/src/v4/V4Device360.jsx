@@ -348,6 +348,11 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
   const [q, setQ] = useState(initialDevice);
   const [device, setDevice] = useState(initialDevice);
   const [d360, setD360] = useState(null);
+  // The precomputed row from device_level_aggregation. Null whenever the
+  // route, the table or the row is absent -- every panel below reads the
+  // composite as before in that case, so a missing fast path costs
+  // latency and nothing else.
+  const [agg, setAgg] = useState(null);
   // THE SUMMARY NO LONGER OPENS ITSELF.                     06-Aug-2026
   // It used to fire on every successful lookup. On this tab that is wrong:
   // the reader is already ON the full record, so the overlay covers the
@@ -367,9 +372,29 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
     setState({ loading: true, error: null });
     setD360(null); setDeter([]); setStaged(null); setBrief(false);
     try {
-      // Two calls, deliberately sequential-ish: the 360 is the spine, the Failure Pattern & Cascade Identification
-      // v2.5 deterioration rows are the supplement. A failure in the second
-      // must not blank the first.
+      // THE FAST ROW FIRST, THE COMPOSITE BEHIND IT.          02-Sep-2026
+      //
+      // device_level_aggregation (sql/59) holds one precomputed row per device
+      // -- identity, the four W dimensions, headline measures, component lists
+      // as JSON. It answers in milliseconds where /ps1/device-360 takes about
+      // six seconds, because the composite stitches twelve queries across seven
+      // views on every call.
+      //
+      // It is NOT a replacement. The causation matrices and the ps3_v2
+      // rootcause family are derived in Python inside the composite and have no
+      // table to read, so the composite still runs and still owns those panels.
+      // What the fast row buys is an immediate first paint of everything above
+      // them, and a guarantee that identity and the W columns come from one
+      // conformed row rather than twelve independent lookups.
+      //
+      // Every failure mode here degrades to today's behaviour: the route
+      // missing, the row absent, the table not yet built -- all fall through to
+      // the composite alone, which is exactly what shipped before this.
+      let agg = null;
+      try { agg = await getObj('/device/aggregate', { city, device_id: dev }); }
+      catch (e) { agg = null; }
+      if (agg && agg.found) setAgg(agg); else setAgg(null);
+
       const spine = await getObj('/ps1/device-360', { city, device_id: dev });
       let rows = [];
       try { rows = await getRows('/ps2/v25/deterioration', { city, device: dev, limit: 2000 }); }
@@ -421,8 +446,21 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
   // Conformed identity + ServiceNow ticket history, from dim_device_incident_cmdb
   // (sql/56). Both sections are absent on an API that predates them, so every
   // read below is optional and the panel simply does not render.
-  const ident = (d360 && d360.identity) || null;
-  const snh = (d360 && d360.servicenow_history) || null;
+  // Identity and ticket history prefer the precomputed row, which carries the
+  // same field names, and fall back to the composite's own sections when the
+  // fast row is absent. Nothing renders differently either way -- this is a
+  // source swap, not a content change, which is what makes it safe to ship
+  // before the parity check rather than after it.
+  const ident = agg || (d360 && d360.identity) || null;
+  const snh = agg
+    ? {
+        incident_count: agg.sn_incident_count,
+        latest_incident: agg.incident_number,
+        latest_opened_at: agg.sn_latest_opened_at,
+        latest_closed_at: null,
+        cmdb_ci_sys_id: agg.cmdb_ci_sys_id,
+      }
+    : (d360 && d360.servicenow_history) || null;
   // Same words as the popup: both read V4Evidence, so the two views of one
   // device cannot describe it differently.
   const why = useMemo(() => evidenceLines(d360), [d360]);

@@ -127,8 +127,8 @@ INSERT INTO device_level_aggregation (
   ps1_drivers_json, ps3_components_json, ps5_components_json
 )
 SELECT
-  v.city_id, v.device_id, v.device_key, v.device_name, v.bus_id,
-  (v.bus_id IS NOT NULL),
+  v.city_id, v.device_id, v.device_key, v.device_name, c.bus_id,
+  c.bus_device_flag,
   v.serial_number, v.component_serial_nbr, v.component_type, v.cmdb_ci_sys_id,
   v.sn_latest_incident,
   v.facility_id, v.facility_name, v.operator_id, v.operator_name,
@@ -188,6 +188,13 @@ SELECT
      FROM ps5_serial_rul r
     WHERE r.city_id = v.city_id AND r.device_id = v.device_id)
 FROM v_device_360 v
+-- bus_id and bus_device_flag live on the dimension, not on v_device_360's
+-- projection -- the view was written for the cross-PS columns and never
+-- carried them. Read them from the spine rather than widening the view,
+-- because CREATE OR REPLACE VIEW cannot change a view's column set and
+-- widening it would mean dropping and rebuilding every dependent object.
+LEFT JOIN v_device_central c
+       ON c.city_id = v.city_id AND c.device_id = v.device_id
 LEFT JOIN LATERAL (
   SELECT w.shap_feat1, w.shap_val1, w.shap_feat2, w.shap_val2, w.shap_feat3, w.shap_val3
     FROM ps1_cross_wired_daily w

@@ -3629,6 +3629,22 @@ def route(method, path, params, body, headers=None):
         # count on purpose -- a model that has not passed its quality gate must
         # not decide what a reader looks at first. Its probability is still
         # returned and shown, just not trusted to sort.
+        # PRECOMPUTED FIRST, THE VIEW AS THE FALLBACK.        02-Sep-2026
+        # v_device_360 LEFT JOINs seven DISTINCT ON views; even with sql/58's
+        # indexes this route measured 10.8s, because the cost is the seven-way
+        # join and not the sort alone. device_level_aggregation holds the same
+        # columns precomputed, so the same answer comes back from one indexed
+        # table. If that table is empty -- never built, or mid-refresh -- fall
+        # through to the view, which is always correct and merely slow.
+        cols = ("device_id, mars_device_category, facility_name, ps1_risk_tier,"
+                " ps1_fail_prob, ps3_action_band, ps3_risk_band, ps4_severity,"
+                " ps5_risk_band, ps5_is_overdue, sn_incident_count, signal_count")
+        fast = _safe_rows(
+            "SELECT " + cols + " FROM device_level_aggregation WHERE " + w +
+            " ORDER BY signal_count DESC, sn_incident_count DESC NULLS LAST,"
+            " ps1_fail_prob DESC NULLS LAST LIMIT :lim", lim=limit, **kw)
+        if fast:
+            return ok(fast)
         return ok(_safe_rows(
             "SELECT device_id, mars_device_category, facility_name, ps1_risk_tier,"
             " ps1_fail_prob, ps3_action_band, ps3_risk_band, ps4_severity,"

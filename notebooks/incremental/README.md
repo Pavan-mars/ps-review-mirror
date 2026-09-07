@@ -74,7 +74,7 @@ it `full` / `whole` / no watermark. `wave1_final_config.csv` declares it `increm
 It is 645K rows and the label source for PS1/PS3 — a wrong choice here corrupts the failure labels, not just
 row counts. NB01 Cell 3 settles it from Oracle.
 
-**D3 — `EDW.READ_TRANSACTION`.** `CLAUDE.md` says it is a real base table at 11.4M rows; the mlops SKILL says
+**D3 — `EDW.READ_TRANSACTION`.** The project memory notes say it is a real base table at 11.4M rows; the mlops SKILL says
 it is probably a column inside `USE_TRANSACTION`. `silver.read_tap_daily` reads it. NB01 Cell 3 settles this
 with `ALL_TABLES`. If it does not exist, `silver/22` and `silver/30` are building on nothing.
 

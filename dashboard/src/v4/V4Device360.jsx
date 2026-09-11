@@ -29,6 +29,8 @@ import Device360Popup from './V4Device360Popup';
 import { useLocations } from './V4Locations';
 import { evidenceLines } from './V4Evidence';
 import { Trend } from './V4Charts';
+import { mergeComponents } from './V4DeviceW';
+import { DeviceWCards, ComponentWTable } from './V4DeviceWCards';
 
 // STABLE CALLBACK IDENTITIES.                                v5
 // These were inline arrows in JSX, so every render produced a NEW
@@ -486,7 +488,7 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
   // run ranks first in its fleet showed nothing about itself. These are the
   // device-grain fields from v_ps5_device_rul.
   const ps5Device = ps5 && ps5.level === 'device';
-  const ps5Components = Array.isArray(ps5 && ps5.components) ? ps5.components : [];
+  const componentRows = useMemo(() => mergeComponents(agg, d360), [agg, d360]);
 
   const deterCols = [
     { key: 'event_date', label: 'Date' },
@@ -564,11 +566,21 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 19.8, fontWeight: 800, color: INK }}>{d360.device_id || device}</span>
               {ps1.device_category && <Badge tone="neutral">{deviceShort(ps1.device_category)}</Badge>}
-              {ps1.facility_id && (
-                <span style={{ ...font.micro }}>
-                  {loc.known(ps1.facility_id) ? `${loc.name(ps1.facility_id)} (${ps1.facility_id})` : `facility ${ps1.facility_id}`}
-                </span>
-              )}
+              {/* STATION FROM THE DEVICE DIMENSION FIRST.          11-Sep-2026
+                  This read ps1.facility_id alone, so a device Failure
+                  Prediction never scored had no station in its own header
+                  while the identity row knew it. Identity wins; PS1 is the
+                  fallback. */}
+              {(() => {
+                const fid = (ident && ident.facility_id) || ps1.facility_id;
+                const fname = ident && ident.facility_name;
+                if (!fid && !fname) return null;
+                const label = fname ? `${fname}${fid ? ` (${fid})` : ''}`
+                  : (loc.known(fid) ? `${loc.name(fid)} (${fid})` : `facility ${fid}`);
+                return <span style={{ ...font.micro }}>{label}</span>;
+              })()}
+              {ident && ident.serial_number && <span style={{ ...font.micro }}>serial {ident.serial_number}</span>}
+              {ident && ident.bus_id && <span style={{ ...font.micro }}>bus {ident.bus_id}</span>}
               {(d360.bus_identity || {}).bus_label && <span style={{ ...font.micro }}>{d360.bus_identity.bus_label}</span>}
               <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 8 }}>
                 <button
@@ -607,6 +619,17 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
               </div>
             )}
           </Card>
+
+          {/* WHERE / WHEN / WHAT / WHY AT DEVICE LEVEL.           11-Sep-2026
+              The per-analysis panels below say what each model thinks; they
+              never answered the four questions in the order a technician
+              asks them, and the station, serial and CMDB item were buried in
+              the ServiceNow panel. These four cards read the precomputed row
+              first and the composite second (V4DeviceW), so they render for
+              every device the dimension knows, scored or not. The component
+              table at the foot of the page answers the same four questions
+              per serial. */}
+          <DeviceWCards agg={agg} d360={d360} loc={loc} />
 
           <Grid cols="repeat(auto-fit,minmax(320px,1fr))">
             {/* PK's wording, agreed 04-Aug. It does the two things the generic
@@ -796,35 +819,12 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
             </SourcePanel>
           </Grid>
 
-          {ps5Components.length > 0 && (
-            <Panel
-              title="Remaining Useful Life & SLA Breach components on this device"
-              hint="Serial-numbered parts the survival run scored, worst first. Deduplicated on (device, serial) -- the published table repeats rows and the repeat is a roster fan-out, not a second reading of the part."
-            >
-              <DataTable
-                rows={ps5Components}
-                columns={[
-                  { key: 'component_serial_nbr', label: 'Serial', width: 150 },
-                  { key: 'component_type_name', label: 'Component type', width: 150 },
-                  { key: 'risk_tier', label: 'Tier', width: 100 },
-                  { key: 'component_age_days', label: 'Age (d)', num: true, d: 0, width: 100 },
-                  { key: 'expected_component_rul_days', label: 'Days to next OOS', num: true, d: 1, width: 150 },
-                  { key: 'risk_score', label: 'Risk score', num: true, d: 4, width: 110 },
-                  {
-                    key: 'act_now',
-                    label: 'Meets act-now rule',
-                    width: 90,
-                    render: (r) => (r && r.act_now ? 'yes' : '--'),
-                  },
-                  { key: 'serial_source', label: 'Source', width: 170 },
-                ]}
-                height={260}
-                pageSize={50}
-                searchable={false}
-                exportName={`ps5_components_${device}`}
-              />
-            </Panel>
-          )}
+          {/* COMPONENT LEVEL. This table used to be Remaining Useful Life
+              only. It now joins the Root Cause Analysis attribution per
+              serial to the survival estimate per serial, one row per serial,
+              so every column the old table had is still here plus the
+              incident side. See V4DeviceW for the grain argument. */}
+          <ComponentWTable rows={componentRows} device={device} />
 
           <Panel
             title="Failure Pattern & Cascade Identification v2.5 deterioration"
@@ -863,7 +863,7 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
       )}
       {brief && d360 && (
         <Device360Popup city={city}
-                        preloaded={{ ...d360, device_id: d360.device_id || device }}
+                        preloaded={{ ...d360, device_id: d360.device_id || device, aggregate: agg }}
                         deviceId={d360.device_id || device}
                         onClose={() => setBrief(false)}
                         onOpenDevice={() => setBrief(false)} />

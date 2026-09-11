@@ -18,10 +18,11 @@ import {
   ArrowLeft, Bell, Calendar, CalendarDays, ChevronRight, Clock,
   Loader2, MapPin, Send, ShieldCheck, TrendingUp, Wrench, X,
 } from 'lucide-react';
-import { ACTION, CARD, INK, INK_2, INK_3, LINE, PAGE, deviceShort, font, nfmt, pct } from './V4theme';
-import { ps1 as api, servicenow } from './V4api';
+import { ACTION, CARD, INK, INK_2, INK_3, LINE, PAGE, deviceShort, dfmt, font, nfmt, pct } from './V4theme';
+import { ps1 as api, servicenow, getObj } from './V4api';
 import { useLocations } from './V4Locations';
 import { evidenceLines, componentsOf, focusOf } from './V4Evidence';
+import { deviceProfile, driverLabel } from './V4DeviceW';
 
 // --- speed: cache + in-flight dedupe + hover prefetch -----------------
 const CACHE = new Map();
@@ -33,9 +34,17 @@ export function primeDevice360(city, deviceId) {
   const k = ckey(city, deviceId);
   if (CACHE.has(k)) return Promise.resolve(CACHE.get(k));
   if (INFLIGHT.has(k)) return INFLIGHT.get(k);
-  const p = api.device360(city, deviceId)
-    .then((r) => {
-      const v = r || {};
+  // THE FAST ROW RIDES ALONG.                               11-Sep-2026
+  // device_level_aggregation answers identity and the four W dimensions
+  // for every device in the dimension, scored or not. It is fetched in
+  // parallel and attached as `aggregate`; any failure leaves it null and
+  // the popup reads the composite alone, exactly as before.
+  const p = Promise.all([
+    api.device360(city, deviceId),
+    getObj('/device/aggregate', { city, device_id: deviceId }).catch(() => null),
+  ])
+    .then(([r, a]) => {
+      const v = { ...(r || {}), aggregate: a && a.found ? a : null };
       if (CACHE.size >= 40) CACHE.delete(CACHE.keys().next().value);
       CACHE.set(k, v); INFLIGHT.delete(k); return v;
     })
@@ -52,18 +61,7 @@ const RED_BG = '#FEF2F2';
 const AMB_BG = '#FFFBEB';
 const AMB = '#B45309';
 
-const DRIVER = {
-  usage_cumulative_failure_count: 'Lifetime failures',
-  roll_fail_90d: 'Failures, 90 days',
-  roll_fail_30d: 'Failures, 30 days',
-  hardware_oos_count_prior_sum_7d: 'Out of service, 7 days',
-  days_since_hw_oos: 'Since last outage',
-  current_healthy_age_days: 'Days fault-free',
-  n_prior_oos: 'Prior outages',
-  component_age_days: 'Part age',
-  cascade_days: 'Cascade days',
-};
-const dlabel = (f) => DRIVER[f] || String(f || '').replace(/_/g, ' ');
+const dlabel = driverLabel;
 const has = (v) => v !== null && v !== undefined && v !== '';
 
 const tone = (t) => {
@@ -224,11 +222,13 @@ export default function Device360Popup({ city = 'CHI', deviceId, onClose, onOpen
     return r.length ? r.slice().sort((a, b) => Number(a.expected_component_rul_days ?? 1e9) - Number(b.expected_component_rul_days ?? 1e9))[0] : null;
   }, [p5.components]);
 
-  const drivers = useMemo(() => {
-    const r = Array.isArray(p1.drivers) ? p1.drivers : [];
-    return r.filter((x) => x && has(x.feature_name)).slice(0, 3)
-      .map((x) => ({ n: dlabel(x.feature_name), v: Math.abs(Number(x.shap_value) || 0) }));
-  }, [p1.drivers]);
+  // One normaliser for WHERE / WHEN / WHAT / WHY, shared with the full tab.
+  const prof = useMemo(() => deviceProfile(d.aggregate || null, d), [d]);
+  const W = prof.where; const WN = prof.when; const WT = prof.what; const WY = prof.why;
+  const drivers = useMemo(
+    () => WY.drivers.map((x) => ({ n: dlabel(x.feature), v: x.shap })),
+    [WY.drivers],
+  );
   const dmax = drivers.length ? Math.max(...drivers.map((x) => x.v)) : 1;
 
   const week = useMemo(() => {
@@ -237,15 +237,19 @@ export default function Device360Popup({ city = 'CHI', deviceId, onClose, onOpen
   }, [p4.weeks]);
 
   const loc = useLocations(city);
-  const cat = p1.device_category || p5.category || st.device_type;
+  const cat = p1.device_category || p5.category || st.device_type || W.fleet;
   const T = tone(p1.risk_band);
   const prob = Number(p1.failure_probability) || 0;
   const watch = /REVIEW-ONLY/i.test(String(d.recommendation || ''));
-  const depot = p2.facility || st.facility_id || p1.facility_id || p5.facility_id;
-  // The place has a NAME. "Depot 108" is an id with a word in front of it and
-  // means nothing to the person being dispatched; PS1's station dimension
-  // calls it something. Falls back to the id when it is genuinely unmapped.
-  const place = loc.known(depot) ? loc.name(depot) : (has(depot) ? `Depot ${depot}` : 'Not recorded');
+  // THE DEVICE DIMENSION NAMES THE PLACE.                  11-Sep-2026
+  // This used to read the facility off whichever PS block carried one, so a
+  // device Failure Prediction never scored said "Not recorded" for a station
+  // the dimension knows. Identity first, the PS blocks as fallback.
+  const depot = W.facility_id || p2.facility || st.facility_id || p1.facility_id || p5.facility_id;
+  const place = has(W.facility_name) ? W.facility_name
+    : (loc.known(depot) ? loc.name(depot) : (has(depot) ? `Depot ${depot}` : 'Not recorded'));
+  const operator = W.operator || loc.operator(depot) || null;
+  const ciShort = has(W.cmdb_ci) ? `${String(W.cmdb_ci).slice(0, 8)}…${String(W.cmdb_ci).slice(-4)}` : null;
 
   // ---- COMPONENTS, NOT COMPONENT TYPES.                  07-Aug-2026
   // TVMSBC and AV2_SAM are component TYPES -- a class of board. BHU and
@@ -303,7 +307,7 @@ export default function Device360Popup({ city = 'CHI', deviceId, onClose, onOpen
             <div style={{ fontSize: 20, fontWeight: 780, color: INK, letterSpacing: '-0.02em', lineHeight: 1.15 }}>{deviceId}</div>
             <div style={{ fontSize: 12, color: INK_2, marginTop: 2 }}>
               {place}
-              {loc.operator(depot) ? <span style={{ color: INK_3 }}> &middot; {loc.operator(depot)}</span> : null}
+              {operator ? <span style={{ color: INK_3 }}> &middot; {operator}</span> : null}
               <span style={{ color: '#D1D5DB' }}> | </span>{deviceShort(cat)}
             </div>
           </div>
@@ -389,9 +393,13 @@ export default function Device360Popup({ city = 'CHI', deviceId, onClose, onOpen
                   headline={place}
                   link="Fleet view" onLink={full}
                 >
-                  <Row k="Location" v={has(depot) ? (loc.known(depot) ? `${loc.name(depot)} (${depot})` : `${depot} -- unmapped`) : null} />
-                  <Row k="Operator" v={loc.operator(depot) || null} />
-                  <Row k="Type" v={deviceShort(cat)} />
+                  <Row k="Location" v={has(depot) ? `${place} (${depot})` : null} />
+                  <Row k="Operator" v={operator} />
+                  <Row k="Mode" v={W.mode} />
+                  <Row k="Bus" v={W.bus_id} />
+                  <Row k="Type" v={deviceShort(cat || W.fleet)} />
+                  <Row k="Serial" v={W.serial} />
+                  <Row k="CMDB item" v={ciShort || 'not mapped'} c={ciShort ? undefined : AMB} />
                   <Row k="Rank in fleet" v={has(p5.rul_rank_in_type) ? `${nfmt(p5.rul_rank_in_type)} of ${nfmt(p5.n_devices_in_type)}` : null} />
                   <Row k="Cascade rank" v={p2.in_top_devices && has(p2.cascade_rank) ? `#${nfmt(p2.cascade_rank)}` : null} />
                 </Card>
@@ -419,6 +427,13 @@ export default function Device360Popup({ city = 'CHI', deviceId, onClose, onOpen
                          v={has(st.current_spell_day) ? `day ${nfmt(st.current_spell_day)}` : null} c={RED} />
                     <Row icon={<CalendarDays size={13} />} k="Days since last outage"
                          v={!has(st.current_spell_day) && has(st.days_since_spell_end) ? nfmt(st.days_since_spell_end) : null} />
+                    <Row icon={<Clock size={13} />} k="Latest attributed incident"
+                         v={has(WN.ps3_latest_incident) ? dfmt(WN.ps3_latest_incident) : null} />
+                    <Row icon={<Clock size={13} />} k="Latest ServiceNow ticket"
+                         v={has(WN.sn_latest) ? dfmt(WN.sn_latest) : null} />
+                    <Row icon={<Clock size={13} />} k="Sources span"
+                         v={WN.vintage_spread !== null && WN.vintage_spread > 0 ? `${nfmt(WN.vintage_spread)} days` : null}
+                         c={AMB} />
                   </div>
                 </Card>
 
@@ -469,6 +484,13 @@ export default function Device360Popup({ city = 'CHI', deviceId, onClose, onOpen
                     {focus && focus.kind === 'component' && parts[0] && parts[0].serial && (
                       <Row k="Attributed serial" v={parts[0].serial} />
                     )}
+                    <Row k="Analyses agreeing"
+                         v={WT.signal_count !== null ? `${nfmt(WT.signal_count)} of ${WT.signal_of}` : null}
+                         c={WT.signal_count >= 2 ? RED : undefined} />
+                    <Row k="Severity action" v={WT.ps3_action} />
+                    <Row k="Anomaly, latest week" v={WT.ps4_severity} c={has(WT.ps4_severity) && String(WT.ps4_severity).toLowerCase() !== 'normal' ? AMB : undefined} />
+                    <Row k="Remaining life band" v={WT.ps5_band} c={/CRITICAL|HIGH/i.test(String(WT.ps5_band || '')) ? RED : undefined} />
+                    <Row k="ServiceNow tickets" v={WT.sn_count !== null ? nfmt(WT.sn_count) : null} />
                   </div>
 
                   <div style={{ marginTop: 10 }}>
@@ -504,6 +526,19 @@ export default function Device360Popup({ city = 'CHI', deviceId, onClose, onOpen
                         </>
                       )}
                   </div>
+                  {/* COMPONENT-LEVEL WHY. The attributed parts, worst first,
+                      with PS3's own caveat: observed from incident history,
+                      not a confirmed cause. */}
+                  {WY.components.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: INK_3, letterSpacing: '0.08em', marginBottom: 4 }}>BY COMPONENT</div>
+                      {WY.components.map((c, i) => (
+                        <Row key={i} k={`${c.label} · ${c.serial}`}
+                             v={`${nfmt(c.incidents)}${c.recurrence_30d ? ` (${nfmt(c.recurrence_30d)} in 30 d)` : ''}`} />
+                      ))}
+                      <div style={{ fontSize: 10.8, color: INK_3, marginTop: 5, lineHeight: 1.4 }}>{WY.attribution_note}</div>
+                    </div>
+                  )}
                   {/* SENTENCES, NOT PROBLEM-STATEMENT CODES. These were
                       chips reading "PS1 above threshold" and "PS3 130 OOS
                       incident(s)". A depot supervisor does not know what PS3

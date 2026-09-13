@@ -15,13 +15,22 @@
 set -eu
 CONFIG_PATH=/usr/share/nginx/html/config.js
 API_BASE_URL=$(printf '%s' "${API_BASE_URL:-}" | sed 's:/*$::')
+# MUTATION_TOKEN: the API's write-route token (x-cubic-token). Runtime only,
+# never baked. Set it on the task definition from the same value as the
+# dashboard-api function. Empty = header omitted by the bundle.
+MUTATION_TOKEN=$(printf '%s' "${MUTATION_TOKEN:-}" | tr -d '"\\')
 
 cat > "$CONFIG_PATH" <<JS
-window.__APP_CONFIG__ = { apiBaseUrl: "${API_BASE_URL}" };
+window.__APP_CONFIG__ = { apiBaseUrl: "${API_BASE_URL}", mutationToken: "${MUTATION_TOKEN}" };
 JS
 
 if [ -n "$API_BASE_URL" ]; then
   echo "[app-config] API base URL: ${API_BASE_URL}"
 else
   echo "[app-config] WARNING: API_BASE_URL unset -- falling back to the build-time VITE_API_BASE_URL baked into the bundle."
+fi
+if [ -n "$MUTATION_TOKEN" ]; then
+  echo "[app-config] write-route token: present (${#MUTATION_TOKEN} chars)"
+else
+  echo "[app-config] write-route token: not set -- POST routes will be refused if the API requires one."
 fi

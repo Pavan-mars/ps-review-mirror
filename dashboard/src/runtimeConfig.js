@@ -33,4 +33,10 @@ export const API_BASE_URL = String(runtime || buildTime || '').replace(/\/$/, ''
 // at the wrong API" is otherwise a 20-minute investigation.
 export const API_BASE_SOURCE = runtime ? 'runtime /config.js' : (buildTime ? 'build-time VITE_API_BASE_URL' : 'unset');
 
+// Write-route token. Runtime only (never baked): the entrypoint writes it
+// into /config.js from MUTATION_TOKEN on the task definition. Empty means
+// the API is running without a token and the header is simply omitted.
+export const MUTATION_TOKEN =
+  (typeof window !== 'undefined' && window.__APP_CONFIG__ && window.__APP_CONFIG__.mutationToken) || '';
+
 export default API_BASE_URL;

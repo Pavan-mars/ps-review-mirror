@@ -1,4 +1,4 @@
-import { API_BASE_URL } from '../runtimeConfig';
+import { API_BASE_URL, MUTATION_TOKEN } from '../runtimeConfig';
 // =====================================================================
 // v2/v2api.js -- fetch helpers for the v2 screens.
 //
@@ -69,9 +69,15 @@ export async function post(path, body, params = {}) {
     Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')
   ).toString();
   try {
+    // The API's write routes require x-cubic-token once MUTATION_TOKEN is set
+    // on the function. The value comes from /config.js at boot (runtime), so
+    // the same image serves every environment. Empty = header omitted, which
+    // keeps a token-less API working unchanged.
+    const headers = { 'content-type': 'application/json' };
+    if (MUTATION_TOKEN) headers['x-cubic-token'] = MUTATION_TOKEN;
     const r = await fetch(`${BASE}${path}${qs ? `?${qs}` : ''}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers,
       body: JSON.stringify(body || {}),
     });
     const data = await r.json().catch(() => ({}));

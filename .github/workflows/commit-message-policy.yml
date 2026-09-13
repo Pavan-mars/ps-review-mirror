@@ -25,13 +25,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Scope: only commits this event introduces. A pull request is checked
+          # base..head. A push to the default branch is checked before..sha. A push
+          # to any other branch is checked against the default branch, so history
+          # that already lives on main is never re-judged by a new branch.
+          DEFAULT="${{ github.event.repository.default_branch }}"
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
-          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          elif [ "${{ github.ref_name }}" = "$DEFAULT" ]; then
+            if [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+              RANGE="${{ github.event.before }}..${{ github.sha }}"
+            else
+              RANGE="${{ github.sha }}~1..${{ github.sha }}"
+            fi
           else
-            RANGE="${{ github.sha }}~20..${{ github.sha }}"
+            git fetch --no-tags --quiet origin "$DEFAULT"
+            RANGE="origin/$DEFAULT..${{ github.sha }}"
           fi
+          echo "checking range $RANGE ($(git rev-list --count "$RANGE") commits)"
           BAD=$(git log --format='%H%x09%s%n%b%n--END--' "$RANGE" \
                 | awk -v RS='--END--\n' 'tolower($0) ~ /(^|\n)[ \t]*co-authored-by:/ || tolower($0) ~ /(^|\n)[ \t]*[a-z-]*session:[ \t]*https?:\/\// {print}' || true)
           if [ -n "$BAD" ]; then

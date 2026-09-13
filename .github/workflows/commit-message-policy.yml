@@ -1,0 +1,42 @@
+name: commit-message-policy
+
+# Every commit in this repository is authored by one named engineer. Commit
+# messages must not carry co-author trailers or tool session links. This
+# check fails a push or pull request that introduces either, so the policy
+# is enforced before history is shared, not corrected afterwards.
+#
+# Local equivalent: tooling/git-hooks/commit-msg (install with
+#   git config core.hooksPath tooling/git-hooks
+# in every clone).
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  check-messages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject co-author trailers and session links
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          else
+            RANGE="${{ github.sha }}~20..${{ github.sha }}"
+          fi
+          BAD=$(git log --format='%H%x09%s%n%b%n--END--' "$RANGE" \
+                | awk -v RS='--END--\n' 'tolower($0) ~ /(^|\n)[ \t]*co-authored-by:/ || tolower($0) ~ /(^|\n)[ \t]*[a-z-]*session:[ \t]*https?:\/\// {print}' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::Commit messages in $RANGE carry a co-author trailer or a session link. Reword them (git commit --amend / git rebase -i) and push again."
+            echo "$BAD"
+            exit 1
+          fi
+          echo "commit messages clean for $RANGE"

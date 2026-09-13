@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# commit-msg hook: refuse commit messages that carry a co-author trailer or a
+# tool session link. Install once per clone:
+#   git config core.hooksPath tooling/git-hooks
+# Mirrors .github/workflows/commit-message-policy.yml.
+MSG_FILE="$1"
+if grep -qiE '^[[:space:]]*co-authored-by:' "$MSG_FILE" || grep -qiE '^[[:space:]]*[a-z-]*session:[[:space:]]*https?://' "$MSG_FILE"; then
+  echo "commit-msg: co-author trailers and session links are not allowed in this repository." >&2
+  echo "            Remove the trailer line(s) from the message and commit again." >&2
+  exit 1
+fi
+exit 0

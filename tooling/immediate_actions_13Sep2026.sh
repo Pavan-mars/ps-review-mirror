@@ -27,6 +27,7 @@ BASTION_SG=sg-0b494063c98a88875
 TASK_SG=sg-006ac78c0d893a4c2
 CLUSTER=cubic-mars-ecs-cluster-dev; SERVICE=FrontEndDashboard-service; FAMILY=FrontEndDashboard
 TASKDEF=${TASKDEF:-$FAMILY}
+BUCKETS=${BUCKETS:-"raw bronze silver gold artifacts"}   # step 4: e.g. BUCKETS="gold artifacts" first
 OUT=tooling/out/immediate_$(date -u +%Y%m%dT%H%M%SZ); mkdir -p "$OUT"
 want(){ [ "$STEP" = all ] || [ "$STEP" = "$1" ]; }
 say(){ echo; echo "== $*"; }
@@ -69,7 +70,7 @@ if want 4; then
   "Expiration":{"ExpiredObjectDeleteMarker":true},
   "AbortIncompleteMultipartUpload":{"DaysAfterInitiation":7}}]}
 JSON
-  for B in raw bronze silver gold artifacts; do
+  for B in $BUCKETS; do
     BK=cubic-mars-pm-s3-datalake-dev-$B-$ACCT
     aws s3api get-bucket-lifecycle-configuration --bucket $BK 2>/dev/null > "$OUT/lifecycle_before_$B.json" || echo "  $BK: no lifecycle today"
     if [ "$DRY_RUN" = 0 ]; then aws s3api put-bucket-lifecycle-configuration --bucket $BK --lifecycle-configuration file://"$OUT/lifecycle.json" && echo "  $BK: lifecycle set"; else echo "  DRY_RUN: would put lifecycle on $BK"; fi

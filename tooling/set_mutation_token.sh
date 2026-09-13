@@ -35,6 +35,7 @@ API_BASE=${API_BASE:-https://a9yuqt9j9b.execute-api.us-east-1.amazonaws.com}
 DASHBOARD_FAMILY=${DASHBOARD_FAMILY:-}      # e.g. FrontEndDashboard
 DASHBOARD_SERVICE=${DASHBOARD_SERVICE:-}    # e.g. FrontEndDashboard-service
 DASHBOARD_CLUSTER=${DASHBOARD_CLUSTER:-cubic-mars-ecs-cluster-dev}
+DASHBOARD_IMAGE=${DASHBOARD_IMAGE:-}          # optional: full ECR image URI:tag for the new revision (the rebuilt bundle)
 DRY_RUN=${DRY_RUN:-1}                        # 1 = print what would change; 0 = apply
 
 need(){ command -v "$1" >/dev/null || { echo "missing $1"; exit 2; }; }
@@ -78,9 +79,11 @@ fi
 # 4. dashboard task definition (optional)
 if [ -n "$DASHBOARD_FAMILY" ]; then
   TD=$(aws ecs describe-task-definition --task-definition "$DASHBOARD_FAMILY" --region "$REGION" --query 'taskDefinition' --output json)
-  NEWTD=$(echo "$TD" | jq --arg t "$MUTATION_TOKEN" '
+  NEWTD=$(echo "$TD" | jq --arg t "$MUTATION_TOKEN" --arg img "$DASHBOARD_IMAGE" '
       .containerDefinitions[0].environment = ((.containerDefinitions[0].environment // []) | map(select(.name!="MUTATION_TOKEN")) + [{name:"MUTATION_TOKEN",value:$t}])
+      | (if $img != "" then .containerDefinitions[0].image = $img else . end)
       | del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy,.deregisteredAt)')
+  echo "[4] image in the new revision: $(echo "$NEWTD" | jq -r '.containerDefinitions[0].image')"
   if [ "$DRY_RUN" = "0" ]; then
     REV=$(aws ecs register-task-definition --region "$REGION" --cli-input-json "$NEWTD" --query 'taskDefinition.revision' --output text)
     echo "[4] registered $DASHBOARD_FAMILY:$REV with MUTATION_TOKEN"

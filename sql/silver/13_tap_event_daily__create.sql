@@ -11,10 +11,11 @@
 --     Use DATE(TRANSACTION_DTM) for tap date - do NOT filter on partition columns
 --   - Grain: (DEVICE_ID, DATE(TRANSACTION_DTM), OPERATOR_ID, BUS_ID)
 --   - 3,150 distinct CTA devices: bus validators (BMV), gate readers, TVMs
---   - TAP_STATUS_ID approved codes (validated 2026-06-15):
+--   - TAP_STATUS_ID approved codes (validated 2026-06-15, 905 added 2026-09-10):
 --       1   = Device Approved          (41.62%)
 --       900 = Server Approved          (52.86%)
 --       904 = Server Approved Cached   (0.03%)
+--       905 = Server Approved Override
 --       All other codes = rejected     (5.49%)
 --     Rejection categories include: 901 Server Denied, 5 Passback,
 --       11 Timeout, 4 Risk Assessment, 903 Multi-Ride Denied
@@ -22,8 +23,7 @@
 --       701 is a reader card-detect timing baseline (METRIC_ID 701 in METRIC_DIMENSION),
 --       not a tap decision outcome. tap_reject_count and tap_reject_rate_pct no longer
 --       include 701 events. 0.09% of ABP_TAP rows affected (~510K rows).
---     QR-3 PENDING: if 905 'Server Approved Override' is confirmed by Michael,
---       add 905 to the approved IN(1, 900, 904) set.
+--     QR-3 (2026-09-10): 905 Server Approved Override included in approved set.
 --   - peak_hour_tap_count: MAX hourly tap count per device per day;
 --     replaces the unsupported LEFT JOIN LATERAL with a subquery CTE
 --   - FACILITY_ID not in ABP_TAP; sourced from mars_dev.silver.dim_device join
@@ -60,7 +60,7 @@
 --   BUG 20: mars_device_category -> not in bronze device_dimension parquet;
 --           available after S06 creates mars_dev.silver.dim_device
 --   BUG 21: TAP_STATUS_ID = 0 -> wrong approved code (0 never appears in data);
---           approved = IN (1, 900, 904); rejected = NOT IN (1, 900, 904)
+--           approved = IN (1, 900, 904, 905); rejected = NOT IN (1, 900, 904, 905, 701)
 -- =============================================================================
 
 DROP TABLE IF EXISTS mars_dev.silver.tap_event_daily;
@@ -76,11 +76,11 @@ WITH tap_agg AS (
         t.BUS_ID,
         COUNT(*)                                               AS tap_count,
         COUNT(DISTINCT t.TOKEN_ID)                            AS unique_cards,
-        -- Approved: Device Approved (1), Server Approved (900), Server Approved Cached (904)
-        SUM(CASE WHEN t.TAP_STATUS_ID IN (1, 900, 904) THEN 1 ELSE 0 END)
+        -- Approved: Device (1), Server (900), Server Cached (904), Server Override (905)
+        SUM(CASE WHEN t.TAP_STATUS_ID IN (1, 900, 904, 905) THEN 1 ELSE 0 END)
                                                                AS tap_approved_count,
         -- QR-2 fix: 701 excluded — timing metric, not a decision outcome
-        SUM(CASE WHEN t.TAP_STATUS_ID NOT IN (1, 900, 904, 701) THEN 1 ELSE 0 END)
+        SUM(CASE WHEN t.TAP_STATUS_ID NOT IN (1, 900, 904, 905, 701) THEN 1 ELSE 0 END)
                                                                AS tap_reject_count,
         SUM(COALESCE(t.FARE_DUE, 0))                          AS total_fare,
         AVG(COALESCE(t.FARE_DUE, 0))                          AS avg_fare,

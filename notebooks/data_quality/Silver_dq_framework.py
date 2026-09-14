@@ -653,8 +653,9 @@ SILVER_SPECS = {
     format=[('transit_day', r'^\d{4}-\d{2}-\d{2}$', 'warning')],
     domain=[
       dict(col='duration_min', kind='between', min=0, max=10080, severity='warning'),
-      dict(col='failure_level', kind='between', min=0, severity='warning'),
-      dict(col='is_chargeable', kind='in_set', value_set=[True, False], severity='warning'),
+      dict(col='failure_level', kind='in_set',
+           value_set=[None, 0, 1, 2, 3, 4, 5, 6, 16, 98, 99], severity='warning'),
+      dict(col='is_chargeable', kind='in_set', value_set=[True, False, None], severity='warning'),
       dict(col='is_resolved', kind='in_set', value_set=[True, False], severity='warning'),
       dict(col='has_explicit_clear', kind='in_set', value_set=[True, False], severity='warning'),
       dict(col='is_auto_cleared', kind='in_set', value_set=[True, False], severity='warning'),
@@ -742,12 +743,15 @@ SILVER_SPECS = {
     not_null=['EVENT_TYPE_KEY', 'EVENT_TYPE_ID', 'EVENT_TYPE_NAME'],
     format=[('EVENT_TYPE_ID', r'^\d+$', 'warning')],
     domain=[
-      # component_subsystem list given as "SYSTEM, CSC_READER, SCRST, BHU, CHU, etc." -- open-ended ("etc."),
-      # so this is warning-severity and the set below should be extended once the full enum is confirmed.
+      # Full enum from 07_dim_event_type__create.sql (S07 range map, 2026-06-16).
       dict(col='component_subsystem',
            kind='in_set',
-           value_set=['SYSTEM', 'CSC_READER', 'SCRST', 'BHU', 'CHU'],
-           severity='warning', mostly=0.90),
+           value_set=[
+               'SYSTEM', 'CSC_READER', 'SCRST', 'BHU', 'CHU', 'PIN_PAD', 'PRINTER',
+               'GATE_MECH', 'ALARM', 'BANKCARD', 'FAREBOX', 'DEVICE_STATE', 'DOPP',
+               'COMMS', 'LEGACY', 'OTHER',
+           ],
+           severity='warning'),
       dict(col='severity_label', kind='in_set', value_set=['DEBUG', 'INFO', 'WARN', 'CRITICAL'], severity='warning'),
     ],
     ri=[dict(fk=['EVENT_TYPE_ID'], parent='dim_event_matrix', parent_cols=['event_code_id'], severity='warning')],
@@ -823,12 +827,13 @@ SILVER_SPECS = {
   'incident_root_cause': dict(
     pk=['availability_event_id'], pk_severity='blocking',
     pk_meta={'dedup': 'UPPER(TRIM(availability_event_id)) per S17 fix 2026-09-01'},
-    not_null=['availability_event_id', 'device_id', 'transit_day', 'AE_FAILURE_LEVEL'],
+    not_null=['availability_event_id', 'device_id', 'transit_day'],
     format=[('transit_day_key', r'^\d{8}$', 'warning')],
     domain=[
-      dict(col='AE_FAILURE_LEVEL', kind='in_set', value_set=[0, 1, 2, 3, 4, 5, 6, 16, 98, 99], severity='warning'),
-      dict(col='is_chargeable', kind='in_set', value_set=[True, False], severity='warning'),
-      dict(col='is_device_fault', kind='in_set', value_set=[True, False], severity='warning'),
+      dict(col='AE_FAILURE_LEVEL', kind='in_set',
+           value_set=[None, 0, 1, 2, 3, 4, 5, 6, 16, 98, 99], severity='warning'),
+      dict(col='is_chargeable', kind='in_set', value_set=[True, False, None], severity='warning'),
+      dict(col='is_device_fault', kind='in_set', value_set=[True, False, None], severity='warning'),
     ],
     ri=[dict(fk=['device_id'], parent='dim_device', parent_cols=['DEVICE_ID'], severity='warning')],
     temporal=[dict(kind='pair', a='AE_END_DTM', op='>=', b='AE_START_DTM', severity='warning')],

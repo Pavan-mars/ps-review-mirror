@@ -27,8 +27,11 @@
 --   - Grain: one row per availability event (SIL-C1 fix 2026-07-22: QUALIFY dedup)
 --   - AE_FAULT_DESCRIPTION, AE_SYMPTOM, AE_PROBLEM, AE_RESOLUTION = PS3 NLP features
 --   - AE_FAILURE_LEVEL: Ventra KPI taxonomy (Michael R2 confirmed 2026-06-22)
+--       NULL = unknown / not populated in source (NOT the same as 0 = FULLY_FUNCTIONAL)
 --       is_chargeable = AE_FAILURE_LEVEL > 0 (hardware failure, chargeable to SLA)
 --       is_device_fault = AE_FAILURE_LEVEL IN (1,2,3,4,5,16) (PS3 training scope)
+--       FIX 2026-09-10: preserve source NULLs (no COALESCE to 0); S18 device_outage
+--       uses known_failure_level_count to distinguish unknown from confirmed 0.
 --   - Jumpbox joined on U_EVENT_ID = SN_U_EVENT_ID (WOT# -- 1:1, no fan-out)
 --   - S15 joined on wm_asset = device_id AND DATE(opened_dtm) = transit_day
 --     Using first incident per device-day (ROW_NUMBER) to prevent fan-out
@@ -170,25 +173,28 @@ classified AS (
         END                                     AS root_cause_category,
 
         -- Ventra KPI failure level taxonomy (Michael 2026-06-22 confirmed)
-        CASE COALESCE(sb.AE_FAILURE_LEVEL, 0)
-            WHEN 0  THEN 'FULLY_FUNCTIONAL'
-            WHEN 1  THEN 'NONPAYMENT'
-            WHEN 2  THEN 'PURCHASE_CARD'
-            WHEN 3  THEN 'PURCHASE_PRODUCT'
-            WHEN 4  THEN 'ALL_PURCHASE'
-            WHEN 5  THEN 'ALL_FUNCTIONS'
-            WHEN 6  THEN 'ALL_LINES_BUSY'
-            WHEN 16 THEN 'BUS_READER_ASSEMBLY'
-            WHEN 98 THEN 'NON_AVAIL_PULLOUT'
-            WHEN 99 THEN 'INSUFFICIENT_INVENTORY'
-            ELSE         'BACK_OFFICE_OR_UNKNOWN'
+        CASE
+            WHEN sb.AE_FAILURE_LEVEL IS NULL THEN NULL
+            WHEN sb.AE_FAILURE_LEVEL = 0  THEN 'FULLY_FUNCTIONAL'
+            WHEN sb.AE_FAILURE_LEVEL = 1  THEN 'NONPAYMENT'
+            WHEN sb.AE_FAILURE_LEVEL = 2  THEN 'PURCHASE_CARD'
+            WHEN sb.AE_FAILURE_LEVEL = 3  THEN 'PURCHASE_PRODUCT'
+            WHEN sb.AE_FAILURE_LEVEL = 4  THEN 'ALL_PURCHASE'
+            WHEN sb.AE_FAILURE_LEVEL = 5  THEN 'ALL_FUNCTIONS'
+            WHEN sb.AE_FAILURE_LEVEL = 6  THEN 'ALL_LINES_BUSY'
+            WHEN sb.AE_FAILURE_LEVEL = 16 THEN 'BUS_READER_ASSEMBLY'
+            WHEN sb.AE_FAILURE_LEVEL = 98 THEN 'NON_AVAIL_PULLOUT'
+            WHEN sb.AE_FAILURE_LEVEL = 99 THEN 'INSUFFICIENT_INVENTORY'
+            ELSE                               'BACK_OFFICE_OR_UNKNOWN'
         END                                     AS failure_level_label,
 
         -- is_chargeable: failure_level > 0 = real hardware failure chargeable to SLA (R2-1)
-        (COALESCE(sb.AE_FAILURE_LEVEL, 0) > 0)               AS is_chargeable,
+        -- NULL when AE_FAILURE_LEVEL is unknown (not FALSE)
+        (sb.AE_FAILURE_LEVEL > 0)               AS is_chargeable,
 
         -- is_device_fault: Category-2 hardware levels only (PS3 training scope)
-        COALESCE(sb.AE_FAILURE_LEVEL, 0) IN (1, 2, 3, 4, 5, 16) AS is_device_fault
+        -- NULL when AE_FAILURE_LEVEL is unknown (not FALSE)
+        sb.AE_FAILURE_LEVEL IN (1, 2, 3, 4, 5, 16) AS is_device_fault
 
     FROM sn_base sb
 ),
@@ -207,7 +213,7 @@ SELECT
     c.transit_day,
     c.AE_EVENT_ID               AS availability_event_id,
     c.AE_FAULT_STATE,
-    COALESCE(c.AE_FAILURE_LEVEL, 0) AS AE_FAILURE_LEVEL,
+    c.AE_FAILURE_LEVEL,
     c.failure_level_label,
     c.is_chargeable,
     c.is_device_fault,

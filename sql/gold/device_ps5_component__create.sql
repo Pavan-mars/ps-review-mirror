@@ -154,7 +154,8 @@ component_failures AS (
         )                                                             AS failure_subsystems,
         -- Chargeable failure counts (R2-1: is_chargeable = failure_level > 0)
         SUM(CASE WHEN is_chargeable = TRUE THEN 1 ELSE 0 END)        AS chargeable_failure_count,
-        MAX(COALESCE(failure_level, 0))                               AS max_failure_level
+        -- Preserve NULL when all outage rows had unknown failure_level (S18/S17 null fix)
+        MAX(failure_level)                                            AS max_failure_level
     FROM component_outages_lead
     GROUP BY DEVICE_ID, COMPONENT_SERIAL_NBR, COMPONENT_TYPE_NAME
 ),
@@ -277,7 +278,7 @@ SELECT
     NOT (cf.failure_count IS NULL OR cf.failure_count = 0)            AS is_not_censored,
     -- Chargeable component failures (R2-1, added 2026-06-24)
     COALESCE(cf.chargeable_failure_count, 0)                         AS chargeable_failure_count,
-    COALESCE(cf.max_failure_level, 0)                                AS max_failure_level,
+    cf.max_failure_level,
     cf.avg_days_between_failures                                      AS mtbf_days,
     -- Cashbox context (TVM/VALIDATOR only; FIX 14: cashbox_jam_count -> bill_cashbox_events)
     COALESCE(cs.total_cashbox_events, 0)                              AS cashbox_events_total,

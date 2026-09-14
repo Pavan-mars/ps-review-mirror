@@ -10,7 +10,7 @@ $Out = Join-Path $Root "tooling\out"
 foreach ($fleet in @("gate", "tvm", "validator")) {
     $src = Join-Path $Out "ps1_${fleet}_feature_contract.json"
     if (-not (Test-Path $src)) {
-        Write-Error "Missing $src — run feature export from production notebook CELL 22 first."
+        Write-Error "Missing $src - run feature export from production notebook CELL 22 first."
     }
     $key = "chicago/ps1/contracts/ps1_${fleet}_feature_contract.json"
     Write-Host "Uploading $src -> s3://$Bucket/$key"

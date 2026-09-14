@@ -171,7 +171,7 @@ outage_daily AS (
         SUM(CASE WHEN do_.is_chargeable = TRUE THEN 1 ELSE 0 END)            AS chargeable_outage_count,
         SUM(CASE WHEN do_.is_chargeable = TRUE
                  THEN COALESCE(do_.duration_min, 0) ELSE 0 END)              AS chargeable_outage_min,
-        MAX(COALESCE(do_.failure_level, 0))                                   AS max_failure_level
+        MAX(do_.failure_level)                                                AS max_failure_level
     FROM mars_dev.silver.device_outage do_
     WHERE do_.mars_device_category IN ('TVM','GATE','VALIDATOR')
       AND do_.duration_min > 0
@@ -470,7 +470,7 @@ SELECT
     -- Chargeable outage features (R2-1: failure_level > 0 = real hardware fault, SLA-chargeable)
     COALESCE(od.chargeable_outage_count, 0) AS chargeable_outage_count,
     COALESCE(od.chargeable_outage_min, 0)   AS chargeable_outage_min,
-    COALESCE(od.max_failure_level, 0)       AS max_failure_level,
+    od.max_failure_level,
     -- Rolling window features
     COALESCE(rw.events_7d, 0)               AS events_7d,
     COALESCE(rw.critical_events_7d, 0)      AS critical_events_7d,

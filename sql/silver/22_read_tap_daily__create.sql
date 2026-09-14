@@ -11,7 +11,7 @@
 --   TRANSIT_DAY_KEY      decimal(8,0)  - date key YYYYMMDD
 --   DEVICE_ID            varchar(15)   - device identifier, matches dim_device
 --   TRANSACTION_DTM      timestamp     - transaction timestamp (hour extraction)
---   TAP_STATUS_ID        decimal(3,0)  - approval code (1/900/901 = approved; 701 excluded per QR-2 fix 2026-07-17)
+--   TAP_STATUS_ID        decimal(3,0)  - approval code (1/900/901/905 = approved; 701 excluded per QR-2)
 --   REVENUE_OR_TEST      varchar(7)    - filter to 'REVENUE' (same as S21)
 --   TOKEN_ID             decimal(18,0) - fare media token (unique card count)
 --   OPERATOR_ID          decimal(5,0)  - operator
@@ -50,20 +50,19 @@ WITH tap_agg AS (
         -- Approval codes (2026-07-17, QR-2 fix applied):
         --   900 (46.1%) = Server Approved
         --   1   (19.5%) = Device Approved
-        --   901 (16.0%) = READ_TRANSACTION-specific code; treated as approved pending
-        --                  QR-2 domain confirmation from Michael (not present in ABP_TAP)
+        --   901 (16.0%) = READ_TRANSACTION-specific approved code (not present in ABP_TAP)
+        --   905         = Server Approved Override (QR-3 confirmed 2026-09-10)
         --   701 (15.4%) = 'Stale Tap' — QR-2 FIX: EXCLUDED from both approved and rejected.
         --                  Previously misclassified as approved based on frequency heuristic.
         --                  701 is a reader card-detect timing metric, not a decision outcome.
         --                  Rows still appear in daily_read_count; reject_rate_pct is unchanged.
         --   4   ( 2.7%) = rejected (Risk Assessment)
         --   NULL (0.2%) = counted as approved (implicit reader-level success)
-        -- QR-3 PENDING: if 905 is confirmed Server Approved Override, add to approved IN().
-        SUM(CASE WHEN rt.TAP_STATUS_ID IN (1, 900, 901)
+        SUM(CASE WHEN rt.TAP_STATUS_ID IN (1, 900, 901, 905)
                    OR rt.TAP_STATUS_ID IS NULL THEN 1 ELSE 0 END)
                                                                 AS approved_read_count,
         SUM(CASE WHEN rt.TAP_STATUS_ID IS NOT NULL
-                  AND rt.TAP_STATUS_ID NOT IN (1, 900, 901, 701) THEN 1 ELSE 0 END)
+                  AND rt.TAP_STATUS_ID NOT IN (1, 900, 901, 905, 701) THEN 1 ELSE 0 END)
                                                                 AS rejected_read_count,
         SUM(CASE WHEN rt.TAP_STATUS_ID IS NULL THEN 1 ELSE 0 END)
                                                                 AS null_status_read_count,

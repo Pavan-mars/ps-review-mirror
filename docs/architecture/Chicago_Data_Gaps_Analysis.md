@@ -36,7 +36,7 @@ SVN_STAGE is populated by a ServiceNow→Oracle ETL job. At the time of the data
 **PS3 — Root Cause Classification:**
 `CTA.SERVICENOW_AVAILABILITY_EVENTS` (295,960 rows, 57 cols) is a CTA-maintained mirror of ServiceNow data pre-joined to availability events. Used as the primary incident source in `silver.incident_root_cause` and the `device_ps3_incident` gold table.
 
-`CTA.SERVICENOW_DATA_FROM_JUMPBOX` (604 rows, 27 cols) provides supplemental ServiceNow fields (incident number, state, category, assigned_to, priority) for a small subset of devices.
+`SERVICENOW_CTA_CHARGABILITY` (415,350 rows, 31 cols; ServiceNow API, as of 2026-09-15) provides supplemental ServiceNow fields (WOT event id, fault/wot state, request type, resolution, affected component, caller, facility) for the full device history — supersedes the old `CTA.SERVICENOW_DATA_FROM_JUMPBOX` (604 rows, a partial one-time extract), which is retained in bronze for lineage only.
 
 **PS2 — Cascade Analysis:**
 CMDB CI dependency features (related-device cascade via shared CI relationships) are marked `NULL` with `svn_ci_data_available = FALSE` in all PS2 gold tables. The chain analysis proceeds as event-sequence within a single device only.
@@ -57,7 +57,7 @@ All PS5 gold tables include `has_work_order_data = FALSE` and `has_maintenance_l
 | PS1 | Mean time to repair (MTTR) from work orders | High | Not available |
 | PS2 | CI dependency graph for cross-device cascade | High — limits to within-device chains | NULL placeholder columns |
 | PS3 | Full incident lifecycle timestamps | High | CTA SN mirror (295K rows) |
-| PS3 | Technician assignment, resolution notes | Moderate | CTA jumpbox (604 rows, partial) |
+| PS3 | Technician assignment, resolution notes | Moderate | CTA chargability (415,350 rows, full history as of 2026-09-15; formerly jumpbox, 604 rows partial) |
 | PS4 | Change window flag (change freeze periods) | Low | Not available |
 | PS5 | Work order maintenance history | Critical | Component age + outage proxy |
 | PS5 | Maintenance action codes | Critical | NCS_STAGE.ACTIVITY_CODE (167 rows, no links) |

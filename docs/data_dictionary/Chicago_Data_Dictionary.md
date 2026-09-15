@@ -357,7 +357,7 @@ Oracle source tables do not always map to obvious bronze table names. The loader
 | NCS_STAGE.ACTIVITY_CODE | bronze.ncs_activity_code
 | NCS_STAGE.COMPONENT_TYPE | bronze.ncs_component_type
 | CTA.SERVICENOW_AVAILABILITY_EVENTS | bronze.cta_servicenow_availability_events
-| CTA.SERVICENOW_DATA_FROM_JUMPBOX | bronze.cta_servicenow_data_from_jumpbox
+| ServiceNow API (u_cta_chargability) | bronze.servicenow_cta_chargability (as of 2026-09-15; supersedes bronze.cta_servicenow_data_from_jumpbox, retained for lineage only)
 | CTA.ABP_USE_TRAN_TIMING_DATA | bronze.cta_abp_use_tran_timing_data
 | CTA.KPI_AGENCY_MAP | bronze.cta_kpi_agency_map
 | CTA.KPI_TVM_DATE_TABLE | bronze.cta_kpi_tvm_date_table

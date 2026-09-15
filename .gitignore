@@ -40,6 +40,7 @@ credentials
 # IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 
 # OS
@@ -122,4 +123,8 @@ skills/*.skill
 skills/chicago-ps1/
 skills/chicago-data-catalog/
 skills/README.md
+# Local Cubic/Mars reference copies (tracked SQL/MD/xlsx in skills/ stay committed)
+skills/CUBIC_MARS_Chicago_Bronze_Completion.xlsx
+skills/CUBIC_MARS_ServiceNow_*.pdf
+skills/Chicago_Bronze_Watermark_and_PK_Analysis_*.xlsx
 docs/*.skill

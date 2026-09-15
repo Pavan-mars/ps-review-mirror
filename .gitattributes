@@ -27,10 +27,6 @@ Dockerfile  text eol=lf
 *.yml       text eol=lf
 *.yaml      text eol=lf
 
-# Windows-native scripts stay CRLF.
-*.ps1       text eol=crlf
-*.bat       text eol=crlf
-*.cmd       text eol=crlf
 
 # Binary: never touch, never diff as text.
 *.png       binary

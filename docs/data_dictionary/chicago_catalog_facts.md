@@ -3,6 +3,12 @@
 Snapshot 2026-07-17. Format: `layer.table | rows | cols | MB | files | [partitions] | date_col | min..max | stale`.
 Live equivalent: `SELECT * FROM mars_dev.audit.catalog_facts ORDER BY layer, table_name`.
 
+**Known gap (2026-09-15):** `bronze.servicenow_cta_chargability` (new, 415,350 rows per
+`skills/Service_now_schema_latest.xlsx`) is not yet in this snapshot — it now feeds
+`silver.kpi_avail_enriched` and `silver.incident_root_cause`, replacing
+`bronze.cta_servicenow_data_from_jumpbox` there. Re-run the live query above to pick up
+real MB/files/stale stats for it rather than trusting hand-entered numbers here.
+
 ## bronze (85 tables)
 ```
 _backfill_log | 12,089 | 15 | 0.1 | last_run_ts | 2026-06-08..2026-06-08 | stale=False

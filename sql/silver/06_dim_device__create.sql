@@ -23,7 +23,14 @@
 --   - TT_ = Turnstile (confirmed at named CTA rail stations) -> GATE
 --   - BTP at PortableFarebox (45 devices) = bus-mounted farebox -> VALIDATOR
 --   - BTP at depots/garages (3,400+) -> TVM (correct)
---   - DEVICE_SERIAL_NUMBER: 91.8% NULL confirmed; PS5 now sources from CMDB_CI (2026-06-24)
+--   - DEVICE_SERIAL_NUMBER: 91.8% NULL confirmed. NOTE (2026-09-15): the "PS5 now
+--     sources from CMDB_CI" claim below was never actually implemented -- traced
+--     the full chain (this column -> S09 hw_config_current -> gold PS5) and it's
+--     a straight passthrough of this EDW-sourced, still-91.8%-NULL field; no CMDB
+--     join exists anywhere in that path. Confirmed unfixable via CMDB CI for now:
+--     see the CMDB linkage investigation in 17_incident_root_cause__create.sql
+--     (four join strategies tried, all below a usable match rate; root cause is
+--     a device-population mismatch in the bronze CMDB export, not a join bug).
 --
 -- Final category distribution (updated 2026-06-25, Michael R3):
 --   VALIDATOR  ~4,200  BMV bus only - OPERATOR_ID 2 (CTA Bus, 2,993+20) + OPERATOR_ID 3 (PACE Bus, 1,190+9)
@@ -39,7 +46,8 @@
 --   R2-7:  DCR -> OTHER (on-bus messaging module; falls through CASE to OTHER already)
 --   R2-14: TRANSIT_ARRAY_ID + ARRAY_POSITION added for PS2 gate-bank cascade analysis
 --          FARE_CONTROL_AREA, TURNSTILE_DEVICE_TYPE, TURNSTILE_DEVICE_NUMBER also added
---   R2-15: DEVICE_SERIAL_NUMBER gap -- PS5 now uses CMDB_CI.serial_number (ServiceNow 2026-06-24)
+--   R2-15: DEVICE_SERIAL_NUMBER gap -- CMDB_CI.serial_number was the intended fix
+--          (ServiceNow 2026-06-24) but was never wired in; see note above (2026-09-15).
 --
 -- Michael R3 changes applied 2026-06-25:
 --   R3-FBX: FBX (4,651 fareboxes) -> OTHER. Fareboxes are out of Ventra scope. (REVERSED D50)

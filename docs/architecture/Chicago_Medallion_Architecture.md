@@ -82,7 +82,7 @@ Oracle schemas: `EDW`, `NCS_STAGE`, `CTA`
 | CTA.SLDC_MONTHLY_SUMMARY | 12,788 | bronze.cta_sldc_monthly_summary | PS1
 | CTA.KPI_MONTHLY_SUMMARY | 851 | bronze.cta_kpi_monthly_summary | PS1
 | CTA.KPI_VARIABLE_FEE | 631 | bronze.cta_kpi_variable_fee | PS1
-| CTA.SERVICENOW_DATA_FROM_JUMPBOX | 604 | bronze.cta_servicenow_data_from_jumpbox | PS3
+| ServiceNow API (u_cta_chargability) | 415,350 | bronze.servicenow_cta_chargability | PS3 (as of 2026-09-15; supersedes bronze.cta_servicenow_data_from_jumpbox, 604 rows, retained for lineage only)
 | NCS_STAGE.ACTIVITY_CODE | 167 | bronze.ncs_activity_code | PS5
 | EDW.ACTIVITY_CODE_DIMENSION | 189 | bronze.edw_activity_code_dimension | PS5
 | EDW.KPI_TARGET | 216 | bronze.kpi_target | PS1

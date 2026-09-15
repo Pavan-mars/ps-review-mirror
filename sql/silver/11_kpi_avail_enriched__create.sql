@@ -6,7 +6,21 @@
 --   EDW.AVAILABILITY_EVENTS            (752,510 rows, 24 cols)
 --   EDW.AVAILABILITY_RELIEF            (2,117 rows,   7 cols)
 --   CTA.SERVICENOW_AVAILABILITY_EVENTS (375,578 rows, 57 cols)
---   CTA.SERVICENOW_DATA_FROM_JUMPBOX   (604 rows,    ~27 cols)
+--   SERVICENOW_CTA_CHARGABILITY        (415,350 rows, 31 cols)
+--
+-- UPDATE 2026-09-15: sn_jumpbox now reads bronze.servicenow_cta_chargability,
+-- not bronze.cta_servicenow_data_from_jumpbox. Verified: (a) chargability is a
+-- strict column superset of jumpbox (all U_* fields jumpbox exposed are present,
+-- same names, plus sys_id/sys_updated_on/u_bus_id/u_device_type/etc.); (b) on
+-- shared WOT events, U_RESOLUTION agrees 100% between the two sources but
+-- U_FAULT_STATE can differ -- confirmed via sys_updated_on that chargability
+-- always carries the later update (jumpbox was a stale one-time 604-row extract;
+-- chargability is a proper full-history API pull, ~700x the row count). Column
+-- names in the new source are physically lowercase (u_event_id, u_fault_state,
+-- ...) but Spark SQL's default case-insensitive identifier resolution means the
+-- existing UPPERCASE references below still resolve correctly -- no alias
+-- changes needed beyond the table name.
+-- Old jumpbox table is retained in bronze for lineage but no longer read here.
 --
 -- NOTE: EDW.AVAILABILITY_PERIODS (17 rows) omitted - defines operating period
 --       windows but was not used in the original SQL (dead CTE). Excluded.
@@ -152,6 +166,19 @@ sn_jumpbox AS (
     -- picks the single most-recent jumpbox record per device - eliminates fan-out.
     -- Actual column names confirmed 2026-06-15 from S17 V-01b schema check.
     -- All fields are U_ prefixed; no INCIDENT_NUMBER/CATEGORY/SUBCATEGORY/ASSIGNED_TO/PRIORITY
+    --
+    -- NOTE (2026-09-15): this CTA-level "one record per DEVICE_ID across all time"
+    -- pick-latest was designed for jumpbox's 604-row supplemental snapshot, where
+    -- collapsing to one row per device was a reasonable lightweight enrichment.
+    -- The new source (servicenow_cta_chargability, 415,350 rows / full history)
+    -- still fans out per device the same way this CTE always fanned out jumpbox,
+    -- so the join below now silently discards far more event-level detail per
+    -- device than before -- every avail_base row for a device gets the SAME single
+    -- most-recently-created ticket, unconditional on date. Revisit joining on the
+    -- WOT number (sn.SN_U_EVENT_ID from sn_events, which shares chargability's
+    -- u_event_id domain) instead of DEVICE_ID if event-level chargability detail
+    -- is needed here; left as device-level for now to keep this swap a pure
+    -- source-table change.
     SELECT
         jb_device_id, jb_wot_number, jb_wot_state, jb_fault_state,
         jb_fault_description, jb_resolution, jb_affected_component,
@@ -176,7 +203,7 @@ sn_jumpbox AS (
                 PARTITION BY jb.U_DEVICE_ID
                 ORDER BY jb.SYS_CREATED_ON DESC
             )                                           AS rn
-        FROM mars_dev.bronze.cta_servicenow_data_from_jumpbox jb
+        FROM mars_dev.bronze.servicenow_cta_chargability jb
     ) ranked
     WHERE rn = 1
 )
@@ -236,7 +263,8 @@ SELECT
     sn.SN_U_REQUEST_TYPE                                AS sn_request_type,
     sn.sn_edw_inserted_dtm,
     sn.sn_edw_updated_dtm,
-    -- Jumpbox supplemental (604 rows, joined on DEVICE_ID; actual U_ column names)
+    -- Chargability supplemental (415,350 rows; joined on DEVICE_ID, one row per
+    -- device picked by most-recent SYS_CREATED_ON -- see sn_jumpbox CTE note above)
     jb.jb_wot_number,
     jb.jb_wot_state,
     jb.jb_fault_state,

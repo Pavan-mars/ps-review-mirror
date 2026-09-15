@@ -4,17 +4,41 @@
 --
 -- Sources (mars_dev.bronze catalog):
 --   CTA.SERVICENOW_AVAILABILITY_EVENTS  (375,578 rows, 57 cols) -> mars_dev.bronze.cta_servicenow_availability_events
---   CTA.SERVICENOW_DATA_FROM_JUMPBOX    (604 rows,    27 cols)  -> mars_dev.bronze.cta_servicenow_data_from_jumpbox
+--   SERVICENOW_CTA_CHARGABILITY         (415,350 rows, 31 cols) -> mars_dev.bronze.servicenow_cta_chargability
 --   silver.incident_history (S15)       (rebuilt 2026-07-20 on servicenow_incident;
 --                                         see 15_incident_history__create.sql)
 --                                                                -- sn_category / sn_maintenance_type enrichment
+--
+-- UPDATE 2026-09-15: jb_base now reads bronze.servicenow_cta_chargability instead
+-- of bronze.cta_servicenow_data_from_jumpbox. Same U_* column names (superset
+-- schema, verified) and same join key (U_EVENT_ID / WOT# = c.SN_U_EVENT_ID,
+-- already event-level and 1:1 here -- no fan-out risk from the swap). Chargability
+-- is the ServiceNow-API-sourced successor to the Oracle-mirrored jumpbox extract
+-- (~700x the row count); jumpbox retained in bronze for lineage only.
+--
+-- CMDB CI LINKAGE -- CONCLUSIVELY CLOSED 2026-09-15 (not a join-technique problem):
+--   Four independent join strategies tested against live incident/device data, all
+--   below a usable population-level match rate:
+--     incident.cmdb_ci_sys_id -> cmdb_ci.sys_id (direct)........... 0%
+--     incident.cmdb_ci_display_value -> cmdb_ci.name (display).... 0.3%
+--     incident -> task_ci -> cmdb_ci.sys_id (indirect)............. 3.63% (12,708 / 350,386 incidents)
+--     cmdb_ci.asset_tag -> dim_device.DEVICE_ID..................... 0.00% (2 / 246,502 incidents)
+--   Root cause: only 18.47% of cmdb_ci.asset_tag values are even shaped like a
+--   fleet device ID (regex ^[A-Z]{2,4}[0-9]{4,6}$), vs 92.61% of real
+--   dim_device.DEVICE_ID values -- and the small fleet-ID-shaped subset still
+--   doesn't match current, incident-generating devices. The bronze CMDB CI export
+--   (servicenow_cmdb_ci_pos_device/card_handling/netgear/onboard_card_interface/acc)
+--   does not cover the same fleet as the incidents in this dataset. Needs a
+--   corrected export from the ServiceNow data owner, scoped to the actual
+--   TVM/GATE/BMV/RVG fleet -- not solvable by trying more join keys here.
 --
 -- CRITICAL DATA GAP -- SVN_STAGE TABLES ALL HAVE 0 ROWS IN ORACLE:
 --   SVN_STAGE.INCIDENT, FAULT, WORK_ORDER, WORK_ORDER_TASK, CMDB_CI, CHANGE_REQUEST
 --   (+ 29 more SVN_STAGE tables) all empty in Oracle EDW staging environment.
 --   WORKAROUND: CTA.SERVICENOW_AVAILABILITY_EVENTS is the CTA-curated ServiceNow
 --   mirror joined to availability events. Used as the sole incident source.
---   CTA.SERVICENOW_DATA_FROM_JUMPBOX (604 rows) supplements with additional SN fields.
+--   SERVICENOW_CTA_CHARGABILITY (415,350 rows) supplements with additional SN
+--   fields -- supersedes the old 604-row CTA.SERVICENOW_DATA_FROM_JUMPBOX extract.
 --   IMPACT: No work-order lifecycle, no CMDB CI lineage, no technician detail.
 --   UPDATE 2026-06-24: silver.incident_history (S15) now provides full SN incident
 --   data. Joined here on device_id + date to enrich with sn_category.
@@ -32,7 +56,7 @@
 --       is_device_fault = AE_FAILURE_LEVEL IN (1,2,3,4,5,16) (PS3 training scope)
 --       FIX 2026-09-10: preserve source NULLs (no COALESCE to 0); S18 device_outage
 --       uses known_failure_level_count to distinguish unknown from confirmed 0.
---   - Jumpbox joined on U_EVENT_ID = SN_U_EVENT_ID (WOT# -- 1:1, no fan-out)
+--   - Chargability joined on U_EVENT_ID = SN_U_EVENT_ID (WOT# -- 1:1, no fan-out)
 --   - S15 joined on wm_asset = device_id AND DATE(opened_dtm) = transit_day
 --     Using first incident per device-day (ROW_NUMBER) to prevent fan-out
 --   - dim_device joined on AE_DEVICE_ID: 91.9% match rate
@@ -95,7 +119,8 @@ WITH sn_base AS (
       AND sn.AE_TRANSIT_DAY_KEY IS NOT NULL
 ),
 jb_base AS (
-    -- CTA.SERVICENOW_DATA_FROM_JUMPBOX: supplemental fields (604 rows, 2026 extract)
+    -- SERVICENOW_CTA_CHARGABILITY: supplemental fields (415,350 rows, full-history
+    -- API extract; supersedes the old 604-row jumpbox extract -- see header note)
     SELECT
         jb.U_EVENT_ID             AS jb_event_id,
         jb.U_DEVICE_ID            AS jb_device_id,
@@ -111,7 +136,7 @@ jb_base AS (
         jb.SYS_CREATED_ON         AS jb_opened_at,
         jb.U_CALLER               AS jb_caller,
         jb.U_FACILITY_NAME        AS jb_facility_name
-    FROM mars_dev.bronze.cta_servicenow_data_from_jumpbox jb
+    FROM mars_dev.bronze.servicenow_cta_chargability jb
 ),
 
 -- -- S15 enrichment: first incident per device+day (prevent fan-out) -----------

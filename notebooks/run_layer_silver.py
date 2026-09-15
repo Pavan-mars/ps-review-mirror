@@ -9,7 +9,10 @@
 #   SIL-M5  20_usage_lifecycle_daily   — transit_day <= current_date() filter
 #
 # Prerequisite (run BEFORE this notebook if incident tables are stale):
-#   NB100 + NB101 → bronze/silver servicenow_incident_conformed
+#   NB101 (run_mode=merge) → bronze.servicenow_incident_conformed
+#   NB100 is superseded by NB101 (see NB101's own handover checklist, step 6) —
+#   do not run NB100; it appends directly to bronze.servicenow_incident, which
+#   NB101's insert-only merge into the conformed table has replaced.
 #
 # Recommended full rebuild order after SQL changes:
 #   0. notebooks/data_quality/data_quality_framework_bronze.py (optional, post-ingest)

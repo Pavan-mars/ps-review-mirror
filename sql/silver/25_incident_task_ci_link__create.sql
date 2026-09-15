@@ -12,10 +12,23 @@
 -- PURPOSE:
 -- UPDATE 2026-07-22 (SIL-H1c): incident side repointed to
 -- bronze.servicenow_incident_conformed (same schema as servicenow_incident;
--- merged CTA+XML export via NB100+NB101). Adds ~44K CTA-unique incidents.
+-- merged CTA+XML export via NB101 -- NB100 is superseded, see NB101's own
+-- handover checklist step 6). Adds ~20K CTA-unique incidents.
 -- Wires ServiceNow task_ci + conformed incidents as VALIDATOR incident signal.
 -- Does NOT replace S15 incident_history or S17 incident_root_cause, which
 -- remain the proven CSV-based path for TVM + GATE incidents.
+--
+-- FRESHNESS VERIFIED (2026-09-15): confirmed bronze.servicenow_incident_conformed
+-- is not stale relative to raw bronze.servicenow_incident (prompted by the new
+-- Service_now_schema_latest.xlsx inventory showing raw at 328,927 rows, higher
+-- than any previously-recorded snapshot). Checked directly:
+--   - 328,924 / 328,925 raw incident numbers exist in conformed (1 missing, negligible)
+--   - conformed_distinct_numbers = 349,683, i.e. still a superset (~20,758 CTA-only
+--     incidents beyond raw's native count, consistent with NB101's merge)
+--   - 0% of incidents present in both tables have a newer sys_updated_on in raw
+--     than in conformed -- no stale copies among the overlap
+-- Conclusion: servicenow_incident_conformed is current and superior to raw
+-- servicenow_incident for both S15 and S25. No NB101 re-run needed as of this date.
 --
 -- KEY FINDING (confirmed 2026-07-15):
 -- servicenow_task_ci.ci_item_display_value contains bus numbers for BMV devices

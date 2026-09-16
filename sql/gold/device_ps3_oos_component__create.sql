@@ -135,6 +135,30 @@ WHERE is_hardware_oos_event = TRUE
 --     window with this row's own device removed (collect_set already
 --     dedupes, so array_remove strips at most one entry).
 --
+-- REVISED SAME DAY: the collect_set(...) OVER (window) approach above failed
+-- on the actual run -- [MISSING_GROUP_BY]. Catalyst rewrote the three
+-- collect_set window expressions into a separate internal Aggregate node
+-- with no GROUP BY (visible in the failing plan immediately above
+-- `SubqueryAlias oos_history`), while the COUNT/SUM/MIN window expressions
+-- planned correctly into proper Window nodes with no error. This is a real
+-- limitation of this Spark/Catalyst version's window-function planning for
+-- collection-building ("ImperativeAggregate") functions like collect_set --
+-- not a SQL logic error, and not something reasoning about the SQL alone
+-- would have predicted.
+-- Fix: replaced every collect_set(...) OVER (...) with
+-- approx_count_distinct(...) OVER (...) -- an algebraic/mergeable aggregate
+-- in the same category as COUNT/SUM/MIN (which all planned correctly), not
+-- a collection-building one, so it should not hit the same Catalyst path.
+-- Trade-off: HyperLogLog-based approximate counts instead of exact ones.
+-- Accepted given the small cardinalities involved (a handful of subsystem
+-- values per category per the header; per-device serial counts within a 7d
+-- window) -- HLL-style sketches are near-exact at this scale in practice,
+-- though this is not a formal guarantee. station_devices_oos_24h could no
+-- longer use array_remove on a collected set, so it uses the same
+-- subtraction technique as station_oos_events_24h instead: this device's
+-- own ID is in the facility-window's approx-distinct-device count exactly
+-- when prior_oos_24h > 0 (see the CASE WHEN next to it below).
+--
 -- CORRECTNESS NOT YET CONFIRMED. Run the post-build validation block at the
 -- end of this file -- especially the new check #5, a manual spot-check of
 -- one known device's counts -- before trusting this for training. This is
@@ -215,15 +239,15 @@ history_windowed AS (
 
         -- prior_device (24h, partitioned by DEVICE_ID)
         COUNT(*)                                                OVER w_24h AS prior_oos_24h,
-        size(collect_set(component_subsystem))                  OVER w_24h AS prior_distinct_subsystems_24h,
+        approx_count_distinct(component_subsystem)              OVER w_24h AS prior_distinct_subsystems_24h,
         SUM(CASE WHEN is_reader_event      THEN 1 ELSE 0 END)   OVER w_24h AS prior_reader_oos_24h,
         SUM(CASE WHEN requires_service_call THEN 1 ELSE 0 END)  OVER w_24h AS prior_service_call_oos_24h,
         MIN(event_priority)                                     OVER w_24h AS prior_min_priority_24h,
 
         -- prior_device_7d (7d, partitioned by DEVICE_ID)
         COUNT(*)                                                OVER w_7d  AS prior_oos_7d,
-        size(collect_set(component_subsystem))                  OVER w_7d  AS prior_distinct_subsystems_7d,
-        size(collect_set(COMPONENT_SERIAL_NBR))                 OVER w_7d  AS prior_distinct_serials_7d,
+        approx_count_distinct(component_subsystem)              OVER w_7d  AS prior_distinct_subsystems_7d,
+        approx_count_distinct(COMPONENT_SERIAL_NBR)              OVER w_7d  AS prior_distinct_serials_7d,
 
         -- prior_serial (30d, partitioned by DEVICE_ID + COMPONENT_SERIAL_NBR)
         -- NULL-guarded: the original self-join required
@@ -237,10 +261,17 @@ history_windowed AS (
              THEN MAX(EVENT_DTM) OVER w_30d_serial END           AS prior_serial_last_oos_dtm_raw,
 
         -- prior_station (24h, partitioned by FACILITY_ID + mars_device_category)
-        -- Self-excluded via subtraction (all events at this facility+category
-        -- MINUS this device's own count) rather than a join predicate.
+        -- Self-excluded via subtraction (all events/devices at this facility+
+        -- category MINUS this device's own contribution) rather than a join
+        -- predicate. station_devices_oos_24h: this device's own ID is in the
+        -- facility-window's distinct-device set exactly when it has at least
+        -- one prior event of its own in the same 24h window (prior_oos_24h >
+        -- 0) -- w_station_24h's partition is broader than w_24h's but shares
+        -- the same RANGE bound, so this device's own prior events (if any)
+        -- are always a subset of the facility-window population.
         (COUNT(*) OVER w_station_24h) - (COUNT(*) OVER w_24h)    AS station_oos_events_24h,
-        size(array_remove(collect_set(DEVICE_ID) OVER w_station_24h, DEVICE_ID))
+        (approx_count_distinct(DEVICE_ID) OVER w_station_24h)
+            - (CASE WHEN (COUNT(*) OVER w_24h) > 0 THEN 1 ELSE 0 END)
                                                                   AS station_devices_oos_24h
 
     FROM oos_history

@@ -40,9 +40,12 @@ V2 = [
   "edw_device_current_hw_config","edw_kpi_summary_by_day","edw_kpi_rules","edw_kpi","edw_kpi_target",
   "edw_event_type_dimension","edw_metric_dimension","ncs_stage_device","ncs_stage_device_type",
   "ncs_stage_event","ncs_stage_stop_point","ncs_stage_transit_facility",
-  "cta_servicenow_availability_events","cta_servicenow_data_from_jumpbox","cta_kpi_agency_map",
+  "cta_servicenow_availability_events","cta_kpi_agency_map",
   "cta_kpi_monthly_summary","cta_sldc_monthly_summary"]] + \
- [("cta_kpi_tvm_date_table", "drop_from_scope", "-", "-", "-", "-", "-", "-", "none")]
+ [("cta_kpi_tvm_date_table", "drop_from_scope", "-", "-", "-", "-", "-", "-", "none"),
+  # 2026-09-16: superseded by servicenow_cta_chargability (see 17_incident_root_cause
+  # header) -- no longer read by any silver SQL, kept in bronze for lineage only.
+  ("cta_servicenow_data_from_jumpbox", "drop_from_scope", "-", "-", "-", "-", "-", "-", "none")]
 
 BAD_WM = {"LOAD_DATE","SRC_YEAR","YEAR","MONTH","DAY","LOAD_TS","LOAD_DTM","INGEST_DATE"}
 for r in V2:

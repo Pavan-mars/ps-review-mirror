@@ -40,6 +40,106 @@
 -- be excluded from the model feature list.
 -- =====================================================================
 
+-- PERF ROUND 1 (2026-09-16): sample onsets down to ~3M (SageMaker Studio's
+-- load ceiling: keep 100% of GATE, ~25% of TVM, ~9% of VALIDATOR, deterministic
+-- on DW_DEVICE_EVENT_ID) BEFORE computing prior-window features, not after --
+-- see the `sampled` CTE below.
+--
+-- PERF ROUND 2 (2026-09-16): device_event_enriched (190M+ rows, NOT
+-- partitioned -- only a manual post-load ZORDER OPTIMIZE is suggested in its
+-- own CREATE TABLE, and it has never actually been run) was being read and
+-- re-filtered from scratch once per prior_* self-join. Materialize and cache
+-- that filtered history ONCE (oos_history below), bounded by a static date
+-- floor 30 days before onsets' earliest possible transit_day.
+--
+-- IDEMPOTENCY (2026-09-16): CACHE TABLE ... AS SELECT registers oos_history
+-- as a SESSION-scoped temp view. A run that fails partway through this file
+-- (before reaching the DROP VIEW at the end) leaves it registered in that
+-- session; the next run's CACHE TABLE then fails with
+-- TEMP_TABLE_OR_VIEW_ALREADY_EXISTS. Drop it defensively before creating it
+-- too, so reruns are safe after a partial failure, not just after a clean one.
+--
+-- REVERTED SAME DAY: tried ANALYZE TABLE oos_history here to help the
+-- optimizer with prior_station's low-cardinality join key. Broke the build --
+-- this environment runs on Spark Connect / Unity Catalog governed compute
+-- (confirmed from the failing run's stack trace), where CACHE TABLE creates a
+-- Spark-local relation, not a Unity Catalog table, so ANALYZE TABLE can never
+-- resolve it. Removed outright.
+DROP VIEW IF EXISTS oos_history;
+
+CACHE TABLE oos_history AS
+SELECT
+    DEVICE_ID, EVENT_DTM, DW_DEVICE_EVENT_ID, component_subsystem,
+    is_reader_event, requires_service_call, event_priority,
+    COMPONENT_SERIAL_NBR, FACILITY_ID, mars_device_category,
+    unix_timestamp(EVENT_DTM) AS _evt_ts
+FROM mars_dev.silver.device_event_enriched
+WHERE is_hardware_oos_event = TRUE
+  AND EVENT_STATE_TYPE_NAME = 'Set'
+  AND transit_day >= DATE '2023-12-01';
+
+-- PERF ROUND 3 (2026-09-16) -- THE STRUCTURAL FIX, NOT VERIFIED AGAINST LIVE
+-- EXECUTION. Rounds 1-2 reduced the SIZE of the four prior_* self-joins'
+-- inputs but never touched the joins themselves. Spark's equi-join on
+-- DEVICE_ID can only use DEVICE_ID for the hash/shuffle key -- the time-
+-- window predicates (p.EVENT_DTM < o.EVENT_DTM AND p.EVENT_DTM >=
+-- o.EVENT_DTM - INTERVAL n) are correlated against another row's column, so
+-- Spark applies them as a filter AFTER the join, not as part of it. That
+-- means Spark first materialises every (onset x that device's ENTIRE
+-- history) pair, then discards everything outside the window. Using this
+-- file's own measured profile in the header above: TVM alone is roughly
+-- 1.05M sampled onsets x ~8,859 avg events/device =~ 9.3 BILLION
+-- intermediate rows for ONE of the four joins; VALIDATOR and GATE add
+-- billions more. Caching and sampling never touched this -- it isn't a
+-- scan-count or row-count problem, it's the join operator's shape.
+--
+-- Fix: replace all four self-joins with window functions over oos_history,
+-- computed via one sort-per-partition pass instead of a join -- the same
+-- RANGE BETWEEN ... PRECEDING pattern this repo already uses for the same
+-- class of problem in 24_device_incident_features_daily__create.sql
+-- (Gap 2 RC3). ORDER BY unix_timestamp(EVENT_DTM) (seconds, computed once
+-- into oos_history._evt_ts above) because Spark's window RANGE frame needs a
+-- numeric/date ordering column for integer bounds; "N PRECEDING AND
+-- 1 PRECEDING" reproduces "< current AND >= current - N seconds" exactly, at
+-- SECOND granularity.
+--
+-- KNOWN PRECISION DIFFERENCE from the original self-join (which compared
+-- full TIMESTAMP values, sub-second precision): two events for the SAME
+-- device in the SAME SECOND are tied here and both excluded from each
+-- other's prior-window count, whereas the original ordered them correctly at
+-- sub-second resolution. Accepted as narrow and unlikely to matter for
+-- sensor-logged hardware OOS onsets; flagged explicitly rather than left to
+-- be discovered by surprise.
+--
+-- history_windowed computes every prior-window aggregate for EVERY row in
+-- oos_history, not just the sampled ~3M -- window functions need the full,
+-- continuous per-partition history to count correctly; sampling first would
+-- silently undercount. The final SELECT then does ONE cheap, unique-key
+-- equi-join from `sampled` onto this precomputed table -- a lookup, not a
+-- fan-out join.
+--
+-- prior_station (FACILITY_ID + mars_device_category keyed -- far lower-
+-- cardinality than DEVICE_ID, and per the user's analysis the most plausible
+-- skew source: VALIDATOR buses concentrated at a small number of garages)
+-- needed two adaptations, since its self-join excluded THIS DEVICE
+-- (p.DEVICE_ID <> o.DEVICE_ID), not a tied timestamp -- COUNT(DISTINCT ...)
+-- also isn't allowed inside a window frame in Spark SQL at all:
+--   station_oos_events_24h = (all events at this facility+category in the
+--     last 24h, via a window partitioned by FACILITY_ID+mars_device_category)
+--     MINUS prior_oos_24h (this device's own count in the same window) --
+--     arithmetic, not array manipulation. Exactly reproduces "other devices'
+--     events" because this device's own facility-window events are always a
+--     subset of the facility-window total.
+--   station_devices_oos_24h = size(array_remove(collect_set(DEVICE_ID) OVER
+--     the same window, DEVICE_ID)) -- the distinct-device set for the
+--     window with this row's own device removed (collect_set already
+--     dedupes, so array_remove strips at most one entry).
+--
+-- CORRECTNESS NOT YET CONFIRMED. Run the post-build validation block at the
+-- end of this file -- especially the new check #5, a manual spot-check of
+-- one known device's counts -- before trusting this for training. This is
+-- the highest-risk change made to this file this session; runtime and
+-- correctness both need confirming, not just "did it execute."
 CREATE OR REPLACE TABLE mars_dev.gold.device_ps3_oos_component
 USING DELTA
 PARTITIONED BY (transit_day)
@@ -94,98 +194,83 @@ WITH onsets AS (
       AND e.transit_day <= CURRENT_DATE()                     -- sentinel-date guard
 ),
 
--- Strictly prior-window device history. The join is < (not <=) on EVENT_DTM,
--- so an onset can never see itself or anything simultaneous.
-prior_device AS (
-    SELECT
-        o.DW_DEVICE_EVENT_ID,
-        COUNT(p.DW_DEVICE_EVENT_ID)                                              AS prior_oos_24h,
-        COUNT(DISTINCT p.component_subsystem)                                    AS prior_distinct_subsystems_24h,
-        SUM(CASE WHEN p.is_reader_event      THEN 1 ELSE 0 END)                  AS prior_reader_oos_24h,
-        SUM(CASE WHEN p.requires_service_call THEN 1 ELSE 0 END)                 AS prior_service_call_oos_24h,
-        MIN(p.event_priority)                                                    AS prior_min_priority_24h
+-- Deterministic stratified sample, applied BEFORE prior-window features are
+-- looked up (not after) -- see PERF ROUND 1 above. Keeps every GATE row
+-- (smallest class, 895,638) and caps the two larger categories: ~25% of TVM
+-- -> ~1.05M, ~9% of VALIDATOR -> ~1.05M, ~3M rows total.
+sampled AS (
+    SELECT o.*
     FROM onsets o
-    LEFT JOIN mars_dev.silver.device_event_enriched p
-           ON p.DEVICE_ID = o.DEVICE_ID
-          AND p.is_hardware_oos_event = TRUE
-          AND p.EVENT_STATE_TYPE_NAME = 'Set'
-          AND p.EVENT_DTM <  o.EVENT_DTM
-          AND p.EVENT_DTM >= o.EVENT_DTM - INTERVAL 24 HOURS
-    GROUP BY o.DW_DEVICE_EVENT_ID
-),
-prior_device_7d AS (
-    SELECT
-        o.DW_DEVICE_EVENT_ID,
-        COUNT(p.DW_DEVICE_EVENT_ID)                                              AS prior_oos_7d,
-        COUNT(DISTINCT p.component_subsystem)                                    AS prior_distinct_subsystems_7d,
-        COUNT(DISTINCT p.COMPONENT_SERIAL_NBR)                                   AS prior_distinct_serials_7d
-    FROM onsets o
-    LEFT JOIN mars_dev.silver.device_event_enriched p
-           ON p.DEVICE_ID = o.DEVICE_ID
-          AND p.is_hardware_oos_event = TRUE
-          AND p.EVENT_STATE_TYPE_NAME = 'Set'
-          AND p.EVENT_DTM <  o.EVENT_DTM
-          AND p.EVENT_DTM >= o.EVENT_DTM - INTERVAL 7 DAYS
-    GROUP BY o.DW_DEVICE_EVENT_ID
+    WHERE
+          o.mars_device_category = 'GATE'
+       OR (o.mars_device_category = 'TVM'       AND ABS(HASH(o.DW_DEVICE_EVENT_ID)) % 100 < 25)
+       OR (o.mars_device_category = 'VALIDATOR' AND ABS(HASH(o.DW_DEVICE_EVENT_ID)) % 100 < 9)
 ),
 
--- Prior-window recurrence for THIS component serial: the strongest available
--- signal that a specific physical component is degrading.
-prior_serial AS (
+-- All four prior-window feature sets, computed once via window functions
+-- over the FULL oos_history (not `sampled` -- see PERF ROUND 3 above for why).
+history_windowed AS (
     SELECT
-        o.DW_DEVICE_EVENT_ID,
-        COUNT(p.DW_DEVICE_EVENT_ID)                                              AS prior_serial_oos_30d,
-        MAX(p.EVENT_DTM)                                                         AS prior_serial_last_oos_dtm
-    FROM onsets o
-    LEFT JOIN mars_dev.silver.device_event_enriched p
-           ON p.DEVICE_ID           = o.DEVICE_ID
-          AND p.COMPONENT_SERIAL_NBR = o.COMPONENT_SERIAL_NBR
-          AND o.COMPONENT_SERIAL_NBR IS NOT NULL
-          AND p.is_hardware_oos_event = TRUE
-          AND p.EVENT_STATE_TYPE_NAME = 'Set'
-          AND p.EVENT_DTM <  o.EVENT_DTM
-          AND p.EVENT_DTM >= o.EVENT_DTM - INTERVAL 30 DAYS
-    GROUP BY o.DW_DEVICE_EVENT_ID
+        DW_DEVICE_EVENT_ID,
+
+        -- prior_device (24h, partitioned by DEVICE_ID)
+        COUNT(*)                                                OVER w_24h AS prior_oos_24h,
+        size(collect_set(component_subsystem))                  OVER w_24h AS prior_distinct_subsystems_24h,
+        SUM(CASE WHEN is_reader_event      THEN 1 ELSE 0 END)   OVER w_24h AS prior_reader_oos_24h,
+        SUM(CASE WHEN requires_service_call THEN 1 ELSE 0 END)  OVER w_24h AS prior_service_call_oos_24h,
+        MIN(event_priority)                                     OVER w_24h AS prior_min_priority_24h,
+
+        -- prior_device_7d (7d, partitioned by DEVICE_ID)
+        COUNT(*)                                                OVER w_7d  AS prior_oos_7d,
+        size(collect_set(component_subsystem))                  OVER w_7d  AS prior_distinct_subsystems_7d,
+        size(collect_set(COMPONENT_SERIAL_NBR))                 OVER w_7d  AS prior_distinct_serials_7d,
+
+        -- prior_serial (30d, partitioned by DEVICE_ID + COMPONENT_SERIAL_NBR)
+        -- NULL-guarded: the original self-join required
+        -- o.COMPONENT_SERIAL_NBR IS NOT NULL, so a NULL serial always
+        -- produced no match. A window PARTITION BY that includes a NULL
+        -- COMPONENT_SERIAL_NBR would otherwise group all NULL-serial events
+        -- for a device together, which is not the original's semantics.
+        CASE WHEN COMPONENT_SERIAL_NBR IS NOT NULL
+             THEN COUNT(*)     OVER w_30d_serial END             AS prior_serial_oos_30d_raw,
+        CASE WHEN COMPONENT_SERIAL_NBR IS NOT NULL
+             THEN MAX(EVENT_DTM) OVER w_30d_serial END           AS prior_serial_last_oos_dtm_raw,
+
+        -- prior_station (24h, partitioned by FACILITY_ID + mars_device_category)
+        -- Self-excluded via subtraction (all events at this facility+category
+        -- MINUS this device's own count) rather than a join predicate.
+        (COUNT(*) OVER w_station_24h) - (COUNT(*) OVER w_24h)    AS station_oos_events_24h,
+        size(array_remove(collect_set(DEVICE_ID) OVER w_station_24h, DEVICE_ID))
+                                                                  AS station_devices_oos_24h
+
+    FROM oos_history
+    WINDOW
+        w_24h         AS (PARTITION BY DEVICE_ID
+                           ORDER BY _evt_ts
+                           RANGE BETWEEN 86400   PRECEDING AND 1 PRECEDING),
+        w_7d          AS (PARTITION BY DEVICE_ID
+                           ORDER BY _evt_ts
+                           RANGE BETWEEN 604800  PRECEDING AND 1 PRECEDING),
+        w_30d_serial  AS (PARTITION BY DEVICE_ID, COMPONENT_SERIAL_NBR
+                           ORDER BY _evt_ts
+                           RANGE BETWEEN 2592000 PRECEDING AND 1 PRECEDING),
+        w_station_24h AS (PARTITION BY FACILITY_ID, mars_device_category
+                           ORDER BY _evt_ts
+                           RANGE BETWEEN 86400   PRECEDING AND 1 PRECEDING)
 ),
 
--- Station co-failure stress, prior 24h, same facility + device family.
-prior_station AS (
-    SELECT
-        o.DW_DEVICE_EVENT_ID,
-        COUNT(DISTINCT p.DEVICE_ID)                                              AS station_devices_oos_24h,
-        COUNT(p.DW_DEVICE_EVENT_ID)                                              AS station_oos_events_24h
-    FROM onsets o
-    LEFT JOIN mars_dev.silver.device_event_enriched p
-           ON p.FACILITY_ID          = o.FACILITY_ID
-          AND p.mars_device_category = o.mars_device_category
-          AND p.DEVICE_ID           <> o.DEVICE_ID
-          AND p.is_hardware_oos_event = TRUE
-          AND p.EVENT_STATE_TYPE_NAME = 'Set'
-          AND p.EVENT_DTM <  o.EVENT_DTM
-          AND p.EVENT_DTM >= o.EVENT_DTM - INTERVAL 24 HOURS
-    GROUP BY o.DW_DEVICE_EVENT_ID
-),
-
--- Component age at onset, from the SCD-current hardware config.
+-- Component age at onset, from the SCD-current hardware config. Unrelated to
+-- the self-join problem above (joins hw_config_current, not device_event_
+-- enriched) -- unchanged.
 component_age AS (
     SELECT
         o.DW_DEVICE_EVENT_ID,
         MAX(h.component_age_days)                                                AS component_age_days
-    FROM onsets o
+    FROM sampled o
     LEFT JOIN mars_dev.silver.hw_config_current h
            ON h.DEVICE_ID            = o.DEVICE_ID
           AND h.COMPONENT_SERIAL_NBR = o.COMPONENT_SERIAL_NBR
     GROUP BY o.DW_DEVICE_EVENT_ID
-),
-
--- Deterministic stratified sample. 16.7M onsets will not load in SageMaker
--- Studio; this keeps every GATE row (smallest class) and caps the two larger
--- categories. Deterministic on DW_DEVICE_EVENT_ID so re-runs are reproducible
--- and the temporal split stays stable.
-sampled AS (
-    SELECT o.*,
-           ABS(HASH(o.DW_DEVICE_EVENT_ID)) % 100 AS _bucket
-    FROM onsets o
 )
 
 SELECT
@@ -222,18 +307,18 @@ SELECT
     s.oos_counted_bus_kpi,
     s.oos_counted_fmvd_kpi,
 
-    COALESCE(pd.prior_oos_24h, 0)                    AS prior_oos_24h,
-    COALESCE(pd.prior_distinct_subsystems_24h, 0)    AS prior_distinct_subsystems_24h,
-    COALESCE(pd.prior_reader_oos_24h, 0)             AS prior_reader_oos_24h,
-    COALESCE(pd.prior_service_call_oos_24h, 0)       AS prior_service_call_oos_24h,
-    pd.prior_min_priority_24h,
-    COALESCE(p7.prior_oos_7d, 0)                     AS prior_oos_7d,
-    COALESCE(p7.prior_distinct_subsystems_7d, 0)     AS prior_distinct_subsystems_7d,
-    COALESCE(p7.prior_distinct_serials_7d, 0)        AS prior_distinct_serials_7d,
-    COALESCE(ps.prior_serial_oos_30d, 0)             AS prior_serial_oos_30d,
-    DATEDIFF(s.EVENT_DTM, ps.prior_serial_last_oos_dtm) AS prior_serial_days_since_last_oos,
-    COALESCE(pst.station_devices_oos_24h, 0)         AS station_devices_oos_24h,
-    COALESCE(pst.station_oos_events_24h, 0)          AS station_oos_events_24h,
+    COALESCE(hw.prior_oos_24h, 0)                    AS prior_oos_24h,
+    COALESCE(hw.prior_distinct_subsystems_24h, 0)    AS prior_distinct_subsystems_24h,
+    COALESCE(hw.prior_reader_oos_24h, 0)             AS prior_reader_oos_24h,
+    COALESCE(hw.prior_service_call_oos_24h, 0)       AS prior_service_call_oos_24h,
+    hw.prior_min_priority_24h,
+    COALESCE(hw.prior_oos_7d, 0)                     AS prior_oos_7d,
+    COALESCE(hw.prior_distinct_subsystems_7d, 0)     AS prior_distinct_subsystems_7d,
+    COALESCE(hw.prior_distinct_serials_7d, 0)        AS prior_distinct_serials_7d,
+    COALESCE(hw.prior_serial_oos_30d_raw, 0)         AS prior_serial_oos_30d,
+    DATEDIFF(s.EVENT_DTM, hw.prior_serial_last_oos_dtm_raw) AS prior_serial_days_since_last_oos,
+    COALESCE(hw.station_devices_oos_24h, 0)          AS station_devices_oos_24h,
+    COALESCE(hw.station_oos_events_24h, 0)           AS station_oos_events_24h,
 
     -- outcome columns: analysis only, excluded from the feature list
     s.outcome_clear_dtm,
@@ -244,19 +329,17 @@ SELECT
     'CHI'                                            AS city_id,
     CURRENT_TIMESTAMP()                              AS _gold_load_ts
 FROM sampled s
-LEFT JOIN prior_device    pd  ON pd.DW_DEVICE_EVENT_ID  = s.DW_DEVICE_EVENT_ID
-LEFT JOIN prior_device_7d p7  ON p7.DW_DEVICE_EVENT_ID  = s.DW_DEVICE_EVENT_ID
-LEFT JOIN prior_serial    ps  ON ps.DW_DEVICE_EVENT_ID  = s.DW_DEVICE_EVENT_ID
-LEFT JOIN prior_station   pst ON pst.DW_DEVICE_EVENT_ID = s.DW_DEVICE_EVENT_ID
-LEFT JOIN component_age   ca  ON ca.DW_DEVICE_EVENT_ID  = s.DW_DEVICE_EVENT_ID
-WHERE
-      -- keep 100% of GATE (895,638 -- the smallest category)
-      s.mars_device_category = 'GATE'
-      -- ~25% of TVM  -> ~1.05M
-   OR (s.mars_device_category = 'TVM'       AND s._bucket < 25)
-      -- ~9% of VALIDATOR -> ~1.05M
-   OR (s.mars_device_category = 'VALIDATOR' AND s._bucket < 9)
+LEFT JOIN history_windowed hw ON hw.DW_DEVICE_EVENT_ID = s.DW_DEVICE_EVENT_ID
+LEFT JOIN component_age    ca ON ca.DW_DEVICE_EVENT_ID = s.DW_DEVICE_EVENT_ID
 ;
+
+-- Free the cache -- run_layer_gold.py builds 5+ other gold tables in the same
+-- session; leaving this cached would hold cluster memory those builds need.
+-- DROP VIEW (not just UNCACHE TABLE): dropping a cached temp view also
+-- unpersists it, and additionally removes the temp view's name registration
+-- -- see the IDEMPOTENCY note above CACHE TABLE for why that distinction
+-- matters here specifically.
+DROP VIEW IF EXISTS oos_history;
 
 -- ---------------------------------------------------------------------
 -- Post-build validation. Run these; do not assume.
@@ -280,3 +363,16 @@ WHERE
 --    this is the cheap pre-check.
 -- SELECT target_component_subsystem, AVG(prior_serial_oos_30d), AVG(prior_oos_24h)
 -- FROM mars_dev.gold.device_ps3_oos_component GROUP BY 1 ORDER BY 1;
+--
+-- 5) NEW (2026-09-16) -- manual spot-check of the round-3 window-function
+--    rewrite. Pick one device with several onsets close together in time and
+--    manually verify prior_oos_24h / prior_oos_7d / station_oos_events_24h /
+--    station_devices_oos_24h against what a hand count (or the old self-join
+--    logic, if you still have a table built with it to compare against)
+--    would produce. This is the check that actually confirms correctness,
+--    not just that the query ran.
+-- SELECT DEVICE_ID, EVENT_DTM, prior_oos_24h, prior_oos_7d,
+--        prior_serial_oos_30d, station_devices_oos_24h, station_oos_events_24h
+-- FROM mars_dev.gold.device_ps3_oos_component
+-- WHERE DEVICE_ID = '<pick one with several close-together onsets>'
+-- ORDER BY EVENT_DTM;

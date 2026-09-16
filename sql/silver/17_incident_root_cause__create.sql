@@ -10,11 +10,55 @@
 --                                                                -- sn_category / sn_maintenance_type enrichment
 --
 -- UPDATE 2026-09-15: jb_base now reads bronze.servicenow_cta_chargability instead
--- of bronze.cta_servicenow_data_from_jumpbox. Same U_* column names (superset
--- schema, verified) and same join key (U_EVENT_ID / WOT# = c.SN_U_EVENT_ID,
--- already event-level and 1:1 here -- no fan-out risk from the swap). Chargability
--- is the ServiceNow-API-sourced successor to the Oracle-mirrored jumpbox extract
--- (~700x the row count); jumpbox retained in bronze for lineage only.
+-- of bronze.cta_servicenow_data_from_jumpbox. Same U_* column names and same join
+-- key (U_EVENT_ID / WOT# = c.SN_U_EVENT_ID). Chargability is the ServiceNow-API-
+-- sourced successor to the Oracle-mirrored jumpbox extract (~700x the row count);
+-- jumpbox retained in bronze for lineage only.
+--
+-- MEASURED 2026-09-15 (all figures from live bronze; supersedes the estimates that
+-- accompanied the swap):
+--   ENRICHMENT RATE   375,572 of 375,578 availability events now match a
+--                     chargability row = 99.998%, against 604 = 0.16% for jumpbox.
+--                     This is the point of the swap: jb_* columns went from
+--                     effectively always-NULL to effectively always-populated.
+--   NOT 1:1           u_event_id repeats (87 excess rows, max 3 per event) -- the
+--                     earlier "1:1, no fan-out" line was inherited from the 604-row
+--                     jumpbox era and is NOT true of this table. jb_base now
+--                     QUALIFYs to one row per event; see the CTE below.
+--   COLUMN RETYPE     jb_opened_at changes STRING -> TIMESTAMP, because chargability
+--                     types sys_created_on as TIMESTAMP where jumpbox had STRING.
+--                     Accepted deliberately: it is the correct type, nothing outside
+--                     S11/S17 reads the column, and no DQ check pins its type.
+--                     Side effect: S11's ORDER BY on it is now chronological rather
+--                     than lexical.
+--   AE STAYS AUTHORITATIVE FOR FAILURE LEVEL
+--                     jb_failure_level agrees with AE_FAILURE_LEVEL on 99.90% of
+--                     rows (307 disagreements, mostly 0 <-> non-0 chargeability
+--                     flips). is_device_fault reads AE_FAILURE_LEVEL and must keep
+--                     doing so. jb_failure_level is supplemental -- do NOT use it
+--                     as a label.
+--   DOES NOT CLOSE THE UNKNOWN-FAILURE-LEVEL GAP
+--                     where AE_FAILURE_LEVEL is NULL (60,207 rows) chargability is
+--                     blank too on all but 146. The 5e78f0a "preserve unknown
+--                     AE_FAILURE_LEVEL" handling stays necessary.
+--   EMPTY STRING != NULL
+--                     u_failure_level uses '' for missing, not NULL. Any IS NULL
+--                     test on it silently misses ~60K rows; use nullif(trim(x),'').
+--   NO FRESHNESS GAIN FOR SILVER
+--                     chargability runs to 2026-09-10; availability_events stops at
+--                     2026-04-11 (the Oracle freeze). This CTE is LEFT JOINed FROM
+--                     availability events, so the ~40K post-11-Apr work orders match
+--                     nothing and never reach silver. The swap improves coverage
+--                     WITHIN the existing window; it does not move the window.
+--                     Silver's vintage still unblocks only via the Oracle
+--                     incremental feed.
+--   PS3 LEAKAGE -- DO NOT FEED THESE TO A MODEL
+--                     jb_fault_description, jb_resolution (and u_symptom if ever
+--                     added) are free-text fields that NAME the fault. They were
+--                     inert while jumpbox matched 0%; they are now populated on
+--                     ~375K rows. gold/device_ps3_incident does not select them and
+--                     must not start: TF-IDF over this text is what produced PS3's
+--                     spurious 0.999 F1 before the 2026-07-13 patch stripped it.
 --
 -- CMDB CI LINKAGE -- CONCLUSIVELY CLOSED 2026-09-15 (not a join-technique problem):
 --   Four independent join strategies tested against live incident/device data, all
@@ -56,7 +100,8 @@
 --       is_device_fault = AE_FAILURE_LEVEL IN (1,2,3,4,5,16) (PS3 training scope)
 --       FIX 2026-09-10: preserve source NULLs (no COALESCE to 0); S18 device_outage
 --       uses known_failure_level_count to distinguish unknown from confirmed 0.
---   - Chargability joined on U_EVENT_ID = SN_U_EVENT_ID (WOT# -- 1:1, no fan-out)
+--   - Chargability joined on U_EVENT_ID = SN_U_EVENT_ID (WOT#). NOT 1:1 at source
+--     (87 excess rows) -- jb_base QUALIFYs to one row per event to hold the grain
 --   - S15 joined on wm_asset = device_id AND DATE(opened_dtm) = transit_day
 --     Using first incident per device-day (ROW_NUMBER) to prevent fan-out
 --   - dim_device joined on AE_DEVICE_ID: 91.9% match rate
@@ -137,6 +182,19 @@ jb_base AS (
         jb.U_CALLER               AS jb_caller,
         jb.U_FACILITY_NAME        AS jb_facility_name
     FROM mars_dev.bronze.servicenow_cta_chargability jb
+    -- DEDUP 2026-09-15: u_event_id is NOT 1:1 on this table. Measured: 415,350 rows
+    -- / 415,263 distinct / 87 excess, max 3 rows per event. 72 of those duplicated
+    -- events match an availability event, so the LEFT JOIN below would add ~73 rows
+    -- and break this table's one-row-per-availability-event grain (confirmed
+    -- empirically: an ungated join returns 375,651 rows vs 375,578 events). The 1:1
+    -- claim inherited from the jumpbox era was true of that 604-row extract, not of
+    -- this one. Keep the most recently updated row per event; SYS_ID is the
+    -- deterministic tie-break so reruns are stable. Same class of guard as S11's
+    -- per-device ROW_NUMBER and s17_first's per-device-day dedup below.
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY jb.U_EVENT_ID
+        ORDER BY jb.SYS_UPDATED_ON DESC, jb.SYS_CREATED_ON DESC, jb.SYS_ID
+    ) = 1
 ),
 
 -- -- S15 enrichment: first incident per device+day (prevent fan-out) -----------

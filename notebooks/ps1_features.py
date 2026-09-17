@@ -462,7 +462,7 @@ def read_spine(
         f"{s3_gold}/device_ps1_daily/",
         PS1_REQUESTED,
         start_day,
-        LABEL_CUTOFF_EXPR,
+        end_day_expr,
         required_features=REQUIRED_PS1_FEATURES + [SLA_TARGET_COL],
     )
     print(

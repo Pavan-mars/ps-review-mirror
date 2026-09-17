@@ -1258,7 +1258,7 @@ def join_and_materialise(
 
         # MTTR/usage joined above on df_joined before feature selection
 
-    if cfg.device_cat == 'TVM':
+    elif cfg.device_cat == 'TVM':
         def enforce_auxiliary_daily_grain(auxiliary, source_name):
             """Return a daily-unique source, or safely skip/error on duplicate join keys."""
             feature_columns = [c for c in auxiliary.columns if c not in KEY_COLS]
@@ -1471,7 +1471,7 @@ def join_and_materialise(
 
         # MTTR/usage joined above on df_joined before feature selection
 
-    if cfg.device_cat == 'VALIDATOR':
+    elif cfg.device_cat == 'VALIDATOR':
         def enforce_auxiliary_daily_grain(auxiliary, source_name):
             """Return a daily-unique source, or safely skip/error on duplicate join keys."""
             feature_columns = [c for c in auxiliary.columns if c not in KEY_COLS]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -16,6 +17,14 @@ TARGET_COL = "will_hardware_oos_3d"
 SLA_TARGET_COL = "will_fail_3d"
 LABEL_HORIZON_DAYS = 3
 LABEL_DATA_LAG_DAYS = 0
+
+# PS1_LABEL_MODE  state | onset   (default "state" -- preserves the 28-Jul decision)
+#   state : will_hardware_oos_3d as built -- marks every day of an out-of-service spell.
+#           95-98% of positives merely follow another positive (measured in sql/35).
+#   onset : the TRANSITION into a spell only, with in-spell rows dropped from train
+#           and score. This is the retraining sql/35 specifies; it is opt-in so that
+#           nothing changes unless the run asks for it.
+PS1_LABEL_MODE_DEFAULT = "state"
 KEY_COLS = ["DEVICE_ID", "transit_day"]
 JOIN_KEY_DEVICE = "DEVICE_KEY"
 PS5_DATE_COLUMN = None
@@ -336,6 +345,63 @@ def read_feature_source(
 
 
 
+def _label_mode() -> str:
+    mode = os.environ.get("PS1_LABEL_MODE", PS1_LABEL_MODE_DEFAULT).strip().lower()
+    if mode not in ("state", "onset"):
+        raise ValueError(
+            f"PS1_LABEL_MODE must be 'state' or 'onset', got {mode!r}"
+        )
+    return mode
+
+
+def _apply_onset_label(frame, target_col: str, key_col: str = "DEVICE_ID",
+                       date_col: str = "transit_day"):
+    """Turn a spell-STATE label into an ONSET label. Mirrors sql/35_ps1_label_onset.sql.
+
+    The state label marks every day within, and the 3 days before, an out-of-service
+    spell. Measured on 786,525 loaded rows, 95-98% of its positives merely follow
+    another positive, so a model trained on it learns "is this device broken now" --
+    hindsight rather than prediction.
+
+      is_onset   1 on the FIRST day of a positive run. This is the event.
+      in_spell   the previous day was already positive. Dropped from train and score,
+                 because on those rows the failure has already happened.
+
+    Grain note: this spine is device x day, so partitioning by DEVICE_ID is right.
+    sql/35 also partitions by component_serial_nbr because the cross-wired table is
+    device x component x day -- do not copy that partitioning here.
+    """
+    w = Window.partitionBy(key_col).orderBy(date_col)
+    # coalesce to 0: without it the first row per device has a NULL prev, in_spell
+    # evaluates to NULL, and `where(~in_spell)` would silently drop a real onset.
+    prev = F.coalesce(F.lag(F.col(target_col)).over(w), F.lit(0)).cast("byte")
+    tagged = (
+        frame
+        .withColumn("_prev_label", prev)
+        .withColumn("_in_spell", (F.col(target_col) == 1) & (F.col("_prev_label") == 1))
+        .withColumn("_is_onset",
+                    ((F.col(target_col) == 1) & (F.col("_prev_label") == 0)).cast("byte"))
+    )
+    stats = tagged.agg(
+        F.count(F.lit(1)).alias("n"),
+        F.sum(F.col("_in_spell").cast("int")).alias("d"),
+        F.sum(F.col("_is_onset").cast("int")).alias("o"),
+    ).collect()[0]
+    total = int(stats["n"] or 0)
+    dropped = int(stats["d"] or 0)
+    onsets = int(stats["o"] or 0)
+    kept = total - dropped
+    print(
+        f"[label] PS1_LABEL_MODE=onset - dropped {dropped:,} in-spell rows of {total:,} "
+        f"({100.0 * dropped / total if total else 0.0:.2f}%); {kept:,} retained, "
+        f"{onsets:,} onsets ({100.0 * onsets / kept if kept else 0.0:.4f}% of retained)"
+    )
+    return (
+        tagged.where(~F.col("_in_spell"))
+        .withColumn(target_col, F.col("_is_onset"))
+        .drop("_prev_label", "_in_spell", "_is_onset")
+    )
+
 def read_spine(
     spark,
     fleet: str,
@@ -472,6 +538,8 @@ def read_spine(
     if with_label:
         df_ps1 = attach_hardware_oos_label(df_ps1, cfg.device_cat, LABEL_HORIZON_DAYS)
         df_ps1 = df_ps1.where(F.col(TARGET_COL).isin(0, 1))
+        if _label_mode() == "onset":
+            df_ps1 = _apply_onset_label(df_ps1, TARGET_COL)
         if SLA_TARGET_COL in df_ps1.columns:
             _sla = df_ps1.agg(F.avg(SLA_TARGET_COL).alias("r")).collect()[0]["r"]
             _oos = df_ps1.agg(F.avg(TARGET_COL).alias("r")).collect()[0]["r"]

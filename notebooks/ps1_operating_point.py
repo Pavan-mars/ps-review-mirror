@@ -321,6 +321,21 @@ def operating_point_report(y_val, s_val, y_test, s_test, *, fleet: str = "", **k
                            precision_floor=kw.get("precision_floor"),
                            recall_floor=kw.get("recall_floor"))
     thr = sel["threshold"]
+
+    # A budget is a RANK rule, not a probability rule: "flag as many as the team
+    # can visit". Carrying a probability value across from validation lands
+    # somewhere else entirely when the score distributions differ -- on the
+    # 18-Sep GATE run, validation Oct-Dec 2025 against test Jan-Aug 2026, asking
+    # for 5% produced 1.04%. So re-derive the cut as a quantile of whatever is
+    # being scored. This uses only the score distribution, never the labels, and
+    # is exactly what a daily run would do.
+    if sel["policy"] == "budget":
+        pct = kw.get("budget_pct")
+        if pct is None:
+            pct = float(os.environ.get("PS1_DISPATCH_BUDGET_PCT", "5.0"))
+        thr = float(np.quantile(p_test, 1.0 - pct / 100.0))
+        sel = dict(sel, threshold=thr, applied_on="scoring set (rank)",
+                   validation_threshold=sel["threshold"])
     yhat = (p_test >= thr).astype(int)
     tp = int(((yhat == 1) & (y_test == 1)).sum())
     fp = int(((yhat == 1) & (y_test == 0)).sum())

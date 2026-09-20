@@ -52,6 +52,11 @@ def _exclude_relieved() -> bool:
     return os.environ.get("PS1_EXCLUDE_RELIEVED", "false").strip().lower() == "true"
 
 
+def _enable_warning_features() -> bool:
+    """silver.warnings_daily -- degradation precursors. Default OFF until measured."""
+    return os.environ.get("PS1_ENABLE_WARNING_FEATURES", "false").strip().lower() == "true"
+
+
 def _session_gap_days() -> int:
     """Consecutive failure days within this gap are ONE episode; only the first
     is kept. 0 disables sessionisation (the historical behaviour).
@@ -247,6 +252,23 @@ FLEET_CONFIG['VALIDATOR'] = _FleetCfg(
 )
 
 # --- CELL 6 shared helpers (hoisted for CELL 7) ---
+
+
+# -- silver.warnings_daily: degradation precursors ---------------------------
+# Same-day counts plus the 7d/30d prior sums that _SPARK_PRIOR_COLS derives.
+WARNING_BASE_COLS = [
+    "warn_events", "warn_service_calls", "warn_nearfull", "warn_low",
+    "warn_chu", "warn_bhu", "warn_printer", "warn_comms", "warn_reader",
+]
+WARNING_FEATURE_COLS = WARNING_BASE_COLS + [
+    f"{c}_prior_sum_{w}d" for c in WARNING_BASE_COLS for w in (7, 30)
+]
+if _enable_warning_features():
+    for _cfg in FLEET_CONFIG.values():
+        for _c in WARNING_FEATURE_COLS:
+            if _c not in _cfg.all_candidate_features:
+                _cfg.all_candidate_features.append(_c)
+    print(f"[features] warnings_daily enabled: +{len(WARNING_FEATURE_COLS)} candidate features")
 
 
 def _ensure_date_column(frame, column="transit_day"):
@@ -791,6 +813,42 @@ def add_auxiliary(
         df_usage_ext = None
         print(f"WARNING: usage_lifecycle_daily extended skipped ({exc})")
 
+    # -- silver.warnings_daily (degradation precursors) - DEVICE_ID x day grain --
+    df_warn = None
+    if _enable_warning_features():
+        _warn_src = {
+            "warn_events": "warn_events", "warn_service_calls": "service_call_events",
+            "warn_nearfull": "nearfull_events", "warn_low": "low_events",
+            "warn_chu": "warn_chu", "warn_bhu": "warn_bhu",
+            "warn_printer": "warn_printer", "warn_comms": "warn_comms",
+            "warn_reader": "warn_reader",
+        }
+        try:
+            _wn_raw = spark.read.parquet(f"{s3_silver}/warnings_daily/")
+            _wn_lc = {c.casefold(): c for c in _wn_raw.columns}
+            _wd = _wn_lc.get("device_id", "DEVICE_ID")
+            _we = _wn_lc.get("event_date", "event_date")
+            _picked = [(a, _wn_lc[s.casefold()]) for a, s in _warn_src.items()
+                       if s.casefold() in _wn_lc]
+            if not _picked:
+                raise ValueError(f"no warning columns; available: {_wn_raw.columns[:15]}")
+            df_warn = (
+                _wn_raw
+                .where(F.to_date(F.col(_we)) >= F.to_date(F.lit(start_day)))
+                .where(F.to_date(F.col(_we)) <= end_day_expr)
+                .select(
+                    F.col(_wd).cast("string").alias("DEVICE_ID"),
+                    F.to_date(F.col(_we)).alias("transit_day"),
+                    *[F.col(s).cast("double").alias(a) for a, s in _picked],
+                )
+                .groupBy("DEVICE_ID", "transit_day")
+                .agg(*[F.sum(a).alias(a) for a, _ in _picked])
+            )
+            print(f"silver.warnings_daily: loaded {len(_picked)} precursor columns")
+        except Exception as exc:
+            df_warn = None
+            print(f"WARNING: silver.warnings_daily skipped ({exc})")
+
 
 
 
@@ -1324,10 +1382,22 @@ def join_and_materialise(
         elif df_usage_ext is not None:
             print("WARNING: DEVICE_KEY missing on spine — skipped usage_lifecycle extended join")
 
+        if df_warn is not None:
+            df_joined = df_joined.join(df_warn, on=["DEVICE_ID", "transit_day"], how="left")
+            for _wc in WARNING_BASE_COLS:
+                if _wc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_wc, F.coalesce(F.col(_wc), F.lit(0.0)))
+            print("Joined silver.warnings_daily on DEVICE_ID + transit_day")
+
         _SPARK_PRIOR_COLS = [
             "gate_mech_events", "csc_reader_events", "comms_events", "system_events",
             "chargeable_outage_count", "chargeable_outage_min", "hardware_oos_count",
         ]
+        if df_warn is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in WARNING_BASE_COLS if c in df_joined.columns
+            ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -1536,11 +1606,23 @@ def join_and_materialise(
         elif df_usage_ext is not None:
             print("WARNING: DEVICE_KEY missing on spine — skipped usage_lifecycle extended join")
 
+        if df_warn is not None:
+            df_joined = df_joined.join(df_warn, on=["DEVICE_ID", "transit_day"], how="left")
+            for _wc in WARNING_BASE_COLS:
+                if _wc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_wc, F.coalesce(F.col(_wc), F.lit(0.0)))
+            print("Joined silver.warnings_daily on DEVICE_ID + transit_day")
+
         _SPARK_PRIOR_COLS = [
             "printer_events", "bankcard_events", "bhu_events", "chu_events", "scrst_events",
             "system_events", "comms_events", "csc_reader_events",
             "chargeable_outage_count", "hardware_oos_count",
         ]
+        if df_warn is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in WARNING_BASE_COLS if c in df_joined.columns
+            ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -1749,11 +1831,23 @@ def join_and_materialise(
         elif df_usage_ext is not None:
             print("WARNING: DEVICE_KEY missing on spine — skipped usage_lifecycle extended join")
 
+        if df_warn is not None:
+            df_joined = df_joined.join(df_warn, on=["DEVICE_ID", "transit_day"], how="left")
+            for _wc in WARNING_BASE_COLS:
+                if _wc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_wc, F.coalesce(F.col(_wc), F.lit(0.0)))
+            print("Joined silver.warnings_daily on DEVICE_ID + transit_day")
+
         _SPARK_PRIOR_COLS = [
             "printer_events", "bankcard_events", "bhu_events", "chu_events", "scrst_events",
             "system_events", "comms_events", "csc_reader_events",
             "chargeable_outage_count", "hardware_oos_count",
         ]
+        if df_warn is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in WARNING_BASE_COLS if c in df_joined.columns
+            ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:

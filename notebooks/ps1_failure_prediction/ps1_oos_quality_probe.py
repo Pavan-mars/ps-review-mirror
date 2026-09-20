@@ -23,7 +23,10 @@
 #   Inside any PS1 fleet notebook's kernel, AFTER Spark is up. Run cells 0-5 only
 #   (config + Spark bootstrap, no ETL), then in a new cell:
 #
-#       exec(open("notebooks/ps1_failure_prediction/ps1_oos_quality_probe.py").read())
+#       exec(open("ps1_oos_quality_probe.py").read())
+#
+#   The bare filename is correct: a notebook's working directory is its OWN folder,
+#   not the repo root, so a repo-relative path raises FileNotFoundError here.
 #
 #   Use an idle space -- mars-train-ps4 -- so it does not contend with a training run.
 #   Read-only. No writes, no Aurora, no registration.

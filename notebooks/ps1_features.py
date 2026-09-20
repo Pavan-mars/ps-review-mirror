@@ -15,8 +15,22 @@ from pyspark.storagelevel import StorageLevel
 
 TARGET_COL = "will_hardware_oos_3d"
 SLA_TARGET_COL = "will_fail_3d"
-LABEL_HORIZON_DAYS = 3
+LABEL_HORIZON_DAYS = int(os.environ.get("PS1_LABEL_HORIZON_DAYS", "3"))
 LABEL_DATA_LAG_DAYS = 0
+
+# PS1_EVENT_DEFINITION  hardware_oos | ventra_kpi   (default preserves current runs)
+#   hardware_oos : every is_hardware_oos_event Set. 34 of 185 matrix codes qualify,
+#                  and the resulting label runs 62-91% positive.
+#   ventra_kpi   : only codes Cubic counts toward that fleet's Ventra availability
+#                  KPI -- oos_counted_gate_kpi / _bus_kpi / _fmvd_kpi, already
+#                  carried on device_event_enriched (S16). 13 / 12 / 21 codes.
+# PS1_EXCLUDE_RELIEVED  true drops failure days covered by a relief record or an
+#   EXCLUDED flag in kpi_avail_enriched -- downtime Cubic itself excused.
+PS1_EVENT_DEFINITION_DEFAULT = "hardware_oos"
+EVENT_DEFINITIONS = ("hardware_oos", "ventra_kpi")
+KPI_FLAG_BY_FLEET = {"GATE": "oos_counted_gate_kpi",
+                     "TVM": "oos_counted_fmvd_kpi",
+                     "VALIDATOR": "oos_counted_bus_kpi"}
 
 # PS1_LABEL_MODE  state | onset   (default "state" -- preserves the 28-Jul decision)
 #   state : will_hardware_oos_3d as built -- marks every day of an out-of-service spell.
@@ -25,6 +39,17 @@ LABEL_DATA_LAG_DAYS = 0
 #           and score. This is the retraining sql/35 specifies; it is opt-in so that
 #           nothing changes unless the run asks for it.
 PS1_LABEL_MODE_DEFAULT = "state"
+
+
+def _event_definition() -> str:
+    d = os.environ.get("PS1_EVENT_DEFINITION", PS1_EVENT_DEFINITION_DEFAULT).strip().lower()
+    if d not in EVENT_DEFINITIONS:
+        raise ValueError(f"PS1_EVENT_DEFINITION must be one of {EVENT_DEFINITIONS}, got {d!r}")
+    return d
+
+
+def _exclude_relieved() -> bool:
+    return os.environ.get("PS1_EXCLUDE_RELIEVED", "false").strip().lower() == "true"
 KEY_COLS = ["DEVICE_ID", "transit_day"]
 JOIN_KEY_DEVICE = "DEVICE_KEY"
 PS5_DATE_COLUMN = None
@@ -449,7 +474,31 @@ def read_spine(
 
 
     def attach_hardware_oos_label(frame, device_category, horizon_days):
-        """Build VALIDATOR-style hardware OOS Set label from S3 silver parquet (no UC catalog)."""
+        """Build VALIDATOR-style hardware OOS Set label from S3 silver parquet (no UC catalog).
+
+        The event definition is chosen by PS1_EVENT_DEFINITION; see the module header.
+        Note that TARGET_COL keeps its "_3d" name whatever the horizon, because that
+        literal is a published serving-tier column name.
+        """
+        _defn = _event_definition()
+        _relief = _exclude_relieved()
+        print(f"[label] event definition : {_defn}")
+        print(f"[label] horizon          : {horizon_days} day(s)")
+        print(f"[label] exclude relieved : {_relief}")
+        if _defn != PS1_EVENT_DEFINITION_DEFAULT or horizon_days != 3 or _relief:
+            print(f"[label] !! NON-DEFAULT LABEL. {TARGET_COL} holds a "
+                  f"{_defn}/{horizon_days}-day label, NOT the published 3-day one. "
+                  "Do not publish this run to Aurora or the dashboard.")
+
+        def _apply_event_definition(fd):
+            if _defn == "hardware_oos":
+                return fd
+            flag_name = KPI_FLAG_BY_FLEET.get(device_category.strip().upper())
+            if flag_name is None:
+                raise ValueError(f"no Ventra KPI flag mapped for fleet {device_category!r}")
+            actual = _silver_col(dee_raw, flag_name, dee_map)
+            return fd.where(F.col(f"dee.{actual}") == True)
+
         base = frame.drop(TARGET_COL) if TARGET_COL in frame.columns else frame
         dim_path = f"{s3_silver}/dim_device/"
         dee_path = f"{s3_silver}/device_event_enriched/"
@@ -486,6 +535,7 @@ def read_spine(
             .where(F.col(f"dee.{dee_hw_oos}") == True)
             .where(F.col(f"dee.{dee_state}") == "Set")
             .where(F.col(f"dee.{dee_cat}") == device_category)
+            .transform(_apply_event_definition)
             .where(
                 F.to_date(F.col(f"dee.{dee_dtm}"))
                 >= F.date_add(F.lit(min_day), 1)
@@ -500,6 +550,30 @@ def read_spine(
             )
             .distinct()
         )
+        if _relief:
+            kae_raw = spark.read.parquet(f"{s3_silver}/kpi_avail_enriched/")
+            kae_map = _silver_col_map(kae_raw)
+            kae_dev = _silver_col(kae_raw, "DEVICE_ID", kae_map)
+            kae_day = _silver_col(kae_raw, "transit_day", kae_map)
+            _rel = F.lit(False)
+            if "relief_id" in kae_map:
+                _rel = _rel | F.col(kae_map["relief_id"]).isNotNull()
+            if "excluded" in kae_map:
+                _rel = _rel | (F.col(kae_map["excluded"]).cast("double") > 0)
+            relieved = (
+                kae_raw.where(_rel)
+                .select(F.col(kae_dev).alias("DEVICE_ID"),
+                        F.to_date(F.col(kae_day)).alias("failure_date"))
+                .distinct()
+            )
+            failure_days = failure_days.persist(StorageLevel.MEMORY_AND_DISK)
+            _before = failure_days.count()
+            failure_days = (failure_days
+                            .join(relieved, ["DEVICE_ID", "failure_date"], "left_anti")
+                            .persist(StorageLevel.MEMORY_AND_DISK))
+            _after = failure_days.count()
+            print(f"[label] relief excluded  : {_before - _after:,} of {_before:,} failure days")
+
         seq = spark.range(1, horizon_days + 1).select(F.col("id").cast("int").alias("n"))
         label_days = (
             failure_days.crossJoin(seq)

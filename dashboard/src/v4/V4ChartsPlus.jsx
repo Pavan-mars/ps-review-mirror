@@ -452,6 +452,148 @@ export function NetworkGraph({ nodes, edges, height = 360, sourceKey = 'source',
 }
 
 // ---------------------------------------------------------------------
+// 10b. SANKEY FLOW -- how much goes from each source to each target.
+// Annexure 4 Dashboard 2 names a cascade flow view. This data is strictly
+// ONE HOP (subsystem_from -> subsystem_to), so a two-column ribbon diagram
+// is the whole of it; a multi-level d3-sankey layout would add a solver
+// whose output shifts between renders, and this file already refuses that
+// trade for NetworkGraph. Node order is by total flow, descending, so the
+// picture is reproducible.
+//
+// Ribbon THICKNESS is the value. Ribbon ORDER within a node follows the
+// same descending rule, which keeps the largest flows adjacent to the axis
+// where they are easiest to compare.
+// ---------------------------------------------------------------------
+export function SankeyFlow({
+  rows, sourceKey = 'source', targetKey = 'target', valueKey = 'value',
+  height = 380, maxNodes = 12, unit, note,
+}) {
+  const model = useMemo(() => {
+    const clean = (rows || [])
+      .map((r) => ({ s: String(r[sourceKey] ?? ''), t: String(r[targetKey] ?? ''), v: n(r[valueKey]) }))
+      .filter((r) => r.s && r.t && r.v > 0);
+    if (!clean.length) return null;
+
+    const tally = (key) => {
+      const m = new Map();
+      clean.forEach((r) => m.set(r[key], (m.get(r[key]) || 0) + r.v));
+      return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, maxNodes);
+    };
+    const left = tally('s');
+    const right = tally('t');
+    const lKeep = new Set(left.map((d) => d[0]));
+    const rKeep = new Set(right.map((d) => d[0]));
+    const links = clean.filter((r) => lKeep.has(r.s) && rKeep.has(r.t))
+                       .sort((a, b) => b.v - a.v);
+    if (!links.length) return null;
+
+    // Lay out each column against ITS OWN total, so both columns fill the
+    // height. Using one shared total would shrink whichever side has flows
+    // that were cut by maxNodes, which reads as missing data.
+    //
+    // THE FLOOR HAS TO BE PAID FOR.                            20-Sep-2026
+    // Giving every node a 3px minimum makes a small subsystem visible, but
+    // ten floored nodes add 30px the proportional split never budgeted, and
+    // the column then runs off the bottom of the SVG -- measured at 393.5px
+    // in a 380px canvas on the real 10x10 Chicago data. So: apply the floor,
+    // then rescale the column to fit. A floored band may end up slightly
+    // under the minimum after rescaling, which is the right trade against
+    // silently drawing outside the viewport.
+    const GAP = 6;
+    const place = (entries) => {
+      const total = entries.reduce((t, d) => t + d[1], 0) || 1;
+      // The SVG is (height - 20) tall, so a 20px band top and bottom costs 40
+      // off THAT, not off height. Budgeting height-40 left no bottom margin
+      // and the last node sat flush on the edge.
+      const usable = height - 60 - GAP * Math.max(0, entries.length - 1);
+      let hs = entries.map(([, v]) => Math.max(3, (v / total) * usable));
+      const sum = hs.reduce((a, b) => a + b, 0);
+      if (sum > usable) { const k = usable / sum; hs = hs.map((h) => h * k); }
+      const pos = new Map();
+      let y = 20;
+      entries.forEach(([id, v], i) => {
+        pos.set(id, { y0: y, y1: y + hs[i], v, cursor: y });
+        y += hs[i] + GAP;
+      });
+      return pos;
+    };
+    return { links, L: place(left), R: place(right), left, right };
+  }, [rows, sourceKey, targetKey, valueKey, height, maxNodes]);
+
+  if (!model) return null;
+  const { links, L, R, left, right } = model;
+
+  // Each ribbon consumes its share of both endpoints, so a node's band is
+  // exactly filled by the flows that touch it.
+  const lTot = new Map(left);
+  const rTot = new Map(right);
+  const ribbons = links.map((lk, i) => {
+    const a = L.get(lk.s), b = R.get(lk.t);
+    const ah = ((a.y1 - a.y0) * lk.v) / (lTot.get(lk.s) || 1);
+    const bh = ((b.y1 - b.y0) * lk.v) / (rTot.get(lk.t) || 1);
+    const a0 = a.cursor, b0 = b.cursor;
+    a.cursor += ah; b.cursor += bh;
+    return { ...lk, i, a0, a1: a0 + ah, b0, b1: b0 + bh };
+  });
+
+  const X0 = 14, X1 = 86;            // percent: left and right node columns
+  const maxV = Math.max(...links.map((d) => d.v), 1);
+  const colOf = (id) => CAT[left.findIndex((d) => d[0] === id) % CAT.length];
+
+  // A skewed flow distribution -- Chicago's top pair carries 45% of all
+  // cascades -- leaves most ribbons under a pixel. They are drawn anyway,
+  // because thickness IS the value and inflating the small ones would lie.
+  // What the chart owes the reader is to say so, and to point at the table
+  // view where every flow is legible as a number.
+  const thin = ribbons.filter((d) => (d.a1 - d.a0) < 0.5);
+  const thinShare = thin.reduce((t, d) => t + d.v, 0)
+                  / (ribbons.reduce((t, d) => t + d.v, 0) || 1);
+  const autoNote = thin.length
+    ? `${thin.length} of ${ribbons.length} flows are too thin to see at this size `
+      + `(${(thinShare * 100).toFixed(1)}% of total flow). Switch to Table for all of them.`
+    : null;
+
+  return (
+    <ChartFrame
+      rows={links.map((d) => ({ from: d.s, to: d.t, value: d.v }))}
+      cols={[{ key: 'from', label: 'From' }, { key: 'to', label: 'To' },
+             { key: 'value', label: 'Flow', num: true }]}
+      height={height} unit={unit} note={[note, autoNote].filter(Boolean).join(' ')}
+    >
+      <svg width="100%" height={height - 20} style={{ overflow: 'visible' }}>
+        {ribbons.map((d) => (
+          <path
+            key={d.i}
+            d={`M ${X0}% ${d.a0} C 50% ${d.a0}, 50% ${d.b0}, ${X1}% ${d.b0}
+                L ${X1}% ${d.b1} C 50% ${d.b1}, 50% ${d.a1}, ${X0}% ${d.a1} Z`}
+            fill={colOf(d.s)}
+            opacity={0.14 + (d.v / maxV) * 0.4}
+          />
+        ))}
+        {[...L.entries()].map(([id, p]) => (
+          <g key={`l-${id}`}>
+            <rect x={`${X0 - 1.6}%`} y={p.y0} width="1.6%" height={Math.max(2, p.y1 - p.y0)}
+                  fill={colOf(id)} rx={1} />
+            <text x={`${X0 - 2.6}%`} y={(p.y0 + p.y1) / 2 + 3.5} textAnchor="end"
+                  fontSize="11" fill={INK_2}>{id}</text>
+          </g>
+        ))}
+        {[...R.entries()].map(([id, p]) => (
+          <g key={`r-${id}`}>
+            <rect x={`${X1}%`} y={p.y0} width="1.6%" height={Math.max(2, p.y1 - p.y0)}
+                  fill={INK_3} rx={1} />
+            <text x={`${X1 + 2.6}%`} y={(p.y0 + p.y1) / 2 + 3.5} textAnchor="start"
+                  fontSize="11" fill={INK_2}>{id}</text>
+          </g>
+        ))}
+        <text x={`${X0 - 2.6}%`} y="10" textAnchor="end" style={font.micro} fill={INK_3}>from</text>
+        <text x={`${X1 + 2.6}%`} y="10" textAnchor="start" style={font.micro} fill={INK_3}>to</text>
+      </svg>
+    </ChartFrame>
+  );
+}
+
+// ---------------------------------------------------------------------
 // 11. DECOMPOSITION TREE -- a total, broken down, one level at a time.
 // Each level states what it removed or split, so a reader can follow a
 // number from the headline to the leaf without re-running the query.

@@ -7,12 +7,14 @@
 // analysis found", not "what to do today".
 //
 // THE HEADLINE, AND WHY IT IS NOT WHAT YOU EXPECT.
-// The obvious hero would be validated failure onsets. Measured on the real
-// export, 165,750 of 172,576 of them are validators:
-//     GATE        548,644 OOS onsets ->     284 validated  (0.05%)
-//     TVM       2,788,508            ->   6,542            (0.23%)
-//     VALIDATOR 5,987,966            -> 165,750            (2.77%)
-// A hero tile on that number tells a reader 825 fare gates produced 284
+// The obvious hero would be validated failure onsets. Re-measured on the
+// 29-Aug-2026 export (run 6aafe3e0), 154,848 of 159,981 are validators:
+//     GATE        506,976 OOS onsets ->     300 validated  (0.06%)
+//     TVM       1,681,812            ->   4,833            (0.29%)
+//     VALIDATOR 5,305,237            -> 154,848            (2.92%)
+// Five months of extra data did not move the shape: gate coverage is still
+// under a tenth of a percent.
+// A hero tile on that number tells a reader 821 fare gates produced 300
 // failures in seven months. That is a statement about evidence coverage, not
 // about gates. So the hero is MEASURED IMPACT -- outage hours, devices, and
 // customer exposure, all counted rather than inferred and all comparable
@@ -45,7 +47,7 @@ import { ChartFrame, ColumnBars, Donut, Matrix, RankBars, Trend } from './V4Char
 import DataTable from './V4DataTable';
 import { useLocations } from './V4Locations';
 import AnalyseModal from './V4Device360Popup';
-import { HeatGrid, NetworkGraph, SlopeChart } from './V4ChartsPlus';
+import { HeatGrid, NetworkGraph, SankeyFlow, SlopeChart } from './V4ChartsPlus';
 
 // STABLE CALLBACK IDENTITIES.                                v5
 // These were inline arrows in JSX, so every render produced a NEW
@@ -76,8 +78,10 @@ const FLEETS = ['GATE', 'TVM', 'VALIDATOR'];
 
 // ---------------------------------------------------------------------
 // Feeds. One entry per route. Limits are the route's own hard caps where the
-// table is large -- clusters is 83,184 rows and repairs 38,395, so both are
-// browse windows and neither is ever used as a denominator.
+// table is large -- clusters and repairs both run to tens of thousands of
+// rows, so both are browse windows and neither is ever used as a denominator.
+// The real totals come from /ps2/status row_count via tableRows(); do not
+// write them here, they change with every run.
 // ---------------------------------------------------------------------
 const FEED_FN = {
   status:        (city) => getObj('/ps2/status', { city }).then((o) => [o]),
@@ -89,6 +93,7 @@ const FEED_FN = {
   phi:           (city) => getRows('/ps2/phi', { city, limit: 5000 }),
   network:       (city) => getRows('/ps2/network', { city, limit: 5000 }),
   paths:         (city) => getRows('/ps2/paths', { city, limit: 500 }),
+  sankey:        (city) => getRows('/ps2/serial/sankey', { city, limit: 500 }),
   ignition:      (city) => getRows('/ps2/ignition', { city, limit: 500 }),
   trend:         (city) => getRows('/ps2/v25/oos-trend', { city, limit: 5000 }),
   exposure:      (city) => getRows('/ps2/v25/exposure', { city, limit: 5000 }),
@@ -121,8 +126,8 @@ const VIEWS = [
   { key: 'where',      label: 'Location',            feeds: ['clusters'] },
   { key: 'devices',    label: 'Devices',             feeds: ['deterioration'] },
   { key: 'components', label: 'Components & repairs', feeds: ['serials', 'repairs'] },
-  { key: 'relationships', label: 'Component relationships', feeds: ['phi', 'network', 'ignition', 'paths'] },
-  { key: 'evidence',   label: 'How we know',         feeds: ['runQuality', 'labelSummary', 'labelDaily', 'labelHorizon', 'parity', 'alignment', 'modelPerf', 'categories', 'crossPs'] },
+  { key: 'relationships', label: 'Component relationships', feeds: ['phi', 'network', 'ignition', 'paths', 'sankey'] },
+  { key: 'evidence',   label: 'How we know',         feeds: ['runQuality', 'labelSummary', 'labelDaily', 'labelHorizon', 'parity', 'alignment', 'modelPerf', 'categories', 'crossPs', 'governance'] },
 ];
 
 // ---------------------------------------------------------------------
@@ -240,6 +245,28 @@ function pivotByFleet(rows, dateKey, valKey) {
 
 function sumBy(rows, key, filter) {
   return (rows || []).reduce((t, r) => (filter && !filter(r) ? t : t + num(r[key])), 0);
+}
+
+// THE WHOLE TABLE, NOT THE PAGE.                              20-Sep-2026
+// Several captions used to state a row total typed in when the panel was
+// written -- 83,184 clusters, 38,395 repairs. Those were true of the 11-Apr
+// run and false of every run since, and a caption that contradicts the table
+// beside it discredits the table. /ps2/status already carries row_count per
+// table for exactly this, and `status` is requested on every view.
+// Returns null when unknown, so callers drop the clause instead of printing
+// a zero.
+function tableRows(feeds, name) {
+  const s = (feeds.status && feeds.status.rows && feeds.status.rows[0]) || null;
+  const hit = ((s && s.rows) || []).find((r) => r.table_name === name);
+  const v = hit ? Number(hit.row_count) : NaN;
+  return Number.isFinite(v) ? v : null;
+}
+
+// observed_value of one run-quality check, or null.
+function checkValue(rows, name) {
+  const hit = (rows || []).find((r) => r.check_name === name);
+  const v = hit ? Number(hit.observed_value) : NaN;
+  return Number.isFinite(v) ? v : null;
 }
 
 const FLEET_SERIES = FLEETS.map((f) => ({ key: f, label: deviceShort(f), color: deviceColor(f) }));
@@ -458,6 +485,7 @@ const SCOPES = [
 ];
 
 function WhereView({ feeds, city }) {
+  const clusterTotal = tableRows(feeds, 'ps2_v2_cofailure_clusters');
   const [scope, setScope] = useState('FACILITY');
   const loc = useLocations(city);
   const rows = feeds.clusters.rows;
@@ -531,7 +559,9 @@ function WhereView({ feeds, city }) {
         </Feed>
       </Panel>
 
-      <Panel title={`${meta.label} clusters`} hint={`${nfmt(scoped.length)} rows in the sample. The full table holds 83,184; this is the most recent window.`}>
+      <Panel title={`${meta.label} clusters`} hint={clusterTotal
+          ? `${nfmt(scoped.length)} rows in the sample. The full table holds ${nfmt(clusterTotal)}; this is the most recent window.`
+          : `${nfmt(scoped.length)} rows in the sample; this is the most recent window.`}>
         <Feed feed={feeds.clusters} height={420}>
           {() => <DataTable rows={scoped} columns={cols} height={440} pageSize={100} exportName={`ps2_clusters_${scope.toLowerCase()}`} />}
         </Feed>
@@ -661,6 +691,7 @@ function DevicesView({ feeds, onAnalyse }) {
 // at subsystem level. That is the export's grain, not a UI shortcut.
 // =====================================================================
 function ComponentsView({ feeds, onAnalyse }) {
+  const repairTotal = tableRows(feeds, 'ps2_v2_repair_effectiveness');
   const [fleet, setFleet] = useState(null);
   const serials = feeds.serials.rows;
   const repairs = feeds.repairs.rows;
@@ -693,7 +724,8 @@ function ComponentsView({ feeds, onAnalyse }) {
 
   // WHAT THIS FEED ACTUALLY CONTAINS, measured rather than assumed.
   //
-  // Sampled at offsets 0, 10,000 and 30,000 of the 38,395-row table: every
+  // Sampled at offsets 0, 10,000 and 30,000 of the repair table (38,395 rows
+  // at the time of sampling, 33,576 on the 29-Aug run): every
   // row returns maintenance_component_subsystem = 'UNKNOWN' and
   // pre_30d_oos_onsets = post_30d_oos_onsets = 0. Fifteen thousand rows, not
   // one non-zero on either side.
@@ -848,7 +880,9 @@ function ComponentsView({ feeds, onAnalyse }) {
 
       <Grid cols="repeat(auto-fit,minmax(210px,1fr))" style={{ margin: '14px 0' }}>
         <Stat label="Repair episodes returned" value={nfmt(repairSignal.n)}
-              foot="of 38,395 in the table; the route caps at 5,000" />
+              foot={repairTotal
+                ? `of ${nfmt(repairTotal)} in the table; the route caps at 5,000`
+                : 'the route caps at 5,000'} />
         <Stat label="With any before/after signal" value={nfmt(repairSignal.nWithSignal)}
               tone={repairSignal.nWithSignal ? 'neutral' : 'warning'}
               foot="Rows where either window is non-zero" />
@@ -919,7 +953,9 @@ function ComponentsView({ feeds, onAnalyse }) {
             )}
           </Feed>
         </Panel>
-        <Panel title="Repair records" hint={`${nfmt((repairs || []).length)} of 38,395 rows`}>
+        <Panel title="Repair records" hint={repairTotal
+            ? `${nfmt((repairs || []).length)} of ${nfmt(repairTotal)} rows`
+            : `${nfmt((repairs || []).length)} rows`}>
           <Feed feed={feeds.repairs} height={300}>
             {() => <DataTable rows={repairs} columns={repairCols} height={320} pageSize={100} exportName="ps2_repair_effectiveness" />}
           </Feed>
@@ -1257,6 +1293,34 @@ function RelationshipsView({ feeds }) {
           that were recorded, not a rate the fleet can be expected to repeat.
         </Note>
       </Panel>
+
+      {/* CASCADE FLOW. Annexure 4 Dashboard 2 names this view by name. The
+          table and the route already existed; only the picture was missing.
+          It is fed by the serial-grain notebook, NOT by the patterns notebook
+          that fills the rest of this tab, so its vintage is stated rather
+          than assumed to match. */}
+      <Panel title="Cascade flow between subsystems"
+             hint="Where a cascade goes next, weighted by how often. Left is the subsystem a cascade leaves, right is the one it reaches.">
+        <Feed feed={feeds.sankey} height={400}>
+          {(rows) => (
+            <>
+              <SankeyFlow
+                rows={rows}
+                sourceKey="subsystem_from"
+                targetKey="subsystem_to"
+                valueKey="cascade_count"
+                height={400}
+                unit="cascades"
+              />
+              <Note>
+                Produced by the serial-grain analysis, which last ran for{' '}
+                <strong>26 Jul 2026</strong> -- earlier than the rest of this tab. Read the
+                shape, not the totals, until that notebook is re-run.
+              </Note>
+            </>
+          )}
+        </Feed>
+      </Panel>
     </>
   );
 }
@@ -1407,6 +1471,21 @@ function EvidenceVisuals({ feeds }) {
 }
 
 function EvidenceView({ feeds }) {
+  // Every figure in the evidence note comes from the run's own tables:
+  // hardware-OOS events from the quality check, onsets and validated onsets
+  // by summing the governance breakdown. Verified against the notebook's
+  // printed counts for run 6aafe3e0 (7,919,460 / 7,494,025 / 159,981).
+  const ev = useMemo(() => {
+    const gov = feeds.governance ? (feeds.governance.rows || []) : [];
+    const hwEvents = checkValue(feeds.runQuality.rows, 'hardware_oos_events_nonzero');
+    const onsets = sumBy(gov, 'event_count', (r) => r.oos_evidence_class === 'HARDWARE_OOS_EPISODE');
+    const validated = sumBy(gov, 'event_count', (r) => r.failure_evidence_class === 'VALIDATED_FAILURE_ALLOCATED');
+    return {
+      hwEvents, onsets, validated,
+      absorbedPct: hwEvents && onsets ? ((hwEvents - onsets) / hwEvents) * 100 : null,
+    };
+  }, [feeds.governance, feeds.runQuality.rows]);
+
   const horizon = useMemo(() => {
     const m = new Map();
     (feeds.labelHorizon.rows || []).forEach((r) => {
@@ -1505,10 +1584,20 @@ function EvidenceView({ feeds }) {
         sub="will_hardware_oos_3d marks a device-day positive if the device opens any hardware-OOS episode on the next one to three days. On a device that emits OOS events continually, almost every day qualifies."
       >
         <Note>
-          Read alongside the governed counts: 9,872,407 hardware-OOS events collapse to 9,325,118
-          episode onsets -- the restart-gap rule absorbs only 5.5% -- against 172,576 validated
-          failure onsets. The gap between those two numbers is what this section exists to make
-          visible, and it is a property of the rule rather than of the fleet.
+          {ev.hwEvents && ev.onsets && ev.validated ? (
+            <>
+              Read alongside the governed counts: {nfmt(ev.hwEvents)} hardware-OOS events collapse to{' '}
+              {nfmt(ev.onsets)} episode onsets -- the restart-gap rule absorbs only{' '}
+              {ev.absorbedPct.toFixed(1)}% -- against {nfmt(ev.validated)} validated failure onsets.
+              The gap between those two numbers is what this section exists to make visible, and it
+              is a property of the rule rather than of the fleet.
+            </>
+          ) : (
+            <>
+              The governed counts behind this section come from the run-quality and governance
+              tables. They have not loaded, so the figures are withheld rather than estimated.
+            </>
+          )}
         </Note>
       </Section>
 
@@ -1586,7 +1675,13 @@ function StatusBar({ feed }) {
         {s.tables}/{s.expected_tables} tables &middot; run {String((s.run_ids || [])[0] || '').slice(0, 8)}
       </span>
       <span style={{ ...font.micro, marginLeft: 'auto' }}>
-        Source extract ends 11 Apr 2026. Nothing here describes the estate after that date.
+        {/* This read "Source extract ends 11 Apr 2026" as a literal until
+            20-Sep-2026, when the run moved to 29-Aug and the sentence became
+            false on every view of the tab. as_of_ts is the run's own answer
+            and sits in the same payload. */}
+        {s.as_of_ts
+          ? <>Source extract ends <strong style={{ color: INK }}>{dfmt(String(s.as_of_ts).slice(0, 10))}</strong>. Nothing here describes the estate after that date.</>
+          : 'Source extract end date not reported by this run.'}
       </span>
     </div>
   );

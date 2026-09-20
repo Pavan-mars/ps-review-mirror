@@ -52,6 +52,16 @@ def _exclude_relieved() -> bool:
     return os.environ.get("PS1_EXCLUDE_RELIEVED", "false").strip().lower() == "true"
 
 
+def _enable_m401_features() -> bool:
+    """silver.metric_daily real M401/comms columns. Default OFF until measured."""
+    return os.environ.get("PS1_ENABLE_M401_FEATURES", "false").strip().lower() == "true"
+
+
+def _enable_usage_ext_features() -> bool:
+    """The rest of silver.usage_lifecycle_daily. Default OFF until measured."""
+    return os.environ.get("PS1_ENABLE_USAGE_EXT_FEATURES", "false").strip().lower() == "true"
+
+
 def _enable_avail_features() -> bool:
     """silver.kpi_avail_enriched outage rollups. Default OFF until measured."""
     return os.environ.get("PS1_ENABLE_AVAIL_FEATURES", "false").strip().lower() == "true"
@@ -293,6 +303,50 @@ if _enable_avail_features():
             if _c not in _cfg.all_candidate_features:
                 _cfg.all_candidate_features.append(_c)
     print(f"[features] kpi_avail_enriched enabled: +{len(AVAIL_FEATURE_COLS)} candidate features")
+
+
+# -- silver.metric_daily: the columns it actually has ------------------------
+# Excludes m401_p95_txn_time_ms / m401_slow_tap_count / m401_rolling_7d_avg_ms /
+# m401_txn_count_delta, which gold_extra already supplies as metric_p95_txn_ms,
+# metric_slow_tap_count, metric_rolling_7d_avg_ms and metric_txn_delta.
+M401_RAW_COLS = [
+    "m401_daily_txn_count", "m401_avg_txn_time_ms", "m401_max_txn_time_ms",
+    "m401_p99_txn_time_ms", "m401_slow_tap_pct", "m401_avg_time_delta_ms",
+    "m401_z_score_vs_28d", "volume_drop_flag",
+    "comms_csc_read_err_count", "comms_host_comm_lost_count",
+    "comms_device_comms_lost_count", "comms_total_count", "comms_event_flag",
+]
+M401_FEATURE_COLS = [f"met_{c}" for c in M401_RAW_COLS]
+
+# -- silver.usage_lifecycle_daily: the 8 unused columns worth having ---------
+USAGE_EXT_EXTRA_COLS = [
+    "daily_failure_count", "daily_tech_logins", "daily_maint_mode_events",
+    "cumulative_maint_events", "days_since_last_maintenance",
+    "failure_count_30d", "tap_count_30d", "maint_events_30d",
+]
+USAGE_EXT_EXTRA_FEATURES = [f"usage_{c}" for c in USAGE_EXT_EXTRA_COLS]
+
+# The four phantom metric_features never resolve; drop them so the "absent" list
+# reports real gaps only.
+_PHANTOM_METRIC_FEATURES = ["met_avail_pct", "met_downtime_min",
+                            "met_event_count", "met_p95_downtime"]
+if _enable_m401_features():
+    for _cfg in FLEET_CONFIG.values():
+        _cfg.all_candidate_features[:] = [
+            c for c in _cfg.all_candidate_features if c not in _PHANTOM_METRIC_FEATURES
+        ]
+        for _c in M401_FEATURE_COLS:
+            if _c not in _cfg.all_candidate_features:
+                _cfg.all_candidate_features.append(_c)
+    print(f"[features] metric_daily M401/comms enabled: +{len(M401_FEATURE_COLS)} "
+          f"candidate features (4 phantom names removed)")
+if _enable_usage_ext_features():
+    for _cfg in FLEET_CONFIG.values():
+        for _c in USAGE_EXT_EXTRA_FEATURES:
+            if _c not in _cfg.all_candidate_features:
+                _cfg.all_candidate_features.append(_c)
+    print(f"[features] usage_lifecycle_daily extended: +{len(USAGE_EXT_EXTRA_FEATURES)} "
+          f"candidate features")
 
 
 def _ensure_date_column(frame, column="transit_day"):
@@ -780,7 +834,38 @@ def add_auxiliary(
             "Inspect SOURCE_SKIPS and the source schema before defining any semantic aliases."
         ),
     )
-    if df_metric_raw is None:
+    if _enable_m401_features():
+        # Direct read: the four names above never resolve, so read_feature_source
+        # would return None before we ever reach the real columns.
+        try:
+            _md_raw = spark.read.parquet(f"{s3_silver}/metric_daily/")
+            _md_lc = {c.casefold(): c for c in _md_raw.columns}
+            _md_dev = _md_lc.get("device_id", "DEVICE_ID")
+            _md_day = _md_lc.get("transit_day", "transit_day")
+            _md_cat = _md_lc.get("mars_device_category")
+            _md_present = [c for c in M401_RAW_COLS if c.casefold() in _md_lc]
+            if not _md_present:
+                raise ValueError(f"no M401 columns; available: {_md_raw.columns[:20]}")
+            _md = _md_raw
+            if _md_cat:
+                _md = _md.where(F.col(_md_cat) == cfg.device_cat)
+            df_metric = (
+                _md
+                .where(F.to_date(F.col(_md_day)) >= F.to_date(F.lit(start_day)))
+                .where(F.to_date(F.col(_md_day)) <= end_day_expr)
+                .select(
+                    F.col(_md_dev).cast("string").alias("DEVICE_ID"),
+                    F.to_date(F.col(_md_day)).alias("transit_day"),
+                    *[F.col(_md_lc[c.casefold()]).cast("double").alias(f"met_{c}")
+                      for c in _md_present],
+                )
+                .dropDuplicates(["DEVICE_ID", "transit_day"])
+            )
+            print(f"silver.metric_daily: loaded {len(_md_present)} real M401/comms columns")
+        except Exception as exc:
+            df_metric = None
+            print(f"WARNING: silver.metric_daily M401 read skipped ({exc})")
+    elif df_metric_raw is None:
         df_metric = None
     else:
         df_metric = df_metric_raw.select(
@@ -820,6 +905,8 @@ def add_auxiliary(
         "days_in_service", "days_since_last_failure", "cumulative_tap_count",
         "cumulative_failure_count", "cumulative_outage_min", "daily_maint_events",
     ]
+    if _enable_usage_ext_features():
+        usage_ext_cols = usage_ext_cols + USAGE_EXT_EXTRA_COLS
     try:
         _ul_raw = spark.read.parquet(f"{s3_silver}/usage_lifecycle_daily/")
         _ul_lc = {c.casefold(): c for c in _ul_raw.columns}

@@ -50,6 +50,18 @@ def _event_definition() -> str:
 
 def _exclude_relieved() -> bool:
     return os.environ.get("PS1_EXCLUDE_RELIEVED", "false").strip().lower() == "true"
+
+
+def _session_gap_days() -> int:
+    """Consecutive failure days within this gap are ONE episode; only the first
+    is kept. 0 disables sessionisation (the historical behaviour).
+
+    The PS3 episode fact uses 3 -- its oos_fact_definition reads "PS1
+    hardware-OOS SET session; a new session starts after > 3 days". Counting raw
+    event-days instead inflates the label enormously: GATE carries a KPI-counted
+    OOS Set on roughly a third of all device-days.
+    """
+    return max(0, int(os.environ.get("PS1_EVENT_SESSION_GAP_DAYS", "0")))
 KEY_COLS = ["DEVICE_ID", "transit_day"]
 JOIN_KEY_DEVICE = "DEVICE_KEY"
 PS5_DATE_COLUMN = None
@@ -482,10 +494,12 @@ def read_spine(
         """
         _defn = _event_definition()
         _relief = _exclude_relieved()
+        _gap = _session_gap_days()
         print(f"[label] event definition : {_defn}")
         print(f"[label] horizon          : {horizon_days} day(s)")
         print(f"[label] exclude relieved : {_relief}")
-        if _defn != PS1_EVENT_DEFINITION_DEFAULT or horizon_days != 3 or _relief:
+        print(f"[label] session gap days : {_gap}" + ("  (0 = count every event-day)" if not _gap else ""))
+        if _defn != PS1_EVENT_DEFINITION_DEFAULT or horizon_days != 3 or _relief or _gap:
             print(f"[label] !! NON-DEFAULT LABEL. {TARGET_COL} holds a "
                   f"{_defn}/{horizon_days}-day label, NOT the published 3-day one. "
                   "Do not publish this run to Aurora or the dashboard.")
@@ -573,6 +587,23 @@ def read_spine(
                             .persist(StorageLevel.MEMORY_AND_DISK))
             _after = failure_days.count()
             print(f"[label] relief excluded  : {_before - _after:,} of {_before:,} failure days")
+
+        if _gap > 0:
+            _w = Window.partitionBy("DEVICE_ID").orderBy("failure_date")
+            _prev = F.lag("failure_date").over(_w)
+            failure_days = failure_days.persist(StorageLevel.MEMORY_AND_DISK)
+            _pre = failure_days.count()
+            failure_days = (
+                failure_days
+                .withColumn("_prev_fail", _prev)
+                .where(F.col("_prev_fail").isNull()
+                       | (F.datediff(F.col("failure_date"), F.col("_prev_fail")) > _gap))
+                .drop("_prev_fail")
+                .persist(StorageLevel.MEMORY_AND_DISK)
+            )
+            _post = failure_days.count()
+            print(f"[label] sessionised      : {_pre:,} failure days -> {_post:,} episode starts "
+                  f"(gap > {_gap}d)")
 
         seq = spark.range(1, horizon_days + 1).select(F.col("id").cast("int").alias("n"))
         label_days = (

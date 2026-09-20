@@ -52,6 +52,11 @@ def _exclude_relieved() -> bool:
     return os.environ.get("PS1_EXCLUDE_RELIEVED", "false").strip().lower() == "true"
 
 
+def _enable_avail_features() -> bool:
+    """silver.kpi_avail_enriched outage rollups. Default OFF until measured."""
+    return os.environ.get("PS1_ENABLE_AVAIL_FEATURES", "false").strip().lower() == "true"
+
+
 def _enable_warning_features() -> bool:
     """silver.warnings_daily -- degradation precursors. Default OFF until measured."""
     return os.environ.get("PS1_ENABLE_WARNING_FEATURES", "false").strip().lower() == "true"
@@ -269,6 +274,25 @@ if _enable_warning_features():
             if _c not in _cfg.all_candidate_features:
                 _cfg.all_candidate_features.append(_c)
     print(f"[features] warnings_daily enabled: +{len(WARNING_FEATURE_COLS)} candidate features")
+
+
+# -- silver.kpi_avail_enriched: device-day outage rollups --------------------
+# Replaces the metric_features family, whose four source columns
+# (availability_pct / total_downtime_min / total_events / p95_downtime_min) exist
+# nowhere in this repo -- silver.metric_daily is a METRIC_401 timing table.
+# Only the prior-window sums are registered as features: an outage's duration is
+# not known until it ends, so the same-day value could reach past the label edge.
+AVAIL_BASE_COLS = [
+    "kae_outage_count", "kae_outage_min_sum", "kae_outage_min_max",
+    "kae_failure_level_max", "kae_excluded_count", "kae_relieved_count",
+]
+AVAIL_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in AVAIL_BASE_COLS for w in (7, 30)]
+if _enable_avail_features():
+    for _cfg in FLEET_CONFIG.values():
+        for _c in AVAIL_FEATURE_COLS:
+            if _c not in _cfg.all_candidate_features:
+                _cfg.all_candidate_features.append(_c)
+    print(f"[features] kpi_avail_enriched enabled: +{len(AVAIL_FEATURE_COLS)} candidate features")
 
 
 def _ensure_date_column(frame, column="transit_day"):
@@ -735,6 +759,11 @@ def add_auxiliary(
         ),
     )
 
+    # These four names exist nowhere in this repo -- silver.metric_daily (S10) is a
+    # METRIC_401 timing table producing m401_* / comms_* columns and never had
+    # availability fields, so this request has failed in every run ever made. The
+    # intent is served by gold_extra (availability_pct_7d, outage_min_7d, events_7d)
+    # and, when enabled, by the kpi_avail_enriched rollups above.
     metric_raw_cols = [
         "availability_pct", "total_downtime_min", "total_events", "p95_downtime_min"
     ]
@@ -848,6 +877,47 @@ def add_auxiliary(
         except Exception as exc:
             df_warn = None
             print(f"WARNING: silver.warnings_daily skipped ({exc})")
+
+    # -- silver.kpi_avail_enriched -> device-day outage rollup -------------------
+    df_avail = None
+    if _enable_avail_features():
+        try:
+            _ka_raw = spark.read.parquet(f"{s3_silver}/kpi_avail_enriched/")
+            _ka_lc = {c.casefold(): c for c in _ka_raw.columns}
+            _kd = _ka_lc.get("device_id", "DEVICE_ID")
+            _kt = _ka_lc.get("transit_day", "transit_day")
+            _kdur = _ka_lc.get("outage_duration_min")
+            _kfl = _ka_lc.get("failure_level")
+            _kex = _ka_lc.get("excluded")
+            _krel = _ka_lc.get("relief_id")
+            _kcat = _ka_lc.get("mars_device_category")
+            _base = _ka_raw
+            if _kcat:
+                _base = _base.where(F.col(_kcat) == cfg.device_cat)
+            _aggs = [F.count(F.lit(1)).alias("kae_outage_count")]
+            if _kdur:
+                _aggs += [F.sum(F.col(_kdur).cast("double")).alias("kae_outage_min_sum"),
+                          F.max(F.col(_kdur).cast("double")).alias("kae_outage_min_max")]
+            if _kfl:
+                _aggs.append(F.max(F.col(_kfl).cast("double")).alias("kae_failure_level_max"))
+            if _kex:
+                _aggs.append(F.sum(F.when(F.col(_kex).cast("double") > 0, 1.0)
+                                    .otherwise(0.0)).alias("kae_excluded_count"))
+            if _krel:
+                _aggs.append(F.sum(F.when(F.col(_krel).isNotNull(), 1.0)
+                                    .otherwise(0.0)).alias("kae_relieved_count"))
+            df_avail = (
+                _base
+                .where(F.to_date(F.col(_kt)) >= F.to_date(F.lit(start_day)))
+                .where(F.to_date(F.col(_kt)) <= end_day_expr)
+                .groupBy(F.col(_kd).cast("string").alias("DEVICE_ID"),
+                         F.to_date(F.col(_kt)).alias("transit_day"))
+                .agg(*_aggs)
+            )
+            print(f"silver.kpi_avail_enriched: rolled up to {len(_aggs)} device-day columns")
+        except Exception as exc:
+            df_avail = None
+            print(f"WARNING: silver.kpi_avail_enriched skipped ({exc})")
 
 
 
@@ -1389,6 +1459,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_wc, F.coalesce(F.col(_wc), F.lit(0.0)))
             print("Joined silver.warnings_daily on DEVICE_ID + transit_day")
 
+        if df_avail is not None:
+            df_joined = df_joined.join(df_avail, on=["DEVICE_ID", "transit_day"], how="left")
+            for _ac in AVAIL_BASE_COLS:
+                if _ac in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ac, F.coalesce(F.col(_ac), F.lit(0.0)))
+            print("Joined silver.kpi_avail_enriched on DEVICE_ID + transit_day")
+
         _SPARK_PRIOR_COLS = [
             "gate_mech_events", "csc_reader_events", "comms_events", "system_events",
             "chargeable_outage_count", "chargeable_outage_min", "hardware_oos_count",
@@ -1396,6 +1473,11 @@ def join_and_materialise(
         if df_warn is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in WARNING_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_avail is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in AVAIL_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:
@@ -1613,6 +1695,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_wc, F.coalesce(F.col(_wc), F.lit(0.0)))
             print("Joined silver.warnings_daily on DEVICE_ID + transit_day")
 
+        if df_avail is not None:
+            df_joined = df_joined.join(df_avail, on=["DEVICE_ID", "transit_day"], how="left")
+            for _ac in AVAIL_BASE_COLS:
+                if _ac in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ac, F.coalesce(F.col(_ac), F.lit(0.0)))
+            print("Joined silver.kpi_avail_enriched on DEVICE_ID + transit_day")
+
         _SPARK_PRIOR_COLS = [
             "printer_events", "bankcard_events", "bhu_events", "chu_events", "scrst_events",
             "system_events", "comms_events", "csc_reader_events",
@@ -1621,6 +1710,11 @@ def join_and_materialise(
         if df_warn is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in WARNING_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_avail is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in AVAIL_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:
@@ -1838,6 +1932,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_wc, F.coalesce(F.col(_wc), F.lit(0.0)))
             print("Joined silver.warnings_daily on DEVICE_ID + transit_day")
 
+        if df_avail is not None:
+            df_joined = df_joined.join(df_avail, on=["DEVICE_ID", "transit_day"], how="left")
+            for _ac in AVAIL_BASE_COLS:
+                if _ac in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ac, F.coalesce(F.col(_ac), F.lit(0.0)))
+            print("Joined silver.kpi_avail_enriched on DEVICE_ID + transit_day")
+
         _SPARK_PRIOR_COLS = [
             "printer_events", "bankcard_events", "bhu_events", "chu_events", "scrst_events",
             "system_events", "comms_events", "csc_reader_events",
@@ -1846,6 +1947,11 @@ def join_and_materialise(
         if df_warn is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in WARNING_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_avail is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in AVAIL_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:

@@ -77,7 +77,12 @@ def parse_args():
 def collect_env():
     """Pass through every PS3_* variable from the calling shell, verbatim."""
     env = {k: v for k, v in sorted(os.environ.items()) if k.startswith("PS3_")}
-    print("PS3_* passed through: " + (json.dumps(env) if env else "(none -- notebook defaults apply)"))
+    # Submitting a Processing job IS the intent to publish, so PRODUCTION is set
+    # here rather than being the notebook's default. The notebook defaults to
+    # REPLAY so that opening it in Studio and running it cannot reach the prefix
+    # the v25 loader watches. Exporting PS3_RUN_MODE=REPLAY still wins.
+    env.setdefault("PS3_RUN_MODE", "PRODUCTION")
+    print("PS3_* passed through: " + json.dumps(env))
     if not env.get("PS3_DATA_AS_OF_DATE", "").strip():
         print("NOTE: no PS3_DATA_AS_OF_DATE set, so the notebook's 2026-04-11 default applies and "
               "this run re-publishes the April vintage under a NEW run_id. That is the correct "

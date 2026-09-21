@@ -1116,6 +1116,11 @@ function CascadesView({ feeds }) {
 // under a familiar name is how a plausible chart becomes a wrong one.
 // ---------------------------------------------------------------------
 function RelationshipsView({ feeds }) {
+  // The serial-grain family has no status view of its own -- v_ps2_v25_status
+  // unions only the 20 ps2_v25_* tables -- so the vintage has to come off the
+  // rows themselves.
+  const sankeyDate = ((feeds.sankey && feeds.sankey.rows && feeds.sankey.rows[0]) || {}).computed_date || null;
+  const tabDate = (((feeds.status && feeds.status.rows && feeds.status.rows[0]) || {}).computed_date) || null;
   const phiRows = feeds.phi.rows || [];
   const net = feeds.network.rows || [];
   const ign = feeds.ignition.rows || [];
@@ -1313,9 +1318,18 @@ function RelationshipsView({ feeds }) {
                 unit="cascades"
               />
               <Note>
-                Produced by the serial-grain analysis, which last ran for{' '}
-                <strong>26 Jul 2026</strong> -- earlier than the rest of this tab. Read the
-                shape, not the totals, until that notebook is re-run.
+                {/* This said "last ran for 26 Jul 2026" as a literal. Both PS2
+                    producers reached 2026-08-29 on 21-Sep and the sentence went
+                    stale the same day. The date now comes from the rows. When
+                    the API has not been redeployed with computed_date on this
+                    route the clause is dropped rather than guessed. */}
+                Produced by the serial-grain analysis, a different notebook from the one behind
+                the rest of this tab
+                {sankeyDate ? <> — analysed as of <strong>{dfmt(sankeyDate)}</strong></> : null}.
+                {sankeyDate && tabDate && sankeyDate !== tabDate
+                  ? <> That is <strong>not</strong> the same day as the rest of this tab
+                      ({dfmt(tabDate)}); read the shape, not the totals, until it is re-run.</>
+                  : <> Cascade flow is counted, not inferred.</>}
               </Note>
             </>
           )}
@@ -1352,8 +1366,18 @@ function EvidenceVisuals({ feeds }) {
            && num(r.governed_only_device_days) > 0), [align]);
 
   const gate = useMemo(() => {
-    const pass = checks.filter((c) => c.passed === true || String(c.passed) === 'true').length;
-    return { pass, fail: checks.length - pass, total: checks.length };
+    const isPass = (c) => c.passed === true || String(c.passed) === 'true';
+    const pass = checks.filter(isPass).length;
+    const first = checks[0] || {};
+    const disposition = first.run_disposition || null;
+    return {
+      pass, fail: checks.length - pass, total: checks.length,
+      status: first.quality_status || null,
+      disposition,
+      // A warning-severity check that did not pass is what separates
+      // "PASS" from "PASS_WITH_WARNINGS".
+      warned: checks.some((c) => !isPass(c) && String(c.severity) !== 'critical'),
+    };
   }, [checks]);
 
   // Precision and recall derived from the confusion counts Failure Pattern & Cascade Identification measured on
@@ -1378,6 +1402,17 @@ function EvidenceVisuals({ feeds }) {
               value={gate.total ? `${nfmt(gate.pass)} of ${nfmt(gate.total)}` : '--'}
               tone={gate.fail ? 'warning' : 'good'}
               foot={gate.fail ? `${nfmt(gate.fail)} did not pass` : 'Every check cleared'} />
+        {/* quality_status is PASS whenever no CRITICAL check failed, so a run
+            with warnings reads as clean. The distinction lives only in
+            run_disposition, which the route already returns and nothing showed.
+            The 29-Aug run was PRODUCTION_PASS_WITH_WARNINGS with
+            direct_silver_current_device_linkage at 0.56 against a 0.95 floor. */}
+        <Stat label="Run disposition"
+              value={gate.disposition || '--'}
+              tone={gate.warned ? 'warning' : (gate.status === 'PASS' ? 'good' : 'critical')}
+              foot={gate.warned
+                ? 'Published with warnings — status alone would read as clean'
+                : `quality_status ${gate.status || 'unknown'}`} />
         <Stat label="Fleets with an alignment measure" value={nfmt(align.length)}
               foot="Jaccard between the two definitions" />
         <Stat label="Fleets scored by Failure Pattern & Cascade Identification" value={nfmt(perf.length)}
@@ -1509,6 +1544,7 @@ function EvidenceView({ feeds }) {
     { key: 'observed_value', label: 'Observed', num: true, d: 4 },
     { key: 'threshold', label: 'Threshold' },
     { key: 'metric_context', label: 'What it means' },
+    { key: 'run_disposition', label: 'Run disposition' },
   ];
 
   const summaryCols = [

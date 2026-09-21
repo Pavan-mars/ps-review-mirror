@@ -2257,10 +2257,16 @@ def route(method, path, params, body, headers=None):
                 'ps1_high_risk_co_occur_rate, ps4_anomaly_co_occur_n, '
                 'ps4_anomaly_co_occur_rate, note',
                 "ORDER BY entity_grain"),
+            # computed_date is SELECTED so the panel can state this family's own
+            # vintage instead of asserting one. The serial-grain tables are
+            # produced by a different notebook from the ps2_v25_* set and can
+            # sit weeks behind it -- they did, at 26-Jul against 29-Aug -- and
+            # /ps2/status covers only the v25 family, so nothing else on the
+            # tab can report it.                                  21-Sep-2026
             "sankey": _latest(
                 "ps2_cascade_sankey_subsystem",
                 'subsystem_from, subsystem_to, cascade_count, '
-                'total_business_impact, avg_severity',
+                'total_business_impact, avg_severity, computed_date',
                 "ORDER BY cascade_count DESC NULLS LAST"),
             "network": _latest(
                 "ps2_network_centrality",

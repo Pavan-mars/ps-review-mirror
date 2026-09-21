@@ -855,19 +855,24 @@ def add_auxiliary(
     metric_raw_cols = [
         "availability_pct", "total_downtime_min", "total_events", "p95_downtime_min"
     ]
-    df_metric_raw = read_feature_source(spark, cfg.device_cat, 
-        "silver.metric_daily",
-        f"{s3_silver}/metric_daily/",
-        metric_raw_cols,
-        start_day,
-        end_day_expr,
-        required_features=metric_raw_cols,
-        optional_source=True,
-        optional_guidance=(
-            "The expected metric fields are unavailable in this export, so metric_daily will be omitted. "
-            "Inspect SOURCE_SKIPS and the source schema before defining any semantic aliases."
-        ),
-    )
+    # Only attempted when the M401 replacement is off. Left unguarded it prints
+    # "skipped ... missing required features" for four columns that exist nowhere
+    # in this repo, immediately before the real read succeeds.
+    df_metric_raw = None
+    if not _enable_m401_features():
+        df_metric_raw = read_feature_source(spark, cfg.device_cat, 
+            "silver.metric_daily",
+            f"{s3_silver}/metric_daily/",
+            metric_raw_cols,
+            start_day,
+            end_day_expr,
+            required_features=metric_raw_cols,
+            optional_source=True,
+            optional_guidance=(
+                "The expected metric fields are unavailable in this export, so metric_daily will be omitted. "
+                "Inspect SOURCE_SKIPS and the source schema before defining any semantic aliases."
+            ),
+        )
     if _enable_m401_features():
         # Direct read: the four names above never resolve, so read_feature_source
         # would return None before we ever reach the real columns.

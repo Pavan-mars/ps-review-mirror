@@ -52,6 +52,17 @@ def _exclude_relieved() -> bool:
     return os.environ.get("PS1_EXCLUDE_RELIEVED", "false").strip().lower() == "true"
 
 
+def _evq_prior_only() -> bool:
+    """Drop the event-quality same-day counts, keeping only their prior windows.
+
+    evq_oos_sets and evq_comp_serials are same-day, and the label is sessionised
+    with a 3-day gap -- a device with failure days today cannot start an episode
+    for three days, so these partly determine the label mechanically. Set this to
+    measure how much of the gain is real device behaviour.
+    """
+    return os.environ.get("PS1_EVQ_PRIOR_ONLY", "false").strip().lower() == "true"
+
+
 def _enable_event_quality_features() -> bool:
     """device_event_enriched duration + component attribution. Default OFF.
 
@@ -371,16 +382,22 @@ if _enable_usage_ext_features():
 EVQ_SAFE_COLS = ["evq_oos_sets", "evq_comp_types", "evq_comp_serials"]
 EVQ_DURATION_COLS = ["evq_dur_sum", "evq_dur_max", "evq_dur_mean"]
 EVQ_BASE_COLS = EVQ_SAFE_COLS + EVQ_DURATION_COLS
-EVQ_FEATURE_COLS = EVQ_SAFE_COLS + [
+EVQ_PRIOR_SUM_COLS = [
     f"{c}_prior_sum_{w}d" for c in EVQ_BASE_COLS for w in (7, 30)
 ]
+# The same-day counts are registered only when PS1_EVQ_PRIOR_ONLY is off.
+EVQ_FEATURE_COLS = ([] if _evq_prior_only() else EVQ_SAFE_COLS) + EVQ_PRIOR_SUM_COLS
 if _enable_event_quality_features():
     for _cfg in FLEET_CONFIG.values():
         for _c in EVQ_FEATURE_COLS:
             if _c not in _cfg.all_candidate_features:
                 _cfg.all_candidate_features.append(_c)
+    _evq_same = 0 if _evq_prior_only() else len(EVQ_SAFE_COLS)
     print(f"[features] event-quality enabled: +{len(EVQ_FEATURE_COLS)} candidate features "
-          f"({len(EVQ_SAFE_COLS)} same-day, {len(EVQ_BASE_COLS) * 2} prior-window)")
+          f"({_evq_same} same-day, {len(EVQ_PRIOR_SUM_COLS)} prior-window)")
+    if _evq_prior_only():
+        print("[features] PS1_EVQ_PRIOR_ONLY=true -- same-day counts withheld; "
+              "this measures the gain net of the sessionisation rule")
 
 
 def _ensure_date_column(frame, column="transit_day"):

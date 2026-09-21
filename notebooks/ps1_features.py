@@ -96,6 +96,13 @@ PS5_DATE_COLUMN = None
 AUXILIARY_DUPLICATE_POLICY = "skip"
 RUN_DEEP_GRAIN_AUDIT = False
 IS_LOCAL_SPARK = False
+
+# Optional auxiliary frames handed from add_auxiliary to join_and_materialise.
+# They cannot travel in the `aux` dict: CELL 8 builds that from an explicit literal
+# in each fleet notebook, so a new key would need three notebook edits to arrive.
+_PS1_DF_WARN = None
+_PS1_DF_AVAIL = None
+_PS1_DF_EVQ = None
 shuffle_partitions = 200
 
 
@@ -1082,6 +1089,9 @@ def add_auxiliary(
             df_evq = None
             print(f"WARNING: device_event_enriched quality rollup skipped ({exc})")
 
+    global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ
+    _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
+
 
 
 
@@ -1504,6 +1514,9 @@ def join_and_materialise(
     df_ps4 = aux['df_ps4']
     df_ps5 = aux['df_ps5']
     df_metric = aux['df_metric']
+    df_warn = globals().get("_PS1_DF_WARN")
+    df_avail = globals().get("_PS1_DF_AVAIL")
+    df_evq = globals().get("_PS1_DF_EVQ")
     df_mttr = aux['df_mttr']
     df_usage_ext = aux['df_usage_ext']
     df_read_tap = aux['df_read_tap']

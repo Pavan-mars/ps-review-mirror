@@ -5,7 +5,14 @@
 # services directly, so its IAM footprint is just "pull image, write logs".
 
 # ---- build stage ----
-FROM node:20-slim AS build
+# Base images come from the ECR PUBLIC mirror, not Docker Hub.  21-Sep-2026
+# An anonymous Docker Hub pull from a CodeBuild container is rate-limited by
+# source IP, and build cdad4e50 died 15s in with
+#   ERROR: ... node/manifests/20-slim: 429 Too Many Requests
+# before npm ran at all. public.ecr.aws serves the same official images from
+# inside AWS with no such limit, so the build stops depending on a third
+# party's quota. Both tags verified to resolve before this change.
+FROM public.ecr.aws/docker/library/node:20-slim AS build
 WORKDIR /app
 
 # VITE_API_BASE_URL is a Vite *build-time* env (baked into the JS bundle,
@@ -20,7 +27,7 @@ COPY . .
 RUN npm run build
 
 # ---- serve stage ----
-FROM nginx:1.27-alpine
+FROM public.ecr.aws/nginx/nginx:1.27-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 

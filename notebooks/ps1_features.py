@@ -52,6 +52,16 @@ def _exclude_relieved() -> bool:
     return os.environ.get("PS1_EXCLUDE_RELIEVED", "false").strip().lower() == "true"
 
 
+def _exclude_gap_features() -> bool:
+    """Withhold features that encode the sessionisation gap rather than predict it.
+
+    An episode start requires more than 3 days since the last failure day, so a
+    time-since-last-failure feature determines whether one is possible. On
+    VALIDATOR this produces AUC 0.9973 with lift flat at 1/base_rate.
+    """
+    return os.environ.get("PS1_EXCLUDE_GAP_FEATURES", "false").strip().lower() == "true"
+
+
 def _evq_prior_only() -> bool:
     """Drop the event-quality same-day counts, keeping only their prior windows.
 
@@ -398,6 +408,33 @@ if _enable_event_quality_features():
     if _evq_prior_only():
         print("[features] PS1_EVQ_PRIOR_ONLY=true -- same-day counts withheld; "
               "this measures the gain net of the sessionisation rule")
+
+
+# -- features that encode the sessionisation gap ----------------------------
+# Applied last, after every source block above has contributed its candidates.
+GAP_ENCODING_FEATURES = [
+    "days_since_fail",               # the gap quantity itself
+    "fail_free_streak",              # the same quantity
+    "usage_days_since_last_failure",  # the same quantity, from usage_lifecycle_daily
+    "mttr_days_since_prev_failure",   # the same quantity, from device_mttr
+    "roll_fail_7d",                  # a 7-day window overlapping the 3-day gap
+    "usage_daily_failure_count",     # failures today => no episode start for 3 days
+]
+# Retained deliberately -- failure history beyond the gap window is a legitimate
+# predictor: roll_fail_30d, roll_fail_90d, usage_failure_count_30d,
+# usage_cumulative_failure_count, mttr_failure_days_30d, mttr_failure_days_90d.
+if _exclude_gap_features():
+    for _cfg in FLEET_CONFIG.values():
+        _before = len(_cfg.all_candidate_features)
+        _cfg.all_candidate_features[:] = [
+            c for c in _cfg.all_candidate_features if c not in GAP_ENCODING_FEATURES
+        ]
+        _cfg.failure_features[:] = [
+            c for c in _cfg.failure_features if c not in GAP_ENCODING_FEATURES
+        ]
+    print(f"[features] PS1_EXCLUDE_GAP_FEATURES=true -- withheld "
+          f"{len(GAP_ENCODING_FEATURES)} gap-encoding features; what survives is the "
+          f"model's real predictive skill")
 
 
 def _ensure_date_column(frame, column="transit_day"):

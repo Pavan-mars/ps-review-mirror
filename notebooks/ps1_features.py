@@ -52,6 +52,14 @@ def _exclude_relieved() -> bool:
     return os.environ.get("PS1_EXCLUDE_RELIEVED", "false").strip().lower() == "true"
 
 
+def _enable_event_quality_features() -> bool:
+    """device_event_enriched duration + component attribution. Default OFF.
+
+    Adds a second scan of a 259M-row table; expect a slower ETL cell.
+    """
+    return os.environ.get("PS1_ENABLE_EVENT_QUALITY_FEATURES", "false").strip().lower() == "true"
+
+
 def _enable_m401_features() -> bool:
     """silver.metric_daily real M401/comms columns. Default OFF until measured."""
     return os.environ.get("PS1_ENABLE_M401_FEATURES", "false").strip().lower() == "true"
@@ -347,6 +355,25 @@ if _enable_usage_ext_features():
                 _cfg.all_candidate_features.append(_c)
     print(f"[features] usage_lifecycle_daily extended: +{len(USAGE_EXT_EXTRA_FEATURES)} "
           f"candidate features")
+
+
+# -- device_event_enriched: duration + component attribution ----------------
+# Same-day counts are safe (known by end of day D; the label covers D+1..D+H).
+# The duration columns are prior-window ONLY -- a duration is not known until the
+# clear, which may land inside the label window.
+EVQ_SAFE_COLS = ["evq_oos_sets", "evq_comp_types", "evq_comp_serials"]
+EVQ_DURATION_COLS = ["evq_dur_sum", "evq_dur_max", "evq_dur_mean"]
+EVQ_BASE_COLS = EVQ_SAFE_COLS + EVQ_DURATION_COLS
+EVQ_FEATURE_COLS = EVQ_SAFE_COLS + [
+    f"{c}_prior_sum_{w}d" for c in EVQ_BASE_COLS for w in (7, 30)
+]
+if _enable_event_quality_features():
+    for _cfg in FLEET_CONFIG.values():
+        for _c in EVQ_FEATURE_COLS:
+            if _c not in _cfg.all_candidate_features:
+                _cfg.all_candidate_features.append(_c)
+    print(f"[features] event-quality enabled: +{len(EVQ_FEATURE_COLS)} candidate features "
+          f"({len(EVQ_SAFE_COLS)} same-day, {len(EVQ_BASE_COLS) * 2} prior-window)")
 
 
 def _ensure_date_column(frame, column="transit_day"):
@@ -1006,6 +1033,55 @@ def add_auxiliary(
             df_avail = None
             print(f"WARNING: silver.kpi_avail_enriched skipped ({exc})")
 
+    # -- device_event_enriched -> device-day duration + component rollup --------
+    df_evq = None
+    if _enable_event_quality_features():
+        try:
+            _ev_raw = spark.read.parquet(f"{s3_silver}/device_event_enriched/")
+            _ev_lc = {c.casefold(): c for c in _ev_raw.columns}
+
+            def _ev(name):
+                return _ev_lc.get(name.casefold())
+
+            _e_dev, _e_day = _ev("DEVICE_ID"), _ev("transit_day")
+            _e_state, _e_oos = _ev("EVENT_STATE_TYPE_NAME"), _ev("is_oos_event")
+            _e_cat = _ev("mars_device_category")
+            _e_dur = _ev("duration_to_clear_min")
+            _e_ctype, _e_cser = _ev("COMPONENT_TYPE_NAME"), _ev("COMPONENT_SERIAL_NBR")
+            if not (_e_dev and _e_day):
+                raise ValueError(f"no DEVICE_ID/transit_day; columns: {_ev_raw.columns[:20]}")
+
+            _ev_f = _ev_raw
+            if _e_cat:
+                _ev_f = _ev_f.where(F.col(_e_cat) == cfg.device_cat)
+            if _e_oos:
+                _ev_f = _ev_f.where(F.col(_e_oos).eqNullSafe(True))
+            if _e_state:
+                _ev_f = _ev_f.where(F.col(_e_state) == "Set")
+            _ev_f = (_ev_f
+                     .where(F.to_date(F.col(_e_day)) >= F.to_date(F.lit(start_day)))
+                     .where(F.to_date(F.col(_e_day)) <= end_day_expr))
+
+            _ev_aggs = [F.count(F.lit(1)).alias("evq_oos_sets")]
+            if _e_ctype:
+                _ev_aggs.append(F.countDistinct(F.col(_e_ctype)).alias("evq_comp_types"))
+            if _e_cser:
+                _ev_aggs.append(F.countDistinct(F.col(_e_cser)).alias("evq_comp_serials"))
+            if _e_dur:
+                _d = F.col(_e_dur).cast("double")
+                _ev_aggs += [F.sum(_d).alias("evq_dur_sum"),
+                             F.max(_d).alias("evq_dur_max"),
+                             F.avg(_d).alias("evq_dur_mean")]
+            df_evq = _ev_f.groupBy(
+                F.col(_e_dev).cast("string").alias("DEVICE_ID"),
+                F.to_date(F.col(_e_day)).alias("transit_day"),
+            ).agg(*_ev_aggs)
+            print(f"silver.device_event_enriched: rolled up to {len(_ev_aggs)} "
+                  f"device-day quality columns")
+        except Exception as exc:
+            df_evq = None
+            print(f"WARNING: device_event_enriched quality rollup skipped ({exc})")
+
 
 
 
@@ -1553,6 +1629,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_ac, F.coalesce(F.col(_ac), F.lit(0.0)))
             print("Joined silver.kpi_avail_enriched on DEVICE_ID + transit_day")
 
+        if df_evq is not None:
+            df_joined = df_joined.join(df_evq, on=["DEVICE_ID", "transit_day"], how="left")
+            for _ec in EVQ_BASE_COLS:
+                if _ec in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ec, F.coalesce(F.col(_ec), F.lit(0.0)))
+            print("Joined device_event_enriched quality rollup on DEVICE_ID + transit_day")
+
         _SPARK_PRIOR_COLS = [
             "gate_mech_events", "csc_reader_events", "comms_events", "system_events",
             "chargeable_outage_count", "chargeable_outage_min", "hardware_oos_count",
@@ -1565,6 +1648,11 @@ def join_and_materialise(
         if df_avail is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in AVAIL_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_evq is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in EVQ_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:
@@ -1789,6 +1877,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_ac, F.coalesce(F.col(_ac), F.lit(0.0)))
             print("Joined silver.kpi_avail_enriched on DEVICE_ID + transit_day")
 
+        if df_evq is not None:
+            df_joined = df_joined.join(df_evq, on=["DEVICE_ID", "transit_day"], how="left")
+            for _ec in EVQ_BASE_COLS:
+                if _ec in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ec, F.coalesce(F.col(_ec), F.lit(0.0)))
+            print("Joined device_event_enriched quality rollup on DEVICE_ID + transit_day")
+
         _SPARK_PRIOR_COLS = [
             "printer_events", "bankcard_events", "bhu_events", "chu_events", "scrst_events",
             "system_events", "comms_events", "csc_reader_events",
@@ -1802,6 +1897,11 @@ def join_and_materialise(
         if df_avail is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in AVAIL_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_evq is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in EVQ_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:
@@ -2026,6 +2126,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_ac, F.coalesce(F.col(_ac), F.lit(0.0)))
             print("Joined silver.kpi_avail_enriched on DEVICE_ID + transit_day")
 
+        if df_evq is not None:
+            df_joined = df_joined.join(df_evq, on=["DEVICE_ID", "transit_day"], how="left")
+            for _ec in EVQ_BASE_COLS:
+                if _ec in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ec, F.coalesce(F.col(_ec), F.lit(0.0)))
+            print("Joined device_event_enriched quality rollup on DEVICE_ID + transit_day")
+
         _SPARK_PRIOR_COLS = [
             "printer_events", "bankcard_events", "bhu_events", "chu_events", "scrst_events",
             "system_events", "comms_events", "csc_reader_events",
@@ -2039,6 +2146,11 @@ def join_and_materialise(
         if df_avail is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in AVAIL_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_evq is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in EVQ_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:

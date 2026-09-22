@@ -33,11 +33,33 @@ GOLD_BUCKET=cubic-mars-pm-s3-datalake-dev-gold-170202974600
 ARTIFACT_BUCKET=cubic-mars-pm-s3-datalake-dev-artifacts-170202974600
 
 KEEP_SNAPSHOTS=${KEEP_SNAPSHOTS:-3}
-# 27-Jul-2026. Was chicago/ml_outputs/ps4 -- the path the first version of this
-# loader invented. The env var OVERRIDES the handler's correct default, so the
-# stale value here made the Lambda look under a prefix that does not exist AND
-# scoped the IAM grant to it, which denied the real clustering keys.
-PS2_PREFIX=ps2_outputs
+
+# THIS LINE DECIDES WHERE THE LOADER LOOKS.                    23-Sep-2026
+# It read `ps2_outputs` while both producers write `chicago/ps2_outputs`:
+# the notebook default (PS2_PRODUCTION_EXPORT_PREFIX), the Processing job's
+# submitter, and the 10-Aug live inventory all agree on the latter. The live
+# Lambda was corrected by hand and this script was not, so the next deploy
+# would have taken the chain down three ways at once -- the env merge below
+# lets this script win for the keys it owns (:197 merged.update(new)), the
+# inline IAM policy is REPLACED wholesale so the grant would narrow to the
+# empty prefix, and the S3 notification filter would move with it.
+#
+# RUNBOOK_data_corruption_fixes_08Aug2026.md:180 prescribed this edit on
+# 08-Aug and listed two rows. The PS3 row was applied; this one was not. The
+# comment that used to sit here described the PS4 loader's history, which is
+# how it survived a reading.
+#
+# The guard is PS3's, deliberately: the prefix and the IAM fence are built
+# from one list so they cannot drift apart again.
+PS2_ALLOWED_PREFIXES="chicago/ps2_outputs ps2_outputs"
+PS2_PREFIX=${PS2_PREFIX:-chicago/ps2_outputs}
+
+case " $PS2_ALLOWED_PREFIXES " in
+  *" $PS2_PREFIX "*) ;;
+  *) echo "!! PS2_PREFIX='$PS2_PREFIX' is not in PS2_ALLOWED_PREFIXES."; \
+     echo "!! Deploying would fence the role away from the prefix the loader reads."; \
+     echo "!! Add it to PS2_ALLOWED_PREFIXES above, or fix PS2_PREFIX."; exit 1 ;;
+esac
 HOURLY_WINDOW_DAYS="${HOURLY_WINDOW_DAYS:-7}"
 
 ACCT=$(aws sts get-caller-identity --query Account --output text)
@@ -52,12 +74,21 @@ if ! aws iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
 fi
 aws iam attach-role-policy --role-name "$ROLE" \
   --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+# Grant every ALLOWED prefix, not just the selected one: put-role-policy
+# replaces the named inline policy wholesale, so a deploy with one value
+# would otherwise revoke access to the other and strand a rollback.
+PS2_GET_ARNS=""; PS2_ART_ARNS=""
+for _p in $PS2_ALLOWED_PREFIXES; do
+  PS2_GET_ARNS="$PS2_GET_ARNS\"arn:aws:s3:::$GOLD_BUCKET/$_p/*\","
+  PS2_ART_ARNS="$PS2_ART_ARNS,\"arn:aws:s3:::$ARTIFACT_BUCKET/$_p/*\""
+done
+
 aws iam put-role-policy --role-name "$ROLE" --policy-name ps2-loader-inline --policy-document "{
   \"Version\":\"2012-10-17\",\"Statement\":[
     {\"Effect\":\"Allow\",\"Action\":\"secretsmanager:GetSecretValue\",\"Resource\":\"$SECRET_ARN\"},
     {\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:ListBucket\"],
-     \"Resource\":[\"arn:aws:s3:::$GOLD_BUCKET\",\"arn:aws:s3:::$GOLD_BUCKET/$PS2_PREFIX/*\",
-                  \"arn:aws:s3:::$ARTIFACT_BUCKET\",\"arn:aws:s3:::$ARTIFACT_BUCKET/$PS2_PREFIX/*\"]}]}"
+     \"Resource\":[\"arn:aws:s3:::$GOLD_BUCKET\",$PS2_GET_ARNS
+                  \"arn:aws:s3:::$ARTIFACT_BUCKET\"$PS2_ART_ARNS]}]}"
 ROLE_ARN=arn:aws:iam::$ACCT:role/$ROLE
 
 echo ">> [2/7] security group"
@@ -221,7 +252,7 @@ echo "   Lambda ready"
 echo ">> [6/7] EventBridge schedule (07:10 UTC daily — after the PS1 push at 06:15)"
 RULE=cubic-mars-ps2-daily-load
 aws events put-rule --name $RULE --schedule-expression "cron(10 7 * * ? *)" \
-  --description "Daily PS4 run outputs -> Aurora" --state ENABLED >/dev/null
+  --description "Daily PS2 cascade + serial-grain outputs -> Aurora" --state ENABLED >/dev/null
 aws lambda add-permission --function-name "$FN" --statement-id ${RULE}-invoke \
   --action lambda:InvokeFunction --principal events.amazonaws.com \
   --source-arn arn:aws:events:$REGION:$ACCT:rule/$RULE >/dev/null 2>&1 || true

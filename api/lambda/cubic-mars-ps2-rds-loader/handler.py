@@ -13,8 +13,13 @@ VERIFIED against the bucket on 27-Jul-2026: 27 tables present, computed_date
 comment says "push-Lambda watches this bucket's ps2_outputs/ prefix" -- this is
 that Lambda, which was designed for and never built. Nothing needs re-running.
 
-NOTE THE PREFIX IS AT THE BUCKET ROOT, not under chicago/. A sweep of chicago/
-finds nothing and concludes PS2 never exported, which is wrong.
+THE PREFIX IS chicago/ps2_outputs.                            23-Sep-2026
+This note used to say the opposite -- "at the bucket root, not under chicago/"
+-- which was true of an early export and has not been true since. Both
+producers write chicago/ps2_outputs: the patterns notebook via
+PS2_PRODUCTION_EXPORT_PREFIX and the serial-grain notebook via the Processing
+job's submitter. The bucket root is kept in the deploy script's allowed list
+so an old export can still be read, but it is not where a run lands.
 
 WHY THIS LOADER IS SCHEMA-ADAPTIVE
 ----------------------------------
@@ -69,7 +74,7 @@ log.setLevel(logging.INFO)
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 ARTIFACT_BUCKET = os.environ.get(
     "ARTIFACT_BUCKET", "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600")
-PS2_PREFIX = os.environ.get("PS2_PREFIX", "ps2_outputs")
+PS2_PREFIX = os.environ.get("PS2_PREFIX", "chicago/ps2_outputs")
 RDS_SECRET_ID = os.environ.get("RDS_SECRET_ID", "cubic-mars-secret-rds-dev")
 RDS_HOST = os.environ.get("RDS_HOST", "")
 RDS_PORT = int(os.environ.get("RDS_PORT", "5432"))

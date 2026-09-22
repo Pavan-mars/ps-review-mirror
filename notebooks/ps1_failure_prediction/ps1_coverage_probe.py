@@ -74,6 +74,19 @@ lc = {c.casefold(): c for c in dee.columns}
 col = lambda n: lc.get(n.casefold())
 
 C_DEV, C_DAY = col("DEVICE_ID"), col("transit_day")
+C_DTM = col("EVENT_DTM")
+
+# DATE BASIS. The label sessionises on to_date(EVENT_DTM) -- ps1_features.py defines
+# dee_dtm as EVENT_DTM and derives failure_date from it. transit_day is a DIFFERENT
+# column: silver defines it as TO_DATE(CAST(EVENT_DAY_KEY AS STRING),'yyyyMMdd'), and
+# the transit day rolls at the service boundary, not midnight. The two therefore
+# disagree for every event in the overnight window.
+#
+# Coverage must be measured on the SAME basis the label uses, or the observed/unobserved
+# boundary lands one day off at exactly the gap edges -- which is the only place any of
+# this matters. So: EVENT_DTM, and section 0 measures how far the two actually diverge.
+if C_DTM is None:
+    raise RuntimeError("EVENT_DTM absent from the export -- cannot match the label's date basis")
 C_CAT, C_STATE = col("mars_device_category"), col("EVENT_STATE_TYPE_NAME")
 
 # Section 4 must reproduce the LABEL BUILDER's failure-day definition exactly, or its
@@ -93,9 +106,28 @@ if C_KPI is None:
 # NO current-device filter, NO OOS filter, NO Set filter. Coverage is about whether
 # the FEED delivered anything for this fleet that day, not about what it said.
 base = (dee.where(F.col(C_CAT) == FLEET)
-           .where(F.to_date(F.col(C_DAY)).between(F.lit(START), F.lit(END)))
-           .withColumn("_d", F.to_date(F.col(C_DAY)))
-           .withColumn("_m", F.date_format(F.to_date(F.col(C_DAY)), "yyyy-MM")))
+           .where(F.to_date(F.col(C_DTM)).between(F.lit(START), F.lit(END)))
+           .withColumn("_d", F.to_date(F.col(C_DTM)))
+           .withColumn("_m", F.date_format(F.to_date(F.col(C_DTM)), "yyyy-MM")))
+
+# ---------------------------------------------------------------------------
+# 0. How far apart are the two date columns? If they never disagree the basis
+#    question is moot; if they do, everything below had to be on EVENT_DTM.
+# ---------------------------------------------------------------------------
+if C_DAY:
+    _cmp = (base.select(
+                F.to_date(F.col(C_DTM)).alias("by_dtm"),
+                F.to_date(F.col(C_DAY)).alias("by_transit"))
+            .agg(F.count(F.lit(1)).alias("rows"),
+                 F.sum(F.when(F.col("by_dtm") != F.col("by_transit"), 1)
+                        .otherwise(0)).alias("disagree"),
+                 F.sum(F.when(F.col("by_transit").isNull(), 1)
+                        .otherwise(0)).alias("null_transit"))
+            .collect()[0])
+    _r, _dis = _cmp["rows"], _cmp["disagree"] or 0
+    print(f"  date basis   : to_date(EVENT_DTM)   [matches the label builder]")
+    print(f"  transit_day disagrees on {_dis:,} of {_r:,} rows ({_dis / _r if _r else 0:.2%})"
+          f"; NULL transit_day on {_cmp['null_transit'] or 0:,}\n")
 
 daily = (base.groupBy("_m", "_d")
              .agg(F.countDistinct(C_DEV).alias("devices"),

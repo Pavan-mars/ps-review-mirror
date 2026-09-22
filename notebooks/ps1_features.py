@@ -2,6 +2,7 @@
 # Do not edit by hand; regenerate with tooling/build_ps1_features_module.py
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import time
@@ -108,6 +109,80 @@ def _enable_avail_features() -> bool:
 def _enable_warning_features() -> bool:
     """silver.warnings_daily -- degradation precursors. Default OFF until measured."""
     return os.environ.get("PS1_ENABLE_WARNING_FEATURES", "false").strip().lower() == "true"
+
+
+def _completeness_guard() -> bool:
+    """Count OBSERVED days rather than calendar days when sessionising. Default OFF.
+
+    The gap rule cannot tell a device recovering from a gap in the DATA FEED, so when
+    ingestion drops days the first failure after the feed resumes scores as a new
+    episode start. Measured over 38 months of TVM: 2024-03 (2.10 starts/device),
+    2025-11 (1.43), 2026-04 (1.08) and 2025-03 (1.05) against 0.11-0.34 in normal
+    months -- together ~28% of all 9,337 starts, and 2026-04 is inside the test window.
+
+    The guard is a PURE SUPPRESSOR by construction: obs_idx advances at most once per
+    calendar day, so the observed-day delta is always <= datediff and the new predicate
+    accepts a strict subset of what the calendar rule accepts. It can never mint a start.
+
+    Consequence for evaluation: guard-on and guard-off runs are scored against DIFFERENT
+    labels with different positive counts, and manufactured starts are known to dilute
+    discrimination toward 0.5. A guard-on AUC rise is therefore expected for reasons
+    unrelated to model skill. NEVER report a guard-on-vs-guard-off AUC delta as evidence
+    the guard works; compare only runs sharing one fixed guard-on label.
+    """
+    return os.environ.get("PS1_COMPLETENESS_GUARD", "false").strip().lower() == "true"
+
+
+def _coverage_signal() -> str:
+    """Which quantity decides whether a day was observed. "fleet" | "device".
+
+    fleet  -- distinct devices reporting ANY event that day, against PS1_COVERAGE_FLOOR
+              times the median. Cheap, but it measures NETWORK PRESENCE, and a device
+              still emitting some codes stays present even when the codes the label
+              reads have stopped. It may be inert against a code-selective loss.
+    device -- per-device days-present. Needs no threshold at all, and catches a subset
+              of devices going dark, which a fleet average hides.
+
+    Neither is validated. Run notebooks/ps1_failure_prediction/ps1_coverage_probe.py
+    first; it measures both and reports what each would suppress per month.
+    """
+    v = os.environ.get("PS1_COVERAGE_SIGNAL", "fleet").strip().lower()
+    if v not in ("fleet", "device"):
+        raise ValueError(f"PS1_COVERAGE_SIGNAL must be 'fleet' or 'device', got {v!r}")
+    return v
+
+
+def _coverage_floor() -> float:
+    """Fraction of the median device count below which a day counts as unobserved.
+
+    Only used by the "fleet" signal. Raising this is NOT free: because obs_idx is a
+    cumulative sum, a single day wrongly marked unobserved inside a gap stops the index
+    advancing, and since the minimum qualifying gap is exactly 4 calendar days, that
+    collapses the delta to 3 and silently MERGES two genuine episodes. A lost true
+    positive is worse than a manufactured start, which is merely orthogonal noise.
+    """
+    return float(os.environ.get("PS1_COVERAGE_FLOOR", "0.5"))
+
+
+def _coverage_lookback_days() -> int:
+    """Calendar days read BEFORE the frame's min_day so the first in-window failure day
+    has a real predecessor instead of being minted as a start by the window boundary.
+
+    Measured: 2023-07, the first month of the series, carries 557 starts for this reason
+    alone. The requirement is _gap + 1 OBSERVED days, and a calendar span only delivers
+    that when every day in it is observed -- which is what the guard exists to doubt. So
+    this is set generously and the run reports how many observed days it actually bought.
+    """
+    return max(0, int(os.environ.get("PS1_COVERAGE_LOOKBACK_DAYS", "30")))
+
+
+def _coverage_control_month() -> str:
+    """Optional 'YYYY-MM' known to have full coverage. If set, the guard RAISES when it
+    suppresses more than 2% of that month's starts -- the negative control that stops a
+    mis-set floor from passing the acceptance test by cutting real episodes everywhere
+    while the four known-bad months still dominate the absolute counts.
+    """
+    return os.environ.get("PS1_COVERAGE_CONTROL_MONTH", "").strip()
 
 
 def _session_gap_days() -> int:
@@ -720,7 +795,16 @@ def read_spine(
         print(f"[label] horizon          : {horizon_days} day(s)")
         print(f"[label] exclude relieved : {_relief}")
         print(f"[label] session gap days : {_gap}" + ("  (0 = count every event-day)" if not _gap else ""))
-        if _defn != PS1_EVENT_DEFINITION_DEFAULT or horizon_days != 3 or _relief or _gap:
+        _guard = _completeness_guard()
+        if _guard:
+            print(f"[label] completeness grd : ON  signal={_coverage_signal()} "
+                  f"floor={_coverage_floor()} lookback={_coverage_lookback_days()}d")
+            if not _gap:
+                print("[label] !! GUARD ARMED BUT SESSIONISATION IS OFF "
+                      "(PS1_EVENT_SESSION_GAP_DAYS=0). No gap rule runs, so the guard "
+                      "has nothing to modify and will report zeros. That is NOT a clean "
+                      "feed -- it is a guard that never fired.")
+        if _defn != PS1_EVENT_DEFINITION_DEFAULT or horizon_days != 3 or _relief or _gap or _guard:
             print(f"[label] !! NON-DEFAULT LABEL. {TARGET_COL} holds a "
                   f"{_defn}/{horizon_days}-day label, NOT the published 3-day one. "
                   "Do not publish this run to Aurora or the dashboard.")
@@ -761,6 +845,13 @@ def read_spine(
         ).collect()[0]
         min_day = bounds["_min_day"]
         max_day = bounds["_max_day"]
+        # Under the guard the read starts EARLIER than the first labellable day, purely
+        # so the lag has a real predecessor; those pre-window rows are filtered back out
+        # after sessionisation. Without the guard this is date_add(min_day, 1) exactly as
+        # before -- the earliest failure date that can label a day on the spine.
+        _lookback = _coverage_lookback_days() if (_guard and _gap > 0) else 0
+        _read_start = (min_day - _dt.timedelta(days=_lookback)) if _lookback \
+            else (min_day + _dt.timedelta(days=1))
         failure_days = (
             dee_raw.alias("dee")
             .join(
@@ -772,8 +863,7 @@ def read_spine(
             .where(F.col(f"dee.{dee_cat}") == device_category)
             .transform(_apply_event_definition)
             .where(
-                F.to_date(F.col(f"dee.{dee_dtm}"))
-                >= F.date_add(F.lit(min_day), 1)
+                F.to_date(F.col(f"dee.{dee_dtm}")) >= F.lit(_read_start)
             )
             .where(
                 F.to_date(F.col(f"dee.{dee_dtm}"))
@@ -810,21 +900,213 @@ def read_spine(
             print(f"[label] relief excluded  : {_before - _after:,} of {_before:,} failure days")
 
         if _gap > 0:
-            _w = Window.partitionBy("DEVICE_ID").orderBy("failure_date")
-            _prev = F.lag("failure_date").over(_w)
             failure_days = failure_days.persist(StorageLevel.MEMORY_AND_DISK)
             _pre = failure_days.count()
-            failure_days = (
-                failure_days
-                .withColumn("_prev_fail", _prev)
-                .where(F.col("_prev_fail").isNull()
-                       | (F.datediff(F.col("failure_date"), F.col("_prev_fail")) > _gap))
-                .drop("_prev_fail")
-                .persist(StorageLevel.MEMORY_AND_DISK)
-            )
-            _post = failure_days.count()
-            print(f"[label] sessionised      : {_pre:,} failure days -> {_post:,} episode starts "
-                  f"(gap > {_gap}d)")
+            _wf = Window.partitionBy("DEVICE_ID").orderBy("failure_date")
+
+            if not _guard:
+                failure_days = (
+                    failure_days
+                    .withColumn("_prev_fail", F.lag("failure_date").over(_wf))
+                    .where(F.col("_prev_fail").isNull()
+                           | (F.datediff(F.col("failure_date"), F.col("_prev_fail")) > _gap))
+                    .drop("_prev_fail")
+                    .persist(StorageLevel.MEMORY_AND_DISK)
+                )
+                _post = failure_days.count()
+                print(f"[label] sessionised      : {_pre:,} failure days -> {_post:,} episode starts "
+                      f"(gap > {_gap}d)")
+            else:
+                _signal = _coverage_signal()
+                _floor = _coverage_floor()
+
+                # The calendar MUST span the whole failure_days read range on both sides.
+                # A failure day outside it joins to nothing, obs_idx is NULL, and -- unlike
+                # today's NULL on _prev_fail, which isNull() catches and KEEPS -- a NULL in
+                # the arithmetic makes the predicate NULL and the row is silently DROPPED.
+                _cal_start = _read_start
+                _cal_end = max_day + _dt.timedelta(days=horizon_days)
+                _n_cal = (_cal_end - _cal_start).days + 1
+                _calendar = (
+                    spark.range(_n_cal)
+                    .select(F.date_add(F.lit(_cal_start), F.col("id").cast("int")).alias("cal_day"))
+                )
+
+                # Coverage is measured on to_date(EVENT_DTM) -- the SAME expression the
+                # label uses. transit_day is a different column (it rolls at the service
+                # boundary, not midnight), and keying the calendar on it would put the
+                # observed/unobserved boundary one day off at exactly the gap edges, which
+                # is the only place any of this matters.
+                # No OOS filter, no Set filter, no current-device filter: the question is
+                # whether the FEED delivered anything, not what it said.
+                _cov = (
+                    dee_raw
+                    .where(F.col(dee_cat) == device_category)
+                    .where(F.to_date(F.col(dee_dtm)).between(F.lit(_cal_start), F.lit(_cal_end)))
+                    .select(F.col(dee_dev).cast("string").alias("DEVICE_ID"),
+                            F.to_date(F.col(dee_dtm)).alias("cal_day"))
+                )
+
+                if _signal == "fleet":
+                    # Exact countDistinct, not approx. At ~465 devices over ~1,200 days the
+                    # exact count is free next to the scan, and an approximation that flips
+                    # one day across the floor inside a gap MERGES two genuine episodes.
+                    _daily = _cov.groupBy("cal_day").agg(
+                        F.countDistinct("DEVICE_ID").alias("dev_cnt"))
+                    _med = _daily.approxQuantile("dev_cnt", [0.5], 0.001)[0]
+                    _thresh = _floor * _med
+                    _flags = (
+                        _calendar.join(_daily, "cal_day", "left")
+                        .withColumn("_obs", F.when(
+                            F.coalesce(F.col("dev_cnt"), F.lit(0)) >= F.lit(_thresh), 1).otherwise(0))
+                    )
+                    _wc = (Window.orderBy("cal_day")
+                           .rowsBetween(Window.unboundedPreceding, Window.currentRow))
+                    _idx = (_flags.withColumn("obs_idx", F.sum("_obs").over(_wc))
+                                  .select("cal_day", "obs_idx", "_obs", "dev_cnt")
+                                  .persist(StorageLevel.MEMORY_AND_DISK))
+                    _n_unobs = _idx.where(F.col("_obs") == 0).count()
+                    print(f"[label] coverage (fleet) : median {_med:,.0f} devices/day, "
+                          f"floor {_thresh:,.0f} ({_floor:.0%})")
+                    _join_idx = _idx.select(F.col("cal_day").alias("_ix_day"), "obs_idx")
+                    failure_days = (
+                        failure_days
+                        .join(F.broadcast(_join_idx),
+                              F.col("failure_date") == F.col("_ix_day"), "left")
+                        .drop("_ix_day")
+                    )
+                else:
+                    # Per-device days-present. No threshold at all: a day is observed for a
+                    # device iff that device emitted something. Catches a subset going dark,
+                    # which a fleet average averages away.
+                    _dev_days = _cov.distinct().withColumn("_obs_raw", F.lit(1))
+                    _devs = failure_days.select("DEVICE_ID").distinct()
+                    _grid = (
+                        _devs.crossJoin(_calendar)
+                        .join(_dev_days, ["DEVICE_ID", "cal_day"], "left")
+                        .withColumn("_obs", F.coalesce(F.col("_obs_raw"), F.lit(0)))
+                        .drop("_obs_raw")
+                    )
+                    _wc = (Window.partitionBy("DEVICE_ID").orderBy("cal_day")
+                           .rowsBetween(Window.unboundedPreceding, Window.currentRow))
+                    _idx = (_grid.withColumn("obs_idx", F.sum("_obs").over(_wc))
+                                 .select("DEVICE_ID", "cal_day", "obs_idx", "_obs")
+                                 .persist(StorageLevel.MEMORY_AND_DISK))
+                    _n_unobs = _idx.where(F.col("_obs") == 0).count()
+                    print(f"[label] coverage (device): per-device days-present, no threshold")
+                    _join_idx = _idx.select(F.col("DEVICE_ID").alias("_ix_dev"),
+                                            F.col("cal_day").alias("_ix_day"), "obs_idx")
+                    failure_days = (
+                        failure_days
+                        .join(_join_idx,
+                              (F.col("DEVICE_ID") == F.col("_ix_dev"))
+                              & (F.col("failure_date") == F.col("_ix_day")), "left")
+                        .drop("_ix_dev", "_ix_day")
+                    )
+
+                print(f"[label] calendar         : {_n_cal:,} days evaluated "
+                      f"[{_cal_start} .. {_cal_end}], {_n_unobs:,} marked UNOBSERVED")
+                if _n_unobs == 0:
+                    print("[label] !! THE FLOOR FIRED AND FOUND NOTHING. Every day is observed, "
+                          "so obs_idx advances exactly like datediff and this run is "
+                          "BIT-IDENTICAL to the guard being off. Zero suppression below is "
+                          "NOT evidence the feed is clean -- it means this signal cannot see "
+                          "the defect. Run ps1_coverage_probe.py and try PS1_COVERAGE_SIGNAL=device.")
+
+                # obs_idx must never be NULL here: a NULL would make the predicate NULL and
+                # drop a real start without trace. Fail loudly instead.
+                _orphans = failure_days.where(F.col("obs_idx").isNull()).count()
+                if _orphans:
+                    raise RuntimeError(
+                        f"[label] completeness guard: {_orphans:,} failure days fell outside "
+                        f"the observed calendar [{_cal_start} .. {_cal_end}]. The calendar must "
+                        f"span the full failure_days read range or real episode starts are "
+                        f"silently dropped.")
+
+                # Did the lookback actually buy _gap + 1 OBSERVED days? A calendar span
+                # delivers that only when every day in it is observed, which is exactly the
+                # assumption this guard abandons.
+                if _lookback:
+                    _pre_obs = (_idx.where((F.col("cal_day") < F.lit(min_day)) & (F.col("_obs") == 1))
+                                    .select("cal_day").distinct().count())
+                    print(f"[label] lookback         : {_lookback}d calendar bought "
+                          f"{_pre_obs:,} observed days before {min_day} (need > {_gap})")
+                    if _pre_obs <= _gap:
+                        raise RuntimeError(
+                            f"[label] completeness guard: the {_lookback}-day lookback yielded only "
+                            f"{_pre_obs} observed days before {min_day}, but the gap rule needs more "
+                            f"than {_gap}. Raise PS1_COVERAGE_LOOKBACK_DAYS, or the first in-window "
+                            f"failure day per device will be minted as a start by the boundary.")
+
+                # The escape stays attached to PREDECESSOR EXISTENCE, never to the
+                # arithmetic -- the same shape as the calendar rule it replaces.
+                failure_days = (
+                    failure_days
+                    .withColumn("_prev_fail", F.lag("failure_date").over(_wf))
+                    .withColumn("_prev_idx", F.lag("obs_idx").over(_wf))
+                    .withColumn("_kept", F.col("_prev_idx").isNull()
+                                | ((F.col("obs_idx") - F.col("_prev_idx")) > _gap))
+                    .withColumn("_was_start", F.col("_prev_fail").isNull()
+                                | (F.datediff(F.col("failure_date"), F.col("_prev_fail")) > _gap))
+                    .persist(StorageLevel.MEMORY_AND_DISK)
+                )
+
+                _in_win = F.col("failure_date") >= F.lit(min_day + _dt.timedelta(days=1))
+                _rep = (
+                    failure_days.where(_in_win)
+                    .withColumn("_m", F.date_format(F.col("failure_date"), "yyyy-MM"))
+                    .groupBy("_m")
+                    .agg(F.sum(F.when(F.col("_was_start"), 1).otherwise(0)).alias("before"),
+                         F.sum(F.when(F.col("_kept"), 1).otherwise(0)).alias("after"))
+                    .orderBy("_m").collect()
+                )
+                _tb = sum(r["before"] for r in _rep)
+                _ta = sum(r["after"] for r in _rep)
+                print(f"[label] guard suppressed : {_tb - _ta:,} of {_tb:,} episode starts "
+                      f"({(_tb - _ta) / _tb if _tb else 0:.1%})")
+                _hits = [r for r in _rep if r["before"] > r["after"]]
+                for r in sorted(_hits, key=lambda x: -(x["before"] - x["after"]))[:12]:
+                    print(f"[label]   {r['_m']}  {r['before'] - r['after']:6,} of "
+                          f"{r['before']:6,} ({(r['before'] - r['after']) / r['before']:5.1%})")
+                if len(_hits) > 12:
+                    print(f"[label]   ... and {len(_hits) - 12} more months with suppression")
+                print(f"[label]   months with suppression: {len(_hits)} of {len(_rep)} "
+                      "-- CONCENTRATED is the pass condition; spread evenly means the floor "
+                      "is cutting real episodes")
+
+                # Suppression at a preceding gap of exactly _gap + 1 is the dangerous case:
+                # one day wrongly unobserved there merges two genuine episodes.
+                _tight = (failure_days.where(_in_win & F.col("_was_start") & ~F.col("_kept"))
+                          .withColumn("_calgap", F.datediff(F.col("failure_date"), F.col("_prev_fail")))
+                          .groupBy("_calgap").count().orderBy("_calgap").limit(6).collect())
+                if _tight:
+                    print("[label]   suppressed by preceding calendar gap: "
+                          + ", ".join(f"{r['_calgap']}d={r['count']:,}" for r in _tight)
+                          + f"  (a {_gap + 1}d gap is one unobserved day from being merged)")
+
+                _ctrl = _coverage_control_month()
+                if _ctrl:
+                    _cr = [r for r in _rep if r["_m"] == _ctrl]
+                    if not _cr:
+                        raise RuntimeError(f"[label] control month {_ctrl!r} is not in this window")
+                    _b, _a = _cr[0]["before"], _cr[0]["after"]
+                    _frac = (_b - _a) / _b if _b else 0.0
+                    print(f"[label] control {_ctrl}  : {_b - _a:,} of {_b:,} suppressed ({_frac:.2%})")
+                    if _frac > 0.02:
+                        raise RuntimeError(
+                            f"[label] completeness guard: control month {_ctrl} lost {_frac:.1%} of its "
+                            f"episode starts, above the 2% tolerance. The floor is cutting genuine "
+                            f"episodes, not manufactured ones. Lower PS1_COVERAGE_FLOOR.")
+
+                failure_days = (
+                    failure_days
+                    .where(F.col("_kept") & _in_win)
+                    .drop("_prev_fail", "_prev_idx", "_kept", "_was_start", "obs_idx")
+                    .persist(StorageLevel.MEMORY_AND_DISK)
+                )
+                _post = failure_days.count()
+                print(f"[label] sessionised      : {_pre:,} failure days -> {_post:,} episode starts "
+                      f"(observed-day gap > {_gap}, signal={_signal})")
 
         seq = spark.range(1, horizon_days + 1).select(F.col("id").cast("int").alias("n"))
         label_days = (

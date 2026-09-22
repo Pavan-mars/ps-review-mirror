@@ -44,7 +44,10 @@ import {
 } from './V4theme';
 
 const num = (v) => (v === null || v === undefined || Number.isNaN(Number(v)) ? 0 : Number(v));
-const sumBy = (rows, k, f) => (rows || []).reduce((t, r) => (f && !f(r) ? t : t + num(r[k])), 0);
+const sumBy = (rows, k, f) => {
+  const get = typeof k === 'function' ? k : (r) => r[k];
+  return (rows || []).reduce((t, r) => (f && !f(r) ? t : t + num(get(r))), 0);
+};
 
 // ---------------------------------------------------------------------
 // Overview feeds. Deliberately the CHEAPEST honest source for each headline,
@@ -223,7 +226,18 @@ function EstateOverview({ onOpen }) {
     if (!st && !trend.length) return null;
     const days = new Set(trend.map((r) => r.event_date)).size;
     const devices = num(all && all.eligible_devices);
-    const hours = sumBy(trend, 'hardware_oos_minutes') / 60;
+    // AVAILABILITY IS NOT THE SUM OF COMPONENT EPISODES.      23-Sep-2026
+    // Same column, same mistake as the PS2 tab: hardware_oos_minutes adds
+    // every component episode separately, so concurrent episodes on one
+    // device are counted two and three times. Measured on the 29-Aug run the
+    // overstatement is 4.63x on gates, 2.53x on TVMs, 2.05x on validators --
+    // the last of which implied 22.9 out-of-service hours per device per day,
+    // which a 24-hour day cannot contain. The wall-clock union per device-day
+    // is published beside it and the route returns both.
+    const hours = sumBy(trend, (r) => {
+      const u = r.hardware_oos_union_minutes;
+      return u === null || u === undefined || u === '' ? num(r.hardware_oos_minutes) : num(u);
+    }) / 60;
     const capacity = devices * days * 24;
     return [
       { k: 'Devices in scope', v: nfmt(devices) },

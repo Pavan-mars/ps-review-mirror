@@ -432,7 +432,7 @@ function ImpactView({ feeds }) {
                         <span style={{ fontSize: 13.1, fontWeight: 700, color: INK }}>{f.fleet}</span>
                       </div>
                       <div style={{ marginTop: 10, fontSize: 19.8, fontWeight: 700, color: INK }}>{nfmt(f.hours)}</div>
-                      <div style={{ ...font.micro }}>device-hours out of service</div>
+                      <div style={{ ...font.micro }}>device-hours out of service (wall clock)</div>
                       <div style={{ marginTop: 12, display: 'grid', gap: 4 }}>
                         <Row k="OOS onsets" v={nfmt(f.onsets)} />
                         <Row k="Validated failures" v={nfmt(f.validated)} />
@@ -461,7 +461,8 @@ function ImpactView({ feeds }) {
       </Section>
 
       <Grid cols="repeat(auto-fit,minmax(420px,1fr))">
-        <Panel title="Out-of-service hours by day" hint="Episode duration attributed to the day the episode opened">
+        <Panel title="Out-of-service hours by day"
+               hint="Wall-clock device-hours per day: concurrent component episodes on one device count once, attributed to the day the episode opened">
           <Feed feed={feeds.trend} height={260}>
             {() => <Trend data={minutesTrend} xKey="event_date" series={FLEET_SERIES} height={260} area fmt={_fmt1} />}
           </Feed>

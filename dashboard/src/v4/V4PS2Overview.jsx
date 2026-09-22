@@ -267,9 +267,24 @@ function sumBy(rows, key, filter) {
 //
 // Component burden keeps the raw column, but only where the label says so:
 // per-serial minutes cannot double-count against themselves.
-const oosUnion = (r) => {
+const hasUnion = (r) => {
   const u = r.hardware_oos_union_minutes;
-  return u === null || u === undefined || u === '' ? num(r.hardware_oos_minutes) : num(u);
+  return !(u === null || u === undefined || u === '');
+};
+const oosUnion = (r) => (hasUnion(r) ? num(r.hardware_oos_union_minutes) : num(r.hardware_oos_minutes));
+
+// A SILENT FALLBACK REINTRODUCES THE DEFECT INVISIBLY.        23-Sep-2026
+// sql/46 is additive: rows written before v2.5.4 keep NULL in the union
+// columns until a v2.5.4 loader run fills them. Falling back to the episode
+// sum keeps the page working on old rows -- and shows the 2-4.6x overstated
+// figure again, under a label that now promises wall-clock, with nothing on
+// screen to say which one a reader is looking at. So count the fallback and
+// print it. Silence here would be the same mistake in a new place.
+const unionCoverage = (rows) => {
+  const n = (rows || []).length;
+  if (!n) return { n: 0, with: 0, share: 1 };
+  const w = rows.filter(hasUnion).length;
+  return { n, with: w, share: w / n };
 };
 
 // THE WHOLE TABLE, NOT THE PAGE.                              20-Sep-2026
@@ -372,6 +387,8 @@ function ImpactView({ feeds }) {
   // announced "0.0% of available device-hours ... 0 device-hours recorded
   // against 0 available, across 0 days and 0 devices". A dead route read as
   // an estate that lost nothing.
+  const unionCov = useMemo(() => unionCoverage(trend), [trend]);
+
   const heroPending = ['trend', 'exposure', 'labelSummary']
     .some((k) => feeds[k].loading || feeds[k].idle || feeds[k].error);
   const loading = heroPending;
@@ -393,6 +410,13 @@ function ImpactView({ feeds }) {
           <Stat label="Devices in scope" value={loading ? '--' : nfmt(totals.devices)} foot="TVMs, fare gates and bus validators" />
           <Stat label="Transactions exposed" value={loading ? '--' : compact(totals.txn)} foot="during an open OOS episode" />
         </Grid>
+        {!loading && unionCov.n > 0 && unionCov.share < 1 && (
+          <Note accent={STATUS.serious.fill}>
+            {unionCov.share === 0
+              ? `None of the ${nfmt(unionCov.n)} day-fleet rows carry the wall-clock union column, so every figure above falls back to the sum of component episodes. That sum double-counts concurrent episodes on one device and was measured 2.05-4.63x over the true value. Re-run the loader against a v2.5.4 producer run to fill it.`
+              : `${nfmt(unionCov.n - unionCov.with)} of ${nfmt(unionCov.n)} day-fleet rows carry no wall-clock union value and fall back to the sum of component episodes, which overstates their contribution. Those rows predate v2.5.4.`}
+          </Note>
+        )}
       </Section>
 
 

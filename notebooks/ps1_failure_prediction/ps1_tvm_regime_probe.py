@@ -34,6 +34,8 @@
 #   The bare filename is correct -- a notebook's working directory is its own folder.
 #   Read-only. No writes, no Aurora, no registration.
 # =============================================================================
+import calendar
+
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
@@ -91,23 +93,45 @@ starts = (fd.withColumn("_prev", F.lag("d").over(w))
             .groupBy("_m").agg(F.count(F.lit(1)).alias("episode_starts")))
 
 rows = (monthly.join(starts, "_m", "left").orderBy("_m").collect())
+
+# Three different rates, and keeping them apart is the point of this table.
+#   ev/fail-day  events / failure-days. The denominator is ENDOGENOUS -- it is
+#                derived from the same event stream -- so it moves when failure
+#                days move, not only when volume moves. It is NOT fleet exposure.
+#                An earlier revision printed this column under the heading
+#                "ev/dev-day", which is exactly what it is not: Nov-2025 reads as
+#                a 1.3x spike on it while true exposure is flat, +5% on October.
+#   ev/dev-day   events / (devices x calendar days). The true fleet exposure.
+#   saturation   failure-days / (devices x calendar days). The share of the fleet
+#                sitting in a failed state, and the one that governs the LABEL:
+#                above ~0.85 the >3-day gap rule can barely fire, episode starts
+#                collapse, and any AUC measured there rests on a near-empty
+#                positive class.
 print(f"  {'month':8s} {'devices':>8s} {'KPI OOS':>10s} {'fail days':>10s} {'starts':>8s} "
-      f"{'ev/dev-day':>11s} {'start yield':>12s}")
+      f"{'ev/fail-day':>12s} {'ev/dev-day':>11s} {'saturation':>11s} {'start yield':>12s}")
 prev_yield = None
 for r in rows:
     ev, fdys = r["kpi_oos_events"], r["failure_days"]
     st = r["episode_starts"] or 0
-    per = ev / fdys if fdys else 0
+    _dim = calendar.monthrange(int(r["_m"][:4]), int(r["_m"][5:7]))[1]
+    _dev_days = r["devices"] * _dim
+    per = ev / fdys if fdys else 0                    # endogenous denominator
+    expo = ev / _dev_days if _dev_days else 0         # true fleet exposure
+    sat = fdys / _dev_days if _dev_days else 0        # fleet share in a failed state
     yld = st / fdys if fdys else 0
     flag = ""
-    if prev_yield and prev_yield > 0 and abs(yld - prev_yield) / prev_yield > 0.35:
+    if sat > 0.85:
+        flag = "  <== SATURATED: label degenerate"
+    elif prev_yield and prev_yield > 0 and abs(yld - prev_yield) / prev_yield > 0.35:
         flag = "  <== SHIFT"
     prev_yield = yld
     print(f"  {r['_m']:8s} {r['devices']:8,} {ev:10,} {fdys:10,} {st:8,} "
-          f"{per:11.2f} {yld:12.3f}{flag}")
+          f"{per:12.2f} {expo:11.2f} {sat:10.1%} {yld:12.3f}{flag}")
 
 print("\n  devices      -> (A) fleet change")
-print("  ev/dev-day   -> (B) volume change")
+print("  ev/dev-day   -> (B) volume change. Read THIS, never ev/fail-day.")
+print("  saturation   -> above ~0.85 the >3-day gap rule cannot fire. A month flagged")
+print("                  SATURATED must not be pooled into a headline AUC.")
 print("  start yield  -> (D) DENSITY: starts per failure day. Falling yield means")
 print("                  failures are clustering, so the >3-day gap suppresses starts.")
 

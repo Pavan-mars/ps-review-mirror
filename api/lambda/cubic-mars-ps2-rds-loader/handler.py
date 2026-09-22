@@ -289,8 +289,27 @@ def list_tables(bucket, prefix):
 
 
 def latest_partition(bucket, prefix, table):
-    """Newest computed_date=<d>/run_id=<r> under one table. Returns (date, key_prefix)."""
-    best = None
+    """Newest computed_date=<d>/run_id=<r> under one table. Returns (date, key_prefix).
+
+    TIE-BREAK IS BY WRITE TIME, NOT BY run_id.                  22-Sep-2026
+    This used to compare the tuple (computed_date, run_id) lexicographically.
+    computed_date is an ISO date, so that half is right -- but run_id is a
+    random UUID, so when one computed_date holds TWO runs the winner was
+    decided by hex sort order rather than by which ran last.
+
+    That is not hypothetical. Re-running a notebook for the same as-of date is
+    the normal way to ship a fix, and it produces exactly that shape. With
+    run_id be8e6fc7... already in place, a fresh UUID only wins if its first
+    character is c-f: about a one-in-four chance the new data is served and
+    three-in-four that the loader keeps publishing the old partition -- with a
+    green status and no error, because it did find a valid partition and did
+    load it.
+
+    computed_date still decides first, so an older run for a NEWER date never
+    loses to a newer run for an older one. Only the tie is resolved by time.
+    """
+    # (computed_date, run_id) -> newest LastModified seen under that prefix.
+    seen = {}
     token = None
     root = f"{prefix.rstrip('/')}/{table}/"
     while True:
@@ -301,15 +320,23 @@ def latest_partition(bucket, prefix, table):
         for o in r.get("Contents", []):
             m = re.search(r"computed_date=([\d-]+)/run_id=([0-9a-f\-]+)/", o["Key"])
             if m:
-                cand = (m.group(1), m.group(2))
-                if best is None or cand > best:
-                    best = cand
+                k = (m.group(1), m.group(2))
+                lm = o["LastModified"]
+                if k not in seen or lm > seen[k]:
+                    seen[k] = lm
         if not r.get("IsTruncated"):
             break
         token = r.get("NextContinuationToken")
-    if not best:
+    if not seen:
         return None, None
-    return best[0], f"{root}computed_date={best[0]}/run_id={best[1]}/"
+    # Sort on (computed_date, newest write under that run). The date is
+    # compared as a string, which is correct for ISO dates.
+    (cdate, run_id), _ = max(seen.items(), key=lambda kv: (kv[0][0], kv[1]))
+    same_date = [k for k in seen if k[0] == cdate]
+    if len(same_date) > 1:
+        print(f"[latest_partition] {table}: {len(same_date)} runs share computed_date={cdate}; "
+              f"chose run_id={run_id} as the most recently written.")
+    return cdate, f"{root}computed_date={cdate}/run_id={run_id}/"
 
 
 def read_parts(bucket, key_prefix):

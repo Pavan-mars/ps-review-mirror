@@ -39,12 +39,15 @@
 #                 dark individually, which (1) averages away
 #
 # WHERE TO RUN
-#   Inside any PS1 fleet notebook's kernel, AFTER Spark is up. Run cells 0-5, then:
+#   Inside any PS1 fleet notebook's kernel, AFTER Spark is up. Run the cells up to and
+#   including the one that defines S3_SILVER_RUNTIME -- that is CELL 5 on GATE and TVM,
+#   CELL 7 on VALIDATOR -- then:
 #
 #       exec(open("ps1_coverage_probe.py").read())
 #
 #   The bare filename is correct -- a notebook's working directory is its own folder.
-#   Set FLEET below, or leave it to follow the notebook's own DEVICE_CATEGORY.
+#   FLEET follows the notebook's own DEVICE_CAT; override it below only to cross-check
+#   one fleet from another fleet's kernel.
 #   Read-only. No writes, no Aurora, no registration.
 # =============================================================================
 import calendar as _cal
@@ -265,6 +268,10 @@ w = Window.partitionBy("dev").orderBy("d")
 starts = (fd.withColumn("_prev", F.lag("d").over(w))
             .withColumn("_gapdays", F.datediff(F.col("d"), F.col("_prev")))
             .where(F.col("_prev").isNull() | (F.col("_gapdays") > 3)))
+# Persist: the loop below evaluates this once per floor, and without it each pass
+# re-scans the whole category slice of device_event_enriched.
+starts = starts.persist()
+print(f"  episode starts under the CALENDAR rule: {starts.count():,}\n")
 
 for floor in FLOORS:
     observed = {d for _, days in by_month.items() for d, dv, _ in days if dv >= floor * med}
@@ -301,3 +308,4 @@ print("the fleet-level signal is wrong and section 3 tells you whether a per-dev
 print("would work instead.")
 print("=" * 112)
 daily.unpersist()
+starts.unpersist()

@@ -28,7 +28,13 @@
 # rows x 57 columns into pandas -- then computes per-serial phi matrices, HMM
 # fits and association rules across ~4,549 serials. Its own comment says a
 # kernel death here is almost always OOM and to prefer a memory-optimized
-# size. Hence ml.r5.2xlarge (64 GiB) as the default rather than an m5.
+# size. Hence an r-family default rather than an m5.
+#
+# CHECK THE QUOTA BEFORE CHANGING IT. Processing-job quotas are separate from
+# the Studio and training ones, and most types in this account sit at zero --
+# ml.r5.2xlarge among them, which is what this defaulted to until a submit
+# failed with ResourceLimitExceeded. What has quota:
+#   aws service-quotas list-service-quotas --service-code sagemaker #     --max-items 500 --query "Quotas[?contains(QuotaName,'processing job #     usage') && Value>\`0\`].[QuotaName,Value]" --output text | sort
 #
 # Usage:
 #   PS2SG_COMPUTED_DATE=2026-08-29 python run_processing_job.py \
@@ -68,7 +74,13 @@ def parse_args():
     ap.add_argument("--code-prefix", default="chicago/ps2/processing_code")
     ap.add_argument("--runs-prefix", default="chicago/ps2/processing_runs")
     # Memory-optimized by the notebook's own advice; see the header.
-    ap.add_argument("--instance-type", default="ml.r5.2xlarge")
+    # ml.r5.2xlarge was the obvious pick and this account's Processing quota
+    # for it is ZERO -- the provisioned quotas are Studio and training ones.
+    # ml.r7i.2xlarge is the same 8 vCPU / 64 GiB a generation newer, quota 5.
+    # For a first run prefer --instance-type ml.r7i.4xlarge (128 GiB): OOM is
+    # this notebook's named failure mode, it prints peak RSS after every
+    # family, and one run on headroom tells you what to set here permanently.
+    ap.add_argument("--instance-type", default="ml.r7i.2xlarge")
     ap.add_argument("--instance-count", type=int, default=1)
     ap.add_argument("--volume-gb", type=int, default=50)
     ap.add_argument("--max-runtime-sec", type=int, default=14400,

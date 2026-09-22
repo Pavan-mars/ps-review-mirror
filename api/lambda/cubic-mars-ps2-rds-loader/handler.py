@@ -106,6 +106,17 @@ ALIASES = {
 # Every entry below was read off the dry run's own columns_dropped /
 # columns_missing lists against the real Aurora schema. None is guessed.
 COL_ALIASES = {
+    # The notebook writes this column as "window"; the table calls it
+    # "window_bucket" and has it IN THE PRIMARY KEY (sql/09). Without the
+    # alias the name never matches, window_bucket drops out of the effective
+    # key -- keys = [k for k in pk if k in use] -- and the 450 source rows
+    # (90 subsystem pairs x 5 time windows) collapse to 90. The loader then
+    # refuses, correctly, but its message blames the schema when the fault is
+    # here. The serial-grain table is NOT affected: its column really is
+    # called "window", which is why that one has loaded all along.
+    "ps2_conditional_prob": {
+        "window": "window_bucket",
+    },
     "ps2_association_rules_device": {
         "antecedents": "antecedent_subsystem",
         "consequents": "consequent_subsystem",
@@ -464,8 +475,20 @@ def lambda_handler(event, context):
             # Reported here rather than discovered by Postgres, because Postgres
             # discovers it as a 23505 that aborts the transaction and rolls back
             # every table already staged.
-            collapse = find_pk_collapse(shaped, use, pk_columns(c, tgt))
+            _pk_all = pk_columns(c, tgt)
+            collapse = find_pk_collapse(shaped, use, _pk_all)
             if collapse:
+                # WHICH KIND OF PROBLEM IS THIS?                  22-Sep-2026
+                # A collapse has two very different causes and the message used
+                # to assert the first unconditionally:
+                #   (a) the target genuinely lacks a column that separates the
+                #       rows -- a schema fix, and
+                #   (b) the target HAS it, in the primary key, under a
+                #       different name the source does not use -- an alias fix.
+                # ps2_conditional_prob was (b) and got told it was (a), which
+                # pointed at a migration instead of one COL_ALIASES line.
+                # pk_dropped is the tell: a PK column the source never filled.
+                pk_dropped = [k for k in _pk_all if k not in use]
                 res["refused"][src_table] = {
                     "reason": (
                         f"{collapse['rows_in']} source rows collapse to "
@@ -473,9 +496,19 @@ def lambda_handler(event, context):
                         f"primary key {collapse['pk']} -- "
                         f"{collapse['rows_lost_if_forced']} rows would be lost or "
                         f"rejected. The column(s) that separate them are "
-                        f"{collapse['separating_columns']}, which {tgt} does not "
-                        f"have. This is a schema fix (add the column and put it in "
-                        f"the PK), not a mapping fix."),
+                        f"{collapse['separating_columns']}. "
+                        + (
+                            f"{tgt} DOES have primary-key column(s) {pk_dropped} that "
+                            f"nothing in the source fills -- most likely the same field "
+                            f"under another name. Add a COL_ALIASES entry for "
+                            f"{src_table} mapping the source column onto {pk_dropped}; "
+                            f"this is a MAPPING fix, not a schema one."
+                            if pk_dropped else
+                            f"{tgt} has no column that tells them apart. This is a "
+                            f"SCHEMA fix (add the column and put it in the PK), not a "
+                            f"mapping one."
+                        )
+                    ),
                     **collapse}
                 continue
 

@@ -73,6 +73,15 @@ def _evq_prior_only() -> bool:
     return os.environ.get("PS1_EVQ_PRIOR_ONLY", "false").strip().lower() == "true"
 
 
+def _enable_kpi_features() -> bool:
+    """silver.kpi_daily contract-performance features. Default OFF.
+
+    Measured coverage: TVM 7.7% of device-days, GATE 0.3%, VALIDATOR 0. Expect it
+    to help TVM and do nothing elsewhere.
+    """
+    return os.environ.get("PS1_ENABLE_KPI_FEATURES", "false").strip().lower() == "true"
+
+
 def _enable_event_quality_features() -> bool:
     """device_event_enriched duration + component attribution. Default OFF.
 
@@ -124,6 +133,7 @@ IS_LOCAL_SPARK = False
 _PS1_DF_WARN = None
 _PS1_DF_AVAIL = None
 _PS1_DF_EVQ = None
+_PS1_DF_KPI = None
 shuffle_partitions = 200
 
 
@@ -435,6 +445,29 @@ if _exclude_gap_features():
     print(f"[features] PS1_EXCLUDE_GAP_FEATURES=true -- withheld "
           f"{len(GAP_ENCODING_FEATURES)} gap-encoding features; what survives is the "
           f"model's real predictive skill")
+
+
+# -- silver.kpi_daily: contract performance, gap-aware windows ---------------
+# Windows start at day 4. Measured lift of a KPI miss preceding an episode start:
+# TVM 0.24x at lag 1d, 0.76x at 3d, 2.92x at 7d -- below 1.0 at short lags because
+# a miss on D-1 makes an episode start on D impossible under the >3-day gap rule.
+# Days 1-3 are mechanically anti-correlated, so they are excluded.
+KPI_BASE_COLS = [
+    "kpi_rows",           # KPI rows recorded that day
+    "kpi_miss",           # rows failing meets_target
+    "kpi_core_miss",      # rows failing meets_target on a Core KPI
+    "kpi_value_min",      # worst KPI value that day
+    "kpi_deduction_max",  # largest contractual deduction that day
+]
+KPI_WINDOWS = ((14, 4), (30, 4))     # (days back, days excluded at the near end)
+KPI_FEATURE_COLS = [f"{c}_{lo}to{hi}d" for c in KPI_BASE_COLS for hi, lo in KPI_WINDOWS]
+if _enable_kpi_features():
+    for _cfg in FLEET_CONFIG.values():
+        for _c in KPI_FEATURE_COLS:
+            if _c not in _cfg.all_candidate_features:
+                _cfg.all_candidate_features.append(_c)
+    print(f"[features] kpi_daily enabled: +{len(KPI_FEATURE_COLS)} candidate features "
+          f"(windows start at day 4; same-day never used)")
 
 
 def _ensure_date_column(frame, column="transit_day"):
@@ -1148,8 +1181,49 @@ def add_auxiliary(
             df_evq = None
             print(f"WARNING: device_event_enriched quality rollup skipped ({exc})")
 
-    global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ
+    # -- silver.kpi_daily -> device-day contract-performance rollup -------------
+    df_kpi = None
+    if _enable_kpi_features():
+        try:
+            _kp_raw = spark.read.parquet(f"{s3_silver}/kpi_daily/")
+            _kp_lc = {c.casefold(): c for c in _kp_raw.columns}
+            _p_dev, _p_day = _kp_lc.get("device_id"), _kp_lc.get("transit_day")
+            _p_cat = _kp_lc.get("mars_device_category")
+            _p_mt = _kp_lc.get("meets_target")
+            _p_crit = _kp_lc.get("kpi_criticality")
+            _p_val = _kp_lc.get("kpi_value")
+            _p_ded = _kp_lc.get("kpi_deduction_value")
+            if not (_p_dev and _p_day):
+                raise ValueError(f"no DEVICE_ID/transit_day; columns: {_kp_raw.columns[:20]}")
+            _kp = _kp_raw
+            if _p_cat:
+                _kp = _kp.where(F.col(_p_cat) == cfg.device_cat)
+            _kp = (_kp
+                   .where(F.to_date(F.col(_p_day)) >= F.to_date(F.lit(start_day)))
+                   .where(F.to_date(F.col(_p_day)) <= end_day_expr))
+            _miss = (~F.col(_p_mt).eqNullSafe(True)) if _p_mt else F.lit(False)
+            _core = (F.upper(F.col(_p_crit).cast("string")).startswith("CORE")
+                     if _p_crit else F.lit(False))
+            _aggs = [F.count(F.lit(1)).cast("double").alias("kpi_rows"),
+                     F.sum(F.when(_miss, 1.0).otherwise(0.0)).alias("kpi_miss"),
+                     F.sum(F.when(_miss & _core, 1.0).otherwise(0.0)).alias("kpi_core_miss")]
+            if _p_val:
+                _aggs.append(F.min(F.col(_p_val).cast("double")).alias("kpi_value_min"))
+            if _p_ded:
+                _aggs.append(F.max(F.col(_p_ded).cast("double")).alias("kpi_deduction_max"))
+            df_kpi = _kp.groupBy(
+                F.col(_p_dev).cast("string").alias("DEVICE_ID"),
+                F.to_date(F.col(_p_day)).alias("transit_day"),
+            ).agg(*_aggs)
+            print(f"silver.kpi_daily: rolled up to {len(_aggs)} device-day columns "
+                  f"(windows will start at day 4)")
+        except Exception as exc:
+            df_kpi = None
+            print(f"WARNING: silver.kpi_daily skipped ({exc})")
+
+    global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ, _PS1_DF_KPI
     _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
+    _PS1_DF_KPI = df_kpi
 
 
 
@@ -1576,6 +1650,7 @@ def join_and_materialise(
     df_warn = globals().get("_PS1_DF_WARN")
     df_avail = globals().get("_PS1_DF_AVAIL")
     df_evq = globals().get("_PS1_DF_EVQ")
+    df_kpi = globals().get("_PS1_DF_KPI")
     df_mttr = aux['df_mttr']
     df_usage_ext = aux['df_usage_ext']
     df_read_tap = aux['df_read_tap']
@@ -1707,6 +1782,31 @@ def join_and_materialise(
                 if _ec in df_joined.columns:
                     df_joined = df_joined.withColumn(_ec, F.coalesce(F.col(_ec), F.lit(0.0)))
             print("Joined device_event_enriched quality rollup on DEVICE_ID + transit_day")
+
+        if df_kpi is not None:
+            df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
+            for _kc in KPI_BASE_COLS:
+                if _kc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_kc, F.coalesce(F.col(_kc), F.lit(0.0)))
+            if "_day_epoch" not in df_joined.columns:
+                df_joined = df_joined.withColumn(
+                    "_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
+            # Windows START AT DAY 4: days 1-3 are anti-correlated with the label
+            # because a failure then makes an episode start impossible under the
+            # >3-day sessionisation gap. Measured, not assumed.
+            for _back, _near in KPI_WINDOWS:
+                _w = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                            .rangeBetween(-_back * 86_400, -_near * 86_400))
+                for _kc in KPI_BASE_COLS:
+                    if _kc not in df_joined.columns:
+                        continue
+                    _agg = (F.min(F.col(_kc)) if _kc.endswith("_min")
+                            else F.max(F.col(_kc)) if _kc.endswith("_max")
+                            else F.sum(F.col(_kc)))
+                    df_joined = df_joined.withColumn(
+                        f"{_kc}_{_near}to{_back}d", _agg.over(_w))
+            df_joined = df_joined.drop(*[c for c in KPI_BASE_COLS if c in df_joined.columns])
+            print("Joined silver.kpi_daily; windows [4,14] and [4,30], same-day dropped")
 
         _SPARK_PRIOR_COLS = [
             "gate_mech_events", "csc_reader_events", "comms_events", "system_events",
@@ -1956,6 +2056,31 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_ec, F.coalesce(F.col(_ec), F.lit(0.0)))
             print("Joined device_event_enriched quality rollup on DEVICE_ID + transit_day")
 
+        if df_kpi is not None:
+            df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
+            for _kc in KPI_BASE_COLS:
+                if _kc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_kc, F.coalesce(F.col(_kc), F.lit(0.0)))
+            if "_day_epoch" not in df_joined.columns:
+                df_joined = df_joined.withColumn(
+                    "_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
+            # Windows START AT DAY 4: days 1-3 are anti-correlated with the label
+            # because a failure then makes an episode start impossible under the
+            # >3-day sessionisation gap. Measured, not assumed.
+            for _back, _near in KPI_WINDOWS:
+                _w = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                            .rangeBetween(-_back * 86_400, -_near * 86_400))
+                for _kc in KPI_BASE_COLS:
+                    if _kc not in df_joined.columns:
+                        continue
+                    _agg = (F.min(F.col(_kc)) if _kc.endswith("_min")
+                            else F.max(F.col(_kc)) if _kc.endswith("_max")
+                            else F.sum(F.col(_kc)))
+                    df_joined = df_joined.withColumn(
+                        f"{_kc}_{_near}to{_back}d", _agg.over(_w))
+            df_joined = df_joined.drop(*[c for c in KPI_BASE_COLS if c in df_joined.columns])
+            print("Joined silver.kpi_daily; windows [4,14] and [4,30], same-day dropped")
+
         _SPARK_PRIOR_COLS = [
             "printer_events", "bankcard_events", "bhu_events", "chu_events", "scrst_events",
             "system_events", "comms_events", "csc_reader_events",
@@ -2204,6 +2329,31 @@ def join_and_materialise(
                 if _ec in df_joined.columns:
                     df_joined = df_joined.withColumn(_ec, F.coalesce(F.col(_ec), F.lit(0.0)))
             print("Joined device_event_enriched quality rollup on DEVICE_ID + transit_day")
+
+        if df_kpi is not None:
+            df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
+            for _kc in KPI_BASE_COLS:
+                if _kc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_kc, F.coalesce(F.col(_kc), F.lit(0.0)))
+            if "_day_epoch" not in df_joined.columns:
+                df_joined = df_joined.withColumn(
+                    "_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
+            # Windows START AT DAY 4: days 1-3 are anti-correlated with the label
+            # because a failure then makes an episode start impossible under the
+            # >3-day sessionisation gap. Measured, not assumed.
+            for _back, _near in KPI_WINDOWS:
+                _w = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                            .rangeBetween(-_back * 86_400, -_near * 86_400))
+                for _kc in KPI_BASE_COLS:
+                    if _kc not in df_joined.columns:
+                        continue
+                    _agg = (F.min(F.col(_kc)) if _kc.endswith("_min")
+                            else F.max(F.col(_kc)) if _kc.endswith("_max")
+                            else F.sum(F.col(_kc)))
+                    df_joined = df_joined.withColumn(
+                        f"{_kc}_{_near}to{_back}d", _agg.over(_w))
+            df_joined = df_joined.drop(*[c for c in KPI_BASE_COLS if c in df_joined.columns])
+            print("Joined silver.kpi_daily; windows [4,14] and [4,30], same-day dropped")
 
         _SPARK_PRIOR_COLS = [
             "printer_events", "bankcard_events", "bhu_events", "chu_events", "scrst_events",

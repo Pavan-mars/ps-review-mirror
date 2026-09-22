@@ -116,7 +116,11 @@ print("2. (C) MIX -- share of KPI-counted OOS by event code, per month")
 print("=" * 96)
 top = [r[0] for r in (kpi.groupBy(C_TYPE).count()
                          .orderBy(F.desc("count")).limit(6).collect())]
-share = (kpi.withColumn("_code", F.when(F.col(C_TYPE).isin(top), F.col(C_TYPE))
+# cast to string FIRST: EVENT_TYPE_ID is an int, so a bare otherwise("other")
+# makes Spark cast the literal to double and the stage dies on CAST_INVALID_INPUT.
+_code_s = F.col(C_TYPE).cast("string")
+_top_s = [str(t) for t in top]
+share = (kpi.withColumn("_code", F.when(_code_s.isin(_top_s), _code_s)
                                   .otherwise(F.lit("other")))
             .groupBy("_m", "_code").count())
 tot = kpi.groupBy("_m").agg(F.count(F.lit(1)).alias("t"))

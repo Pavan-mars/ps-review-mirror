@@ -34,7 +34,7 @@
 # the Studio and training ones, and most types in this account sit at zero --
 # ml.r5.2xlarge among them, which is what this defaulted to until a submit
 # failed with ResourceLimitExceeded. What has quota:
-#   aws service-quotas list-service-quotas --service-code sagemaker #     --max-items 500 --query "Quotas[?contains(QuotaName,'processing job #     usage') && Value>\`0\`].[QuotaName,Value]" --output text | sort
+#   aws service-quotas list-service-quotas --service-code sagemaker --max-items 500 --output text --query "Quotas[?contains(QuotaName,'processing job usage')].[QuotaName,Value]" | sort -k2 -rn
 #
 # Usage:
 #   PS2SG_COMPUTED_DATE=2026-08-29 python run_processing_job.py \

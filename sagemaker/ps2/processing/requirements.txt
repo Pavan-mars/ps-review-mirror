@@ -1,0 +1,50 @@
+# PS2 serial-grain Processing-job image stack.
+#
+# The notebook does NOT hard-pin: its install cell reads whatever compiled
+# libraries the kernel already loaded and pins THOSE for the session, then
+# prints "already present -- left as-is" for everything it finds. So the image
+# only has to supply a coherent set; it does not have to reproduce Studio's
+# exact version list. What matters is that nothing is MISSING, because a
+# missing package makes that cell pip-install at job start -- slow, and on a
+# compiled library it would need a kernel restart papermill cannot give it.
+#
+# numpy<2 is the one real constraint, and it is the project's standing one:
+# hmmlearn, mlxtend and scikit-learn wheels must agree with it, and the
+# notebook's own preflight cell refuses to continue if numpy's multiarray will
+# not load.
+numpy<2
+scipy
+pandas>=2.0,<3
+pyarrow
+scikit-learn
+
+# Engines, one per analysis family in the notebook.
+hmmlearn      # 3-state Gaussian HMM, the regime family
+mlxtend       # FP-growth association rules, serial grain
+networkx      # betweenness / pagerank, the subsystem topology family
+
+# I/O. The notebook reads gold and silver as parquet over s3fs and writes
+# every output table with boto3 directly -- there is no ProcessingOutput for
+# the data, only for the run record.
+s3fs
+boto3
+
+# Charts. The notebook saves figures next to its tables; absent these, the
+# save_and_log helper raises rather than skipping.
+matplotlib
+seaborn
+
+# MLflow. The notebook sets a SageMaker MLflow tracking ARN and calls
+# set_experiment at config time, so both the client and the SageMaker plugin
+# must be present or that cell fails. sagemaker itself is imported at module
+# level (the notebook survives Session/get_execution_role being absent under
+# SDK v3, but not the package being absent).
+mlflow
+sagemaker-mlflow
+sagemaker
+
+# Execution layer, same rationale as the PS3 and PS5 kits: papermill for
+# per-cell logging to CloudWatch as the run proceeds, ipykernel because
+# papermill drives a real jupyter kernel.
+papermill
+ipykernel

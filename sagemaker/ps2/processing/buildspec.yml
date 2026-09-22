@@ -1,0 +1,82 @@
+# CodeBuild spec for the PS2 serial-grain Processing image.
+#
+# Self-testing, like the PS3 and dashboard buildspecs: the image is BOOTED here
+# and only pushed if it proves it can do the things the notebook needs. A green
+# build that pushes a broken image costs a whole supervised run to discover,
+# and this notebook's run is long.
+#
+# Requires a privileged (docker) amazonlinux2-x86_64-standard:5.0 project.
+# Env: ACCOUNT, REGION, REPO (must be cubic-mars-ps2-processing), TAG.
+version: 0.2
+
+env:
+  variables:
+    REGION: us-east-1
+    REPO: cubic-mars-ps2-processing
+    TAG: v1
+
+phases:
+  pre_build:
+    commands:
+      - set -eu
+      - ACCOUNT=${ACCOUNT:-$(aws sts get-caller-identity --query Account --output text)}
+      - URI="$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/$REPO"
+      - echo "target $URI:$TAG"
+      # Refuse to push over a serving repo even if REPO is mis-set.
+      - case "$REPO" in cubic-pdm/*) echo "REPO must not be a cubic-pdm serving repo"; exit 1;; esac
+      - aws ecr describe-repositories --repository-names "$REPO" --region "$REGION" >/dev/null 2>&1
+        || aws ecr create-repository --repository-name "$REPO" --region "$REGION"
+        --image-tag-mutability IMMUTABLE --image-scanning-configuration scanOnPush=true
+      - aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
+
+  build:
+    commands:
+      - docker build -t "$REPO:$TAG" .
+
+  post_build:
+    commands:
+      # --- gate 1: every engine the notebook imports is present ---
+      # One family per import: hmmlearn is the regime family, mlxtend the
+      # association rules, networkx the topology centrality. A missing one
+      # does not fail at import time in the notebook -- it fails hours in,
+      # inside the family that needs it.
+      - |
+        docker run --rm --entrypoint python "$REPO:$TAG" -c "
+        import numpy, pandas, scipy, pyarrow, sklearn, s3fs, boto3
+        import hmmlearn, mlxtend, networkx, matplotlib, seaborn
+        import mlflow, sagemaker, papermill
+        assert numpy.__version__.startswith('1.'), 'numpy must be <2, got ' + numpy.__version__
+        print('imports OK | numpy', numpy.__version__, '| pandas', pandas.__version__,
+              '| hmmlearn', hmmlearn.__version__, '| networkx', networkx.__version__)
+        "
+      # --- gate 2: no pyspark, and no JVM ---
+      # This image exists BECAUSE the notebook is not a Spark workload. If
+      # pyspark ever creeps into requirements.txt, the image silently doubles
+      # in size and invites someone to schedule it on the wrong runtime.
+      - |
+        docker run --rm --entrypoint python "$REPO:$TAG" -c "
+        import importlib.util as u
+        assert u.find_spec('pyspark') is None, 'pyspark must NOT be in this image -- it is a pandas workload'
+        print('no pyspark, as intended')
+        "
+      # --- gate 3: papermill drives the kernel, and the engines really run ---
+      # The one gate that matters. gate_notebook.ipynb is COPYed into the image
+      # and executed here exactly as the ENTRYPOINT will execute the real one:
+      # same papermill, same --log-output, same kernel. It exercises the pandas
+      # groupby path and the degenerate-HMM case the 29-Aug run actually hit.
+      #
+      # It is a FILE, not a heredoc or an inline python -c, because that nests
+      # YAML then bash -c then python -c quoting three deep.
+      - |
+        docker run --rm --entrypoint papermill "$REPO:$TAG"           /opt/gate/gate_notebook.ipynb /tmp/gate.out.ipynb           --kernel python3 --log-output
+      # --- gate 4: the ENTRYPOINT is the real notebook, not the gate one ---
+      # Cheap, and it catches a COPY or path edit that would otherwise only
+      # surface when a Processing job runs the wrong file.
+      - |
+        docker inspect --format '{{json .Config.Entrypoint}}' "$REPO:$TAG"           | grep -q "PS2_Serial_Grain_Analysis_v1_FIXED.ipynb"           && echo "entrypoint targets the real notebook"
+      # --- only now does it leave the building ---
+      - docker tag "$REPO:$TAG" "$URI:$TAG"
+      - docker push "$URI:$TAG"
+      - echo "pushed $URI:$TAG"
+      - |
+        echo "next: python sagemaker/ps2/processing/run_processing_job.py --role-arn <role> --image-uri $URI:$TAG --dry-run"

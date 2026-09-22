@@ -361,20 +361,33 @@ resources:
         Kept standalone and PAUSED until (a) the team ratifies and (b)
         incremental ingestion is live - unpausing earlier re-analyzes the
         2026-04-11 vintage.
-        First-run sequence, supervised:
-          1. databricks bundle validate; then a manual run with PS2_RUN_MODE
-             left at REPLAY (writes the isolated replay family; the scheduled
-             loader never sees it).
-          2. Compare the replay run's table row counts against the 03-Aug run.
-          3. Set PS2_RUN_MODE=PRODUCTION below, run once supervised; confirm a
-             new computed_date under chicago/ps2_outputs/_runs/ and the 07:10
-             UTC loader picking it up (/ps2/status advances).
-        Notebook export-prefix defaults were fixed 19-Aug (chicago/ps2_outputs);
-        the run-mode default stays REPLAY by design - production is opted into
-        HERE, not in the notebook.
-        UNVERIFIED before first run [U]: job-cluster instance profile can read
-        gold + write the artifacts bucket; how the notebook reads gold on
-        Databricks (UC vs S3 parquet); real runtime (timeout below is a guess).
+        The supervised first-run sequence is COMPLETE (20/21-Sep-2026):
+          1. REPLAY run passed as REPLAY_PASS_WITH_WARNINGS, 20 manifests on the
+             isolated prefix.
+          2. PRODUCTION run published 20 tables at computed_date=2026-08-29,
+             run 6aafe3e0; the loader committed them and /ps2/status reports
+             coherent with a single run_id.
+        PS2_RUN_MODE is therefore PRODUCTION below. Production is opted into
+        HERE, not in the notebook, whose default stays REPLAY by design.
+
+        WARNING - THIS JOB COVERS ONLY ONE OF PS2'S TWO PRODUCERS.
+        PS2_Serial_Grain_Analysis_v1_FIXED.ipynb writes 27 MORE tables to the
+        same chicago/ps2_outputs prefix and has NO schedule anywhere. That is
+        why those tables sat at 26-Jul while these reached 29-Aug, unlabelled,
+        on the same tab. It is deliberately NOT added here: it has 0 pyspark
+        references against this notebook's 1,061, plus 8 sagemaker imports, a
+        SageMaker MLflow ARN and three pip-install cells. It is a pandas
+        workload bound to SageMaker and belongs in a Processing job on the
+        pattern of sagemaker/ps3/processing/, not on a Spark job cluster.
+        Until that exists, enabling this schedule re-opens the vintage split -
+        so either build it first, or re-run the serial-grain notebook by hand
+        on the same day this one runs.
+
+        UNVERIFIED before first SCHEDULED run [U]: job-cluster instance profile
+        can read gold + write the artifacts bucket; how the notebook reads gold
+        on Databricks (UC vs S3 parquet); real runtime (timeout below is a
+        guess). The two supervised runs above were driven from SageMaker, not
+        from this job cluster, so none of those three is settled by them.
       schedule:
         quartz_cron_expression: "0 45 6 * * ?"   # placeholder: after the 06:00 gold job, until chained
         timezone_id: America/Chicago
@@ -395,7 +408,16 @@ resources:
             num_workers: 4
             data_security_mode: SINGLE_USER
             spark_env_vars:
-              PS2_RUN_MODE: "REPLAY"   # flip to PRODUCTION only after the supervised replay run passes
+              PS2_RUN_MODE: "PRODUCTION"   # supervised REPLAY then PRODUCTION both passed 20/21-Sep
+              # source_freshness is CRITICAL in PRODUCTION at a 3-day threshold,
+              # and it measures against this ceiling instead of the wall clock.
+              # Without it a scheduled run BLOCKS the moment upstream is more
+              # than 3 days stale - which it is, permanently, until Cubic's
+              # incremental feed lands. Remove this line the day it does; the
+              # notebook's upstream_freeze_declaration_current check fails as a
+              # warning if it is left behind, and upstream_liveness reports the
+              # true lag regardless.
+              PS2_UPSTREAM_FROZEN_THROUGH: "2026-08-29"
           timeout_seconds: 10800
 
     dim_incident_cmdb_daily:

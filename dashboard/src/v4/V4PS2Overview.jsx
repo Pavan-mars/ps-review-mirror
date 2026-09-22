@@ -238,14 +238,39 @@ function pivotByFleet(rows, dateKey, valKey) {
     const d = r[dateKey];
     if (!map.has(d)) map.set(d, { [dateKey]: d, GATE: 0, TVM: 0, VALIDATOR: 0 });
     const cat = String(r.device_category || '').toUpperCase();
-    if (FLEETS.includes(cat)) map.get(d)[cat] += num(r[valKey]);
+    const v = typeof valKey === 'function' ? valKey(r) : r[valKey];
+    if (FLEETS.includes(cat)) map.get(d)[cat] += num(v);
   });
   return Array.from(map.values()).sort((a, b) => String(a[dateKey]).localeCompare(String(b[dateKey])));
 }
 
 function sumBy(rows, key, filter) {
-  return (rows || []).reduce((t, r) => (filter && !filter(r) ? t : t + num(r[key])), 0);
+  const get = typeof key === 'function' ? key : (r) => r[key];
+  return (rows || []).reduce((t, r) => (filter && !filter(r) ? t : t + num(get(r))), 0);
 }
+
+// AVAILABILITY IS NOT THE SUM OF COMPONENT EPISODES.         23-Sep-2026
+// hardware_oos_minutes adds up every component episode separately, so a
+// device with three components down through the same hour books three hours
+// out of service. The notebook measured the size of that on this very run and
+// wrote it into its own source: GATE published 14.66% against 3.17% true
+// (4.63x), TVM 30.52% against 12.04% (2.53x), VALIDATOR 95.47% against 46.48%
+// (2.05x). It then published hardware_oos_union_minutes -- the wall-clock
+// union per device-day -- and the API has served both columns side by side
+// ever since, deliberately, "so the difference stays visible rather than
+// being silently swapped".
+//
+// This tab read only the inflated column. Every availability number on the
+// page was 2-4.6x too high, and the note beside the hero explained the
+// inflated validator figure as real fleet behaviour -- a narrative built on
+// an artifact, which is worse than the number alone.
+//
+// Component burden keeps the raw column, but only where the label says so:
+// per-serial minutes cannot double-count against themselves.
+const oosUnion = (r) => {
+  const u = r.hardware_oos_union_minutes;
+  return u === null || u === undefined || u === '' ? num(r.hardware_oos_minutes) : num(u);
+};
 
 // THE WHOLE TABLE, NOT THE PAGE.                              20-Sep-2026
 // Several captions used to state a row total typed in when the panel was
@@ -296,10 +321,9 @@ function ImpactView({ feeds }) {
     const all = (summary || []).find((r) => String(r.device_category).toUpperCase() === 'ALL') || {};
     const days = new Set((trend || []).map((r) => r.event_date)).size;
     const devices = num(all.eligible_devices);
-    const hours = sumBy(trend, 'hardware_oos_minutes') / 60;
+    const hours = sumBy(trend, oosUnion) / 60;
     // Capacity is the honest denominator: every device, every hour of the
-    // window. Recorded OOS time above ~50% of it is not fleet availability,
-    // it is episodes that never close -- validators come back at 95.1%.
+    // window.
     const capacity = devices * days * 24;
     return {
       capacity,
@@ -322,7 +346,7 @@ function ImpactView({ feeds }) {
       const m = (r) => String(r.device_category).toUpperCase() === f;
       const onsets = sumBy(trend, 'hardware_oos_onsets', m);
       const validated = sumBy(trend, 'validated_failure_onsets', m);
-      const hours = sumBy(trend, 'hardware_oos_minutes', m) / 60;
+      const hours = sumBy(trend, oosUnion, m) / 60;
       const row = (summary || []).find((r) => String(r.device_category).toUpperCase() === f);
       const cap = num(row && row.eligible_devices) * days * 24;
       return {
@@ -337,11 +361,20 @@ function ImpactView({ feeds }) {
     });
   }, [trend, summary]);
 
-  const minutesTrend = useMemo(() => pivotByFleet(trend, 'event_date', 'hardware_oos_minutes')
+  const minutesTrend = useMemo(() => pivotByFleet(trend, 'event_date', oosUnion)
     .map((r) => ({ ...r, GATE: r.GATE / 60, TVM: r.TVM / 60, VALIDATOR: r.VALIDATOR / 60 })), [trend]);
   const onsetTrend = useMemo(() => pivotByFleet(trend, 'event_date', 'hardware_oos_onsets'), [trend]);
 
-  const loading = feeds.trend.loading || feeds.exposure.loading || feeds.labelSummary.loading;
+  // ZERO IS A MEASUREMENT; NO DATA IS NOT.                    23-Sep-2026
+  // This gate only covered `loading`. useFeeds seeds every key idle, and an
+  // errored route clears loading too -- so before the feeds started, and
+  // whenever they failed, `totals` collapsed to zeros and the headline
+  // announced "0.0% of available device-hours ... 0 device-hours recorded
+  // against 0 available, across 0 days and 0 devices". A dead route read as
+  // an estate that lost nothing.
+  const heroPending = ['trend', 'exposure', 'labelSummary']
+    .some((k) => feeds[k].loading || feeds[k].idle || feeds[k].error);
+  const loading = heroPending;
 
   return (
     <>
@@ -364,9 +397,15 @@ function ImpactView({ feeds }) {
 
 
       <Section accent={TAB_COLOR.ps2} eyebrow="Evidence" title="How much of this is confirmed">
+        {/* These two shares were typed in from one run. byFleet already holds
+            `validated` per fleet, so they are one division away. */}
         <Note>
-          The three fleets do not carry the same evidence. Validators account for 96% of all
-          validated failure onsets; fare gates for 0.2%. That is a difference in what the source
+          The three fleets do not carry the same evidence.
+          {totals.validated ? ` Validators account for ${pct(
+            (byFleet.find((f) => f.code === 'VALIDATOR') || {}).validated / totals.validated, 0,
+          )} of all validated failure onsets; fare gates for ${pct(
+            (byFleet.find((f) => f.code === 'GATE') || {}).validated / totals.validated, 1,
+          )}.` : ''} That is a difference in what the source
           systems record, not a difference in how the fleets behave -- so these columns are shown
           side by side rather than combined into one rate.
         </Note>
@@ -612,7 +651,12 @@ function DevicesView({ feeds, onAnalyse }) {
     { key: 'event_date', label: 'Date' },
     { key: 'alert_reason', label: 'Why it was flagged' },
     { key: 'hardware_oos_onsets', label: 'OOS onsets', num: true },
-    { key: 'hardware_oos_minutes', label: 'OOS minutes', num: true, d: 0 },
+    // Device-day grain, so this is the double-counted column. The route
+    // carries the union beside it; show that, and keep the raw one under a
+    // label that says what it actually measures.
+    { key: 'hardware_oos_union_minutes', label: 'OOS minutes', num: true, d: 0,
+      render: (r) => nfmt(oosUnion(r)) },
+    { key: 'hardware_oos_minutes', label: 'Component burden (min)', num: true, d: 0 },
     { key: 'validated_failure_onsets', label: 'Validated', num: true },
     { key: 'baseline_mean_28d', label: '28d mean', num: true, d: 2 },
     { key: 'oos_zscore_28d', label: 'z-score', num: true, d: 2 },
@@ -709,6 +753,12 @@ function ComponentsView({ feeds, onAnalyse }) {
   // part. They are split out below instead.
   const identified = useMemo(() => scoped.filter((r) => String(r.component_serial_id) !== '0'), [scoped]);
   const unattributed = useMemo(() => scoped.filter((r) => String(r.component_serial_id) === '0'), [scoped]);
+  // The notebook stamps this per row as CURRENT_CONFIG_AS_OF_RUN or
+  // UNAVAILABLE. Count it rather than asserting every row is unenriched.
+  const ageUnavailable = useMemo(
+    () => scoped.filter((r) => String(r.hardware_age_enrichment || 'UNAVAILABLE').toUpperCase() !== 'CURRENT_CONFIG_AS_OF_RUN').length,
+    [scoped]
+  );
 
   const topSerials = useMemo(() => [...identified]
     .sort((a, b) => num(b.component_priority_score) - num(a.component_priority_score))
@@ -786,7 +836,7 @@ function ComponentsView({ feeds, onAnalyse }) {
     { key: 'validated_failure_count', label: 'Validated', num: true },
     { key: 'hardware_oos_minutes', label: 'OOS minutes', num: true, d: 0 },
     { key: 'observed_oos_days', label: 'Days seen', num: true },
-    { key: 'current_component_age_days', label: 'Age (days, unavailable)', num: true, d: 0 },
+    { key: 'current_component_age_days', label: 'Age (days)', num: true, d: 0 },
     { key: 'serial_evidence_tier', label: 'Evidence' },
     { key: 'component_priority_score', label: 'Priority', num: true, d: 3 },
   ];
@@ -810,11 +860,17 @@ function ComponentsView({ feeds, onAnalyse }) {
         sub="Component serials ranked by an explainable priority score built from OOS episodes, validated failures and observed days."
         right={<FleetChips value={fleet} onChange={setFleet} />}
       >
+        {/* "78 rows", twice, was the 11-Apr figure; the 29-Aug run publishes
+            more. Same failure mode as the six stale totals fixed on 21-Sep,
+            missed then because it sits in prose rather than in a hint. The
+            enrichment claim was hardcoded too, while the route returns
+            hardware_age_enrichment per row. */}
         <Note>
-          The hardware-config enrichment produced nothing in this run:
-          hardware_component_description, hardware_source and current_component_age_days are null
-          on all 78 rows. Subsystem and serial number are shown instead, and component age is not
-          available. Separately, 14 of the 78 rows carry serial id 0 -- the unattributed bucket, not
+          {ageUnavailable === scoped.length
+            ? `The hardware-config enrichment produced nothing in this run: component age is null on all ${nfmt(scoped.length)} rows.`
+            : `Component age is unavailable on ${nfmt(ageUnavailable)} of ${nfmt(scoped.length)} rows.`}
+          {' '}Subsystem and serial number are shown alongside it. Separately, {nfmt(unattributed.length)} of
+          the {nfmt(scoped.length)} rows carry serial id 0 -- the unattributed bucket, not
           a part -- so they are held out of the ranking and shown on their own below.
         </Note>
       </Section>
@@ -889,9 +945,14 @@ function ComponentsView({ feeds, onAnalyse }) {
         <Stat label="Distinct subsystems" value={nfmt(repairSignal.subsystems.length)}
               tone={repairSignal.allUnknown ? 'warning' : 'neutral'}
               foot={repairSignal.allUnknown ? 'Every row is UNKNOWN' : repairSignal.subsystems.slice(0, 3).join(', ')} />
+        {/* The route is ORDER BY maintenance_date DESC with a 5,000 cap, so
+            this range is the newest slice, not the ledger. Say which. */}
         <Stat label="Repairs logged between"
               value={repairSignal.first ? dfmt(repairSignal.first) : '--'}
-              foot={repairSignal.last ? `and ${dfmt(repairSignal.last)}` : ''} />
+              foot={repairSignal.last
+                ? `and ${dfmt(repairSignal.last)}${repairTotal && repairTotal > repairs.length
+                    ? ` -- the newest ${nfmt(repairs.length)} of ${nfmt(repairTotal)}` : ''}`
+                : ''} />
       </Grid>
 
       <Grid cols="repeat(auto-fit,minmax(420px,1fr))">
@@ -919,8 +980,11 @@ function ComponentsView({ feeds, onAnalyse }) {
                 <div style={{ ...font.note, marginTop: 10 }}>
                   Every one of the {nfmt(repairSignal.n)} repair episodes returned reports
                   <strong> zero OOS onsets in the 30 days before AND zero in the 30 days after</strong>,
-                  and every one carries subsystem <code>UNKNOWN</code>. Sampled across the table at
-                  three offsets, fifteen thousand rows, not one exception.
+                  and {repairSignal.allUnknown
+                    ? <>every one carries subsystem <code>UNKNOWN</code></>
+                    : <>the subsystems present are {repairSignal.subsystems.slice(0, 5).join(', ')}</>}.
+                  {' '}Measured on the {nfmt(repairs.length)} rows this route returned, of which
+                  none carry a before/after signal.
                 </div>
                 <div style={{ ...font.note, marginTop: 10 }}>
                   A pre/post comparison that is zero on both sides has not compared anything. The
@@ -1147,6 +1211,13 @@ function RelationshipsView({ feeds }) {
     return out;
   }, [grid]);
 
+  // The caveat below used to quote "-161 to +211" from one run. Measure it.
+  const phiRange = useMemo(() => {
+    const vs = grid.map((r) => r.v).filter((v) => Number.isFinite(v));
+    return vs.length ? { lo: Math.round(Math.min(...vs)), hi: Math.round(Math.max(...vs)) }
+                     : { lo: 0, hi: 0 };
+  }, [grid]);
+
   const nSubs = useMemo(
     () => new Set(phiRows.flatMap((r) => [r.sub_a, r.sub_b])).size, [phiRows]);
   const nChains = useMemo(
@@ -1157,7 +1228,7 @@ function RelationshipsView({ feeds }) {
       <Section accent={TAB_COLOR.ps2}
         eyebrow="Previous generation"
         title="Which subsystems fail together"
-        sub="Pairwise association across the ten subsystems, plus which one tends to start a chain and which tends to end it."
+        sub={`Pairwise association across the ${nfmt(nSubs)} subsystems, plus which one tends to start a chain and which tends to end it.`}
       >
         <Note>
           These four feeds come from the earlier Failure Pattern & Cascade Identification run, not the v2.5 generation the rest of this
@@ -1192,8 +1263,9 @@ function RelationshipsView({ feeds }) {
         )}
           </Feed>
         <Note>
-          The published column is named <code>phi</code>, but its values here span roughly -161 to
-          +211. A phi coefficient cannot leave the range -1 to +1, so this is an unnormalised
+          The published column is named <code>phi</code>, but its values here span roughly
+          {' '}{nfmt(phiRange.lo)} to {nfmt(phiRange.hi)}. A phi coefficient cannot leave the range
+          -1 to +1, so this is an unnormalised
           association statistic and must not be read as a correlation. Compare pairs against each
           other; do not read any single number as a strength on a 0-1 scale.
         </Note>
@@ -1248,6 +1320,7 @@ function RelationshipsView({ feeds }) {
                 { key: 'Ignites', label: 'Starts the chain', color: STATUS.serious.fill },
                 { key: 'Terminates', label: 'Ends the chain', color: CAT[3] },
               ]}
+              agg="mean"
               height={240}
               fmt={_fmt9}
             />
@@ -1255,8 +1328,8 @@ function RelationshipsView({ feeds }) {
         </Feed>
         <Note>
           Only {nfmt(ign.length)} subsystems carry a role, over {nfmt(nChains)} chains. At that
-          sample size a single extra chain moves a bar by ten points, so read the ordering rather
-          than the values.
+          sample size a single extra chain moves a bar by {nChains ? (100 / nChains).toFixed(0) : '--'} points,
+          so read the ordering rather than the values.
         </Note>
       </Panel>
 
@@ -1383,7 +1456,34 @@ function EvidenceVisuals({ feeds }) {
   // Precision and recall derived from the confusion counts Failure Pattern & Cascade Identification measured on
   // Failure Prediction's predictions. Published as raw counts only, so the two numbers a
   // reader actually wants were never on screen.
-  const pr = useMemo(() => perf.map((r) => {
+  // A RUN THAT DID NOT SCORE IS NOT A SCORE OF ZERO.          23-Sep-2026
+  // PS2_ENABLE_PS1_PREDICTION_EVAL was defaulted to false on 20-Sep so PS2
+  // would stop publishing a verdict on a parked PS1. The notebook does the
+  // honest thing -- evaluation_status 'DISABLED', and NULL precision/recall,
+  // because _safe_ratio returns None on a zero denominator. This tab threw
+  // both away and recomputed from counts that are all zero, so the panel read
+  // "0% right when it flags, 0% failures caught" for every fleet: a damning
+  // and entirely fictional verdict on a model that was never run.
+  //
+  // ALL IS A SCOPE, NOT A FOURTH FLEET. The notebook unions an ALL row into
+  // this table and into the alignment table. Charted unfiltered it appears as
+  // a fourth grey bar beside Fare Gates / TVMs / Validators, and the tiles
+  // counted 4 fleets against an estate of 3.
+  const scored = useMemo(
+    () => perf.filter((r) => String(r.device_category).toUpperCase() !== 'ALL'
+                          && String(r.evaluation_status || '').toUpperCase() === 'EVALUATED'),
+    [perf]
+  );
+  const notScored = useMemo(
+    () => perf.filter((r) => String(r.device_category).toUpperCase() !== 'ALL'
+                          && String(r.evaluation_status || '').toUpperCase() !== 'EVALUATED'),
+    [perf]
+  );
+  const alignFleets = useMemo(
+    () => align.filter((r) => String(r.device_category).toUpperCase() !== 'ALL'),
+    [align]
+  );
+  const pr = useMemo(() => scored.map((r) => {
     const tp = num(r.true_positive), fp = num(r.false_positive), fn = num(r.false_negative);
     return {
       name: deviceShort(r.device_category),
@@ -1391,17 +1491,23 @@ function EvidenceVisuals({ feeds }) {
       Recall: tp + fn ? (tp / (tp + fn)) * 100 : 0,
       coverage: num(r.prediction_coverage),
     };
-  }), [perf]);
+  }), [scored]);
 
   if (!checks.length && !parity.length && !align.length && !perf.length) return null;
 
   return (
     <>
       <Grid cols="repeat(auto-fit,minmax(210px,1fr))" style={{ marginBottom: 14 }}>
+        {/* NOTHING RETURNED IS NOT EVERYTHING PASSED.             23-Sep-2026
+            With checks=[] -- route errored, or not yet requested -- gate.fail
+            was 0, so this painted green and read "Every check cleared" while
+            showing "--" for the count. The 29-Aug run is PASS_WITH_WARNINGS;
+            green is the wrong default in both directions. */}
         <Stat label="Governance checks passed"
               value={gate.total ? `${nfmt(gate.pass)} of ${nfmt(gate.total)}` : '--'}
-              tone={gate.fail ? 'warning' : 'good'}
-              foot={gate.fail ? `${nfmt(gate.fail)} did not pass` : 'Every check cleared'} />
+              tone={!gate.total ? 'neutral' : (gate.fail ? 'warning' : 'good')}
+              foot={!gate.total ? 'The run-quality route returned no checks'
+                    : (gate.fail ? `${nfmt(gate.fail)} did not pass` : 'Every check cleared')} />
         {/* quality_status is PASS whenever no CRITICAL check failed, so a run
             with warnings reads as clean. The distinction lives only in
             run_disposition, which the route already returns and nothing showed.
@@ -1413,10 +1519,12 @@ function EvidenceVisuals({ feeds }) {
               foot={gate.warned
                 ? 'Published with warnings — status alone would read as clean'
                 : `quality_status ${gate.status || 'unknown'}`} />
-        <Stat label="Fleets with an alignment measure" value={nfmt(align.length)}
+        <Stat label="Fleets with an alignment measure" value={nfmt(alignFleets.length)}
               foot="Jaccard between the two definitions" />
-        <Stat label="Fleets scored by Failure Pattern & Cascade Identification" value={nfmt(perf.length)}
-              foot="Failure Prediction predictions, measured against Failure Pattern & Cascade Identification's governed episodes" />
+        <Stat label="Fleets scored by Failure Pattern & Cascade Identification" value={nfmt(scored.length)}
+              foot={notScored.length
+                ? `${nfmt(notScored.length)} not scored this run (${notScored.map((r) => String(r.evaluation_status || 'unknown').toLowerCase()).filter((v, i, a) => a.indexOf(v) === i).join(', ')})`
+                : "Failure Prediction predictions, measured against Failure Pattern & Cascade Identification's governed episodes"} />
       </Grid>
 
       {/* The parity panel that used to sit beside this was removed on request
@@ -1427,7 +1535,7 @@ function EvidenceVisuals({ feeds }) {
         <Panel title="How much do the two definitions overlap?"
                hint="Jaccard between Failure Prediction's failure device-days and Failure Pattern & Cascade Identification's governed OOS episodes. 1.0 would mean the same set.">
           <ColumnBars
-            data={align.map((r) => ({
+            data={alignFleets.map((r) => ({
               name: deviceShort(r.device_category),
               Overlap: num(r.definition_jaccard) * 100,
               'Failure Prediction only': num(r.silver_only_device_days),
@@ -1492,11 +1600,17 @@ function EvidenceVisuals({ feeds }) {
               { key: 'Precision', label: 'Right when it flags', color: CAT[0] },
               { key: 'Recall', label: 'Failures caught', color: STATUS.serious.fill },
             ]}
+            agg="mean"
             height={260} fmt={_fmt11}
           />
+          {/* The note used to send readers to "the table below". That table
+              was removed on 06-Aug, so it pointed at nothing, while
+              prediction_coverage was carried into `pr` and never rendered.
+              Put the coverage on screen instead. */}
           <Note>
-            Read these against the prediction coverage on the table below -- a fleet scored on a
-            small share of its device-days can post a high precision that says very little.
+            Scored on {pr.map((r) => `${r.name} ${pct(r.coverage, 1)}`).join(', ')} of device-days.
+            A fleet scored on a small share of its device-days can post a high precision that
+            says very little.
           </Note>
         </Panel>
       )}
@@ -1645,7 +1759,7 @@ function EvidenceView({ feeds }) {
         </Panel>
         <Panel title="Positive rate by lookahead day" hint="Day 1, 2 and 3 ahead of the score date">
           <Feed feed={feeds.labelHorizon} height={280}>
-            {() => <ColumnBars data={horizon} xKey="lead_day" series={FLEET_SERIES} height={280} fmt={_fmt13} />}
+            {() => <ColumnBars data={horizon} xKey="lead_day" series={FLEET_SERIES} agg="mean" height={280} fmt={_fmt13} />}
           </Feed>
         </Panel>
       </Grid>

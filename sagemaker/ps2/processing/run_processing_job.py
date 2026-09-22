@@ -97,9 +97,20 @@ def parse_args():
     return ap.parse_args()
 
 
-def collect_env(allow_missing_date):
+def collect_env(allow_missing_date, region):
     """Pass through every PS2SG_* variable from the calling shell, verbatim."""
     env = {k: v for k, v in sorted(os.environ.items()) if k.startswith("PS2SG_")}
+
+    # THE REGION HAS TO BE IN THE ENVIRONMENT.                    22-Sep-2026
+    # Studio sets AWS_DEFAULT_REGION; a Processing container does not, and job
+    # cubic-mars-ps2-serialgrain-20260922-060637 died 2m33s in with
+    #   NoRegionError: You must specify a region
+    # out of botocore's endpoint resolver. The notebook hands s3fs a region
+    # explicitly, but its bare boto3.client() calls and MLflow's have nothing
+    # to resolve from. Setting both spellings costs nothing and fixes every
+    # client at once, without editing the notebook for its runtime.
+    env["AWS_DEFAULT_REGION"] = region
+    env["AWS_REGION"] = region
 
     d = env.get("PS2SG_COMPUTED_DATE", "").strip()
     if not d:
@@ -135,7 +146,7 @@ def main():
     code_key = f"{args.code_prefix}/{job_name}/{NOTEBOOK_NAME}"
     code_s3_prefix = f"s3://{args.code_bucket}/{args.code_prefix}/{job_name}"
     runs_s3_uri = f"s3://{args.code_bucket}/{args.runs_prefix}/{job_name}"
-    env = collect_env(args.allow_missing_date)
+    env = collect_env(args.allow_missing_date, args.region)
 
     request = {
         "ProcessingJobName": job_name,

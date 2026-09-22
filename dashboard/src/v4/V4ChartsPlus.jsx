@@ -15,7 +15,7 @@
 //
 // Colour comes from V4theme. Nothing here invents a hue.
 // =====================================================================
-import React, { useMemo } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Area, AreaChart, CartesianGrid, Cell, ComposedChart, Line, LineChart,
   PolarAngleAxis, PolarGrid, PolarRadiusAxis, Radar, RadarChart,
@@ -469,9 +469,18 @@ export function SankeyFlow({
   height = 380, maxNodes = 12, unit, note,
 }) {
   const model = useMemo(() => {
-    const clean = (rows || [])
+    const all = (rows || [])
       .map((r) => ({ s: String(r[sourceKey] ?? ''), t: String(r[targetKey] ?? ''), v: n(r[valueKey]) }))
       .filter((r) => r.s && r.t && r.v > 0);
+    // SELF-LOOPS ARE NOT FLOW BETWEEN SUBSYSTEMS.               23-Sep-2026
+    // On the 29-Aug data DOPP->DOPP, SYSTEM->SYSTEM, COMMS->COMMS and
+    // CSC_READER->CSC_READER together are 37.3% of the total. Drawn as ribbons
+    // they read as "a third of cascades move between subsystems that way",
+    // when they are cascades that never left their subsystem. They are counted
+    // and reported instead of drawn, so the number is not lost.
+    const clean = all.filter((r) => r.s !== r.t);
+    const selfV = all.filter((r) => r.s === r.t).reduce((t, r) => t + r.v, 0);
+    const allV = all.reduce((t, r) => t + r.v, 0);
     if (!clean.length) return null;
 
     const tally = (key) => {
@@ -517,11 +526,11 @@ export function SankeyFlow({
       });
       return pos;
     };
-    return { links, L: place(left), R: place(right), left, right };
+    return { links, L: place(left), R: place(right), left, right, selfV, allV };
   }, [rows, sourceKey, targetKey, valueKey, height, maxNodes]);
 
   if (!model) return null;
-  const { links, L, R, left, right } = model;
+  const { links, L, R, left, right, selfV, allV } = model;
 
   // Each ribbon consumes its share of both endpoints, so a node's band is
   // exactly filled by the flows that touch it.
@@ -536,9 +545,39 @@ export function SankeyFlow({
     return { ...lk, i, a0, a1: a0 + ah, b0, b1: b0 + bh };
   });
 
-  const X0 = 14, X1 = 86;            // percent: left and right node columns
+  // PATH DATA HAS NO PERCENTAGES.                              23-Sep-2026
+  // The first version positioned everything with "14%" strings. That is valid
+  // for <rect x> and <text x>, which take a <length> -- and INVALID inside a
+  // <path d>, whose grammar admits only plain numbers. So the bars and labels
+  // drew and every ribbon silently failed to parse: the whole point of the
+  // chart, missing, on a panel that shipped to production.
+  //
+  // The layout arithmetic was verified numerically at the time and passed,
+  // because it tested the maths rather than the rendered SVG. Only looking at
+  // it would have caught this.
+  //
+  // Fixed by measuring the container and drawing in PIXELS. A viewBox with
+  // preserveAspectRatio="none" would have been fewer lines and would stretch
+  // the labels horizontally, so it is not used.
+  const wrapRef = useRef(null);
+  const [wpx, setWpx] = useState(0);
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const read = () => setWpx(el.clientWidth || 0);
+    read();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const X0 = wpx * 0.14, X1 = wpx * 0.86;   // pixels: left and right node columns
+  const MID = wpx * 0.5;
+  const BAR = Math.max(3, wpx * 0.016);
   const maxV = Math.max(...links.map((d) => d.v), 1);
   const colOf = (id) => CAT[left.findIndex((d) => d[0] === id) % CAT.length];
+  const LABEL_MIN_PX = 11;   // one line of 11px type, without crowding its neighbour
 
   // A skewed flow distribution -- Chicago's top pair carries 45% of all
   // cascades -- leaves most ribbons under a pixel. They are drawn anyway,
@@ -548,10 +587,20 @@ export function SankeyFlow({
   const thin = ribbons.filter((d) => (d.a1 - d.a0) < 0.5);
   const thinShare = thin.reduce((t, d) => t + d.v, 0)
                   / (ribbons.reduce((t, d) => t + d.v, 0) || 1);
-  const autoNote = thin.length
+  const selfNote = selfV > 0
+    ? `Same-subsystem cascades are excluded: ${nfmt(selfV)} of ${nfmt(allV)} `
+      + `(${((selfV / (allV || 1)) * 100).toFixed(1)}%) never left their own subsystem, so they are `
+      + `not flow between subsystems. `
+    : '';
+  const unlabelled = [...L.values(), ...R.values()].filter((p) => (p.y1 - p.y0) < 11).length;
+  const labelNote = unlabelled
+    ? `${unlabelled} node band${unlabelled === 1 ? ' is' : 's are'} too short to label at this height. `
+    : '';
+  const thinNote = thin.length
     ? `${thin.length} of ${ribbons.length} flows are too thin to see at this size `
-      + `(${(thinShare * 100).toFixed(1)}% of total flow). Switch to Table for all of them.`
-    : null;
+      + `(${(thinShare * 100).toFixed(1)}% of what is drawn). Switch to Table for all of them.`
+    : '';
+  const autoNote = (selfNote + labelNote + thinNote).trim() || null;
 
   return (
     <ChartFrame
@@ -560,35 +609,54 @@ export function SankeyFlow({
              { key: 'value', label: 'Flow', num: true }]}
       height={height} unit={unit} note={[note, autoNote].filter(Boolean).join(' ')}
     >
-      <svg width="100%" height={height - 20} style={{ overflow: 'visible' }}>
-        {ribbons.map((d) => (
-          <path
-            key={d.i}
-            d={`M ${X0}% ${d.a0} C 50% ${d.a0}, 50% ${d.b0}, ${X1}% ${d.b0}
-                L ${X1}% ${d.b1} C 50% ${d.b1}, 50% ${d.a1}, ${X0}% ${d.a1} Z`}
-            fill={colOf(d.s)}
-            opacity={0.14 + (d.v / maxV) * 0.4}
-          />
-        ))}
-        {[...L.entries()].map(([id, p]) => (
-          <g key={`l-${id}`}>
-            <rect x={`${X0 - 1.6}%`} y={p.y0} width="1.6%" height={Math.max(2, p.y1 - p.y0)}
-                  fill={colOf(id)} rx={1} />
-            <text x={`${X0 - 2.6}%`} y={(p.y0 + p.y1) / 2 + 3.5} textAnchor="end"
-                  fontSize="11" fill={INK_2}>{id}</text>
-          </g>
-        ))}
-        {[...R.entries()].map(([id, p]) => (
-          <g key={`r-${id}`}>
-            <rect x={`${X1}%`} y={p.y0} width="1.6%" height={Math.max(2, p.y1 - p.y0)}
-                  fill={INK_3} rx={1} />
-            <text x={`${X1 + 2.6}%`} y={(p.y0 + p.y1) / 2 + 3.5} textAnchor="start"
-                  fontSize="11" fill={INK_2}>{id}</text>
-          </g>
-        ))}
-        <text x={`${X0 - 2.6}%`} y="10" textAnchor="end" style={font.micro} fill={INK_3}>from</text>
-        <text x={`${X1 + 2.6}%`} y="10" textAnchor="start" style={font.micro} fill={INK_3}>to</text>
-      </svg>
+      <div ref={wrapRef} style={{ width: '100%' }}>
+        {wpx > 0 && (
+        <svg width={wpx} height={height - 20} style={{ overflow: 'visible' }}>
+          {ribbons.map((d) => (
+            <path
+              key={d.i}
+              d={`M ${X0.toFixed(2)} ${d.a0.toFixed(2)}`
+                 + ` C ${MID.toFixed(2)} ${d.a0.toFixed(2)}, ${MID.toFixed(2)} ${d.b0.toFixed(2)},`
+                 + ` ${X1.toFixed(2)} ${d.b0.toFixed(2)}`
+                 + ` L ${X1.toFixed(2)} ${d.b1.toFixed(2)}`
+                 + ` C ${MID.toFixed(2)} ${d.b1.toFixed(2)}, ${MID.toFixed(2)} ${d.a1.toFixed(2)},`
+                 + ` ${X0.toFixed(2)} ${d.a1.toFixed(2)} Z`}
+              fill={colOf(d.s)}
+              opacity={0.14 + (d.v / maxV) * 0.4}
+            />
+          ))}
+          {/* A LABEL NEEDS ROOM.                                  23-Sep-2026
+              The small bands floor at 3px, so at ten nodes their labels stack
+              into an unreadable pile at the foot of each column -- visible the
+              moment the chart was actually rendered, and invisible to every
+              numeric check of the layout. Label only bands tall enough to hold
+              one line; the rest are in the table view, and the caption says how
+              many went unlabelled rather than leaving a reader to count. */}
+          {[...L.entries()].map(([id, p]) => (
+            <g key={`l-${id}`}>
+              <rect x={X0 - BAR} y={p.y0} width={BAR} height={Math.max(2, p.y1 - p.y0)}
+                    fill={colOf(id)} rx={1} />
+              {(p.y1 - p.y0) >= LABEL_MIN_PX && (
+                <text x={X0 - BAR - 6} y={(p.y0 + p.y1) / 2 + 3.5} textAnchor="end"
+                      fontSize="11" fill={INK_2}>{id}</text>
+              )}
+            </g>
+          ))}
+          {[...R.entries()].map(([id, p]) => (
+            <g key={`r-${id}`}>
+              <rect x={X1} y={p.y0} width={BAR} height={Math.max(2, p.y1 - p.y0)}
+                    fill={INK_3} rx={1} />
+              {(p.y1 - p.y0) >= LABEL_MIN_PX && (
+                <text x={X1 + BAR + 6} y={(p.y0 + p.y1) / 2 + 3.5} textAnchor="start"
+                      fontSize="11" fill={INK_2}>{id}</text>
+              )}
+            </g>
+          ))}
+          <text x={X0 - BAR - 6} y="10" textAnchor="end" style={font.micro} fill={INK_3}>from</text>
+          <text x={X1 + BAR + 6} y="10" textAnchor="start" style={font.micro} fill={INK_3}>to</text>
+        </svg>
+        )}
+      </div>
     </ChartFrame>
   );
 }

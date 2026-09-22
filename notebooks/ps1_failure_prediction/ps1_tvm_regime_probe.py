@@ -38,7 +38,10 @@ from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
 FLEET = "TVM"
-START, END = "2025-07-01", "2026-08-29"      # a year either side of the break
+START, END = "2023-07-01", "2026-08-29"      # THREE winters: the duplicate check
+                                             # cleared ingestion, so the Dec-Feb spike
+                                             # is real. If it recurs every winter it is
+                                             # seasonal, not an incident.
 GAP_DAYS = 3                                  # the label's sessionisation rule
 
 _silver = globals().get("S3_SILVER_RUNTIME") or globals().get("s3_silver")

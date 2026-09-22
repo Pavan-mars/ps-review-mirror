@@ -367,7 +367,7 @@ function EstateOverview({ onOpen }) {
           loading={f.ps2Trend.loading || f.ps2Trend.idle}
           error={f.ps2Trend.error || f.ps2Status.error}
           stats={ps2}
-          note="Recorded OOS time above half of available capacity indicates episodes that never close, not fleet availability."
+          note="Recorded OOS time is wall clock: concurrent component episodes on one device count once."
           onOpen={() => onOpen('ps2')}
         />
 

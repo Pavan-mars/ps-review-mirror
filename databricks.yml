@@ -397,7 +397,11 @@ resources:
           - ${workspace.current_user.userName}
       tasks:
         - task_key: ps2_failure_patterns_v254
-          description: PS2 v2.5.4 union-minutes cascade analytics + 47-table S3 export
+          # 20, not 47. The other 27 come from PS2_Serial_Grain_Analysis_v1_FIXED
+          # and are NOT in this job -- see the job description above, which says so
+          # in full. Whoever builds the submitter Lambda reads this line, not that
+          # paragraph, and would conclude all 47 Aurora tables refresh together.
+          description: PS2 v2.5.4 union-minutes cascade analytics + 20-table S3 export (patterns producer only)
           notebook_task:
             notebook_path: ./notebooks/ps2_cascading_failure/PS2_Failure_Patterns_v2_5_4_Union_Minutes.ipynb
           new_cluster:

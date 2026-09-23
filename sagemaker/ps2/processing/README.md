@@ -71,11 +71,18 @@ PS2SG_COMPUTED_DATE=2026-08-29 python run_processing_job.py \
   --dry-run
 ```
 
-Drop `--dry-run` to submit; add `--wait` to poll. `ml.r5.2xlarge` by default
+Drop `--dry-run` to submit; add `--wait` to poll. `ml.r7i.2xlarge` by default
 because the notebook loads `device_ps2_chains` whole — 2,975,907 rows x 57
 columns into pandas — then computes per-serial phi matrices, HMM fits and
 association rules across ~4,549 serials. Its own comment says a kernel death
 here is almost always OOM and to prefer a memory-optimized size.
+
+Do **not** set `ml.r5.2xlarge`. This account's *Processing* quota for it is
+**zero** — Processing quotas are a separate pool from the Studio and training
+ones, so an instance type you use daily in Studio can still be unavailable
+here — and a submit fails with `ResourceLimitExceeded`. This document used to
+recommend it, against the code's own default. The first run on r7i completed
+in 16 minutes with a peak RSS of 20 GB on a 128 GiB instance.
 
 ## Acceptance
 

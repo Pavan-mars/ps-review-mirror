@@ -249,9 +249,20 @@ fi
 aws lambda wait function-updated --function-name "$FN"
 echo "   Lambda ready"
 
-echo ">> [6/7] EventBridge schedule (07:10 UTC daily — after the PS1 push at 06:15)"
+# 13:30 UTC, NOT 07:10.                                       23-Sep-2026
+# Both PS2 producers are scheduled in America/Chicago -- medallion_ps2_daily
+# at 06:45 and the serial-grain Processing job at 06:55 -- and those slots
+# are correct, because the gold job they read runs 06:00 on the same clock.
+# 06:55 America/Chicago is 11:55 UTC in CDT and 12:55 in CST. This rule is
+# an EventBridge RULE, and put-rule accepts no timezone parameter, so its
+# cron is always UTC. At 07:10 the loader ran roughly five hours BEFORE the
+# producers it consumes: the chain would not crash, it would quietly become
+# T+1, publishing yesterday's run every morning and reporting 47/47.
+# 13:30 UTC clears 06:55 America/Chicago plus the job's runtime cap in both
+# DST regimes. The PS1 push this used to defer to was disabled on 10-Aug.
+echo ">> [6/7] EventBridge schedule (13:30 UTC daily -- after BOTH America/Chicago producers, 06:45 patterns + 06:55 serial-grain plus its cap)"
 RULE=cubic-mars-ps2-daily-load
-aws events put-rule --name $RULE --schedule-expression "cron(10 7 * * ? *)" \
+aws events put-rule --name $RULE --schedule-expression "cron(30 13 * * ? *)" \
   --description "Daily PS2 cascade + serial-grain outputs -> Aurora" --state ENABLED >/dev/null
 aws lambda add-permission --function-name "$FN" --statement-id ${RULE}-invoke \
   --action lambda:InvokeFunction --principal events.amazonaws.com \

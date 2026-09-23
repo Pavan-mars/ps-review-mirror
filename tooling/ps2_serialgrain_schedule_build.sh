@@ -54,7 +54,22 @@ ROLE_NAME=cubic-mars-ps2-scheduler-invoke-dev
 EXEC_ROLE=cubic-mars-role-sagemaker-exec-dev
 IMAGE_TAG=v1
 # 06:55 America/Chicago: ten minutes after medallion_ps2_daily's 06:45 slot so
-# the two producers land in the same window, and before the 07:10 UTC loader.
+# the two producers land in the same window.
+#
+# THE LOADER IS THE PIECE THAT MOVES.                          23-Sep-2026
+# This comment used to end "and before the 07:10 UTC loader", which was false
+# by nearly five hours. 06:55 America/Chicago is 11:55 UTC in CDT and 12:55 in
+# CST -- EventBridge SCHEDULER honours --schedule-expression-timezone, which
+# this script passes on both branches below, so the local time is real. The
+# loader is an EventBridge RULE (`aws events put-rule`), and put-rule takes no
+# timezone parameter at all, so its cron is always UTC.
+#
+# Moving the producers earlier would be worse, not better: their 06:45/06:55
+# slots are correctly placed after the 06:00 America/Chicago gold job
+# (databricks.yml:85-86, same clock), and 06:45 UTC would put them four hours
+# BEFORE the data they read. So the loader moves instead, to 13:30 UTC --
+# after 06:55 America/Chicago plus this job's runtime cap, in both DST
+# regimes. See api/lambda/cubic-mars-ps2-rds-loader/deploy.sh:254.
 SCHEDULE_EXPR="cron(55 6 * * ? *)"
 TZ_ID="America/Chicago"
 
@@ -62,6 +77,17 @@ TZ_ID="America/Chicago"
 # single line that has to change every time upstream moves, and the reason
 # this schedule is not yet a solution to daily operation.
 COMPUTED_DATE=2026-08-29
+
+# Runtime cap. MUST match sagemaker/ps2/processing/run_processing_job.py's
+# --max-runtime-sec default of 14400 -- the same notebook on the same
+# ml.r7i.2xlarge with the same 50 GiB. The schedule previously declared 5400
+# against that 14400: the same job would be killed at 90 minutes when
+# scheduled and allowed four hours when submitted by hand, so a run could
+# succeed every time an operator ran it and fail every morning.
+# BOTH numbers are guesses -- no run duration has been recorded. Replace with
+# the measured duration of the ENABLE ORDER step-3 hand run plus headroom, and
+# change both places in the same commit.
+MAX_RUNTIME_SEC=14400
 
 ACCT=$(aws sts get-caller-identity --query Account --output text)
 BUCKET=cubic-mars-pm-s3-datalake-dev-artifacts-170202974600
@@ -102,23 +128,46 @@ aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name ps2-serialgrain-s
 echo "   policy attached"
 
 echo ">> [4/5] create/update the schedule, DISABLED"
-# <aws.scheduler.scheduled-time> makes the job name unique per firing.
+# NAME AND OUTPUT PREFIX BOTH USE execution-id.                23-Sep-2026
+# <aws.scheduler.scheduled-time> substitutes an ISO-8601 instant, which
+# contains COLONS. SageMaker's ProcessingJobName pattern is
+# ^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}$ -- colons are not permitted -- so
+# CreateProcessingJob would have returned ValidationException on every single
+# firing. <aws.scheduler.execution-id> is a hyphen-safe UUID, 43 chars in
+# total here, and it is unique per ATTEMPT, so a retry after a failure also
+# cannot collide with SageMaker's forever-reserved job names.
+#
+# The output S3Uri carried the same fault from the other direction: it was a
+# fixed prefix with no per-run segment, while the container always writes the
+# same filename, so each day's executed notebook overwrote the last and only
+# one ever survived. run_processing_job.py:148 builds {runs_prefix}/{job_name}
+# for exactly this reason. The INPUT prefix stays fixed -- that is the staged
+# copy of the notebook the schedule reads, and it is meant to be stable.
+# RENDERED ONCE, PASSED TO BOTH BRANCHES.                      23-Sep-2026
+# The fallback used to pass --target "$(aws scheduler get-schedule ...
+# --query Target)" -- the EXISTING target, read back off the schedule. So
+# once the schedule existed, COMPUTED_DATE and IMAGE_TAG were inert on every
+# later run and only the cron, timezone and state were ever updated. The
+# header tells an operator to set COMPUTED_DATE and re-run; that instruction
+# did nothing. Now both branches are handed the same freshly rendered JSON.
+TARGET_JSON="{
+    \"Arn\":\"arn:aws:scheduler:::aws-sdk:sagemaker:createProcessingJob\",
+    \"RoleArn\":\"arn:aws:iam::$ACCT:role/$ROLE_NAME\",
+    \"Input\":\"{\\\"ProcessingJobName\\\":\\\"cubic-mars-ps2-serialgrain-<aws.scheduler.execution-id>\\\",\\\"RoleArn\\\":\\\"arn:aws:iam::$ACCT:role/$EXEC_ROLE\\\",\\\"AppSpecification\\\":{\\\"ImageUri\\\":\\\"$IMAGE\\\"},\\\"ProcessingResources\\\":{\\\"ClusterConfig\\\":{\\\"InstanceCount\\\":1,\\\"InstanceType\\\":\\\"ml.r7i.2xlarge\\\",\\\"VolumeSizeInGB\\\":50}},\\\"ProcessingInputs\\\":[{\\\"InputName\\\":\\\"notebook\\\",\\\"S3Input\\\":{\\\"S3Uri\\\":\\\"s3://$BUCKET/chicago/ps2/processing_code/scheduled\\\",\\\"LocalPath\\\":\\\"/opt/ml/processing/input/notebook\\\",\\\"S3DataType\\\":\\\"S3Prefix\\\",\\\"S3InputMode\\\":\\\"File\\\"}}],\\\"ProcessingOutputConfig\\\":{\\\"Outputs\\\":[{\\\"OutputName\\\":\\\"executed-notebook\\\",\\\"S3Output\\\":{\\\"S3Uri\\\":\\\"s3://$BUCKET/chicago/ps2/processing_runs/scheduled-<aws.scheduler.execution-id>\\\",\\\"LocalPath\\\":\\\"/opt/ml/processing/output\\\",\\\"S3UploadMode\\\":\\\"EndOfJob\\\"}}]},\\\"Environment\\\":{\\\"PS2SG_COMPUTED_DATE\\\":\\\"$COMPUTED_DATE\\\",\\\"AWS_DEFAULT_REGION\\\":\\\"$REGION\\\",\\\"AWS_REGION\\\":\\\"$REGION\\\"},\\\"StoppingCondition\\\":{\\\"MaxRuntimeInSeconds\\\":$MAX_RUNTIME_SEC}}\"
+  }"
+
 aws scheduler create-schedule --name "$SCHED" --region "$REGION" \
   --schedule-expression "$SCHEDULE_EXPR" \
   --schedule-expression-timezone "$TZ_ID" \
   --state DISABLED \
   --flexible-time-window '{"Mode":"OFF"}' \
-  --target "{
-    \"Arn\":\"arn:aws:scheduler:::aws-sdk:sagemaker:createProcessingJob\",
-    \"RoleArn\":\"arn:aws:iam::$ACCT:role/$ROLE_NAME\",
-    \"Input\":\"{\\\"ProcessingJobName\\\":\\\"cubic-mars-ps2-serialgrain-<aws.scheduler.scheduled-time>\\\",\\\"RoleArn\\\":\\\"arn:aws:iam::$ACCT:role/$EXEC_ROLE\\\",\\\"AppSpecification\\\":{\\\"ImageUri\\\":\\\"$IMAGE\\\"},\\\"ProcessingResources\\\":{\\\"ClusterConfig\\\":{\\\"InstanceCount\\\":1,\\\"InstanceType\\\":\\\"ml.r7i.2xlarge\\\",\\\"VolumeSizeInGB\\\":50}},\\\"ProcessingInputs\\\":[{\\\"InputName\\\":\\\"notebook\\\",\\\"S3Input\\\":{\\\"S3Uri\\\":\\\"s3://$BUCKET/chicago/ps2/processing_code/scheduled\\\",\\\"LocalPath\\\":\\\"/opt/ml/processing/input/notebook\\\",\\\"S3DataType\\\":\\\"S3Prefix\\\",\\\"S3InputMode\\\":\\\"File\\\"}}],\\\"ProcessingOutputConfig\\\":{\\\"Outputs\\\":[{\\\"OutputName\\\":\\\"executed-notebook\\\",\\\"S3Output\\\":{\\\"S3Uri\\\":\\\"s3://$BUCKET/chicago/ps2/processing_runs/scheduled\\\",\\\"LocalPath\\\":\\\"/opt/ml/processing/output\\\",\\\"S3UploadMode\\\":\\\"EndOfJob\\\"}}]},\\\"Environment\\\":{\\\"PS2SG_COMPUTED_DATE\\\":\\\"$COMPUTED_DATE\\\",\\\"AWS_DEFAULT_REGION\\\":\\\"$REGION\\\",\\\"AWS_REGION\\\":\\\"$REGION\\\"},\\\"StoppingCondition\\\":{\\\"MaxRuntimeInSeconds\\\":5400}}\"
-  }" 2>/dev/null \
+  --target "$TARGET_JSON" 2>/dev/null \
   || aws scheduler update-schedule --name "$SCHED" --region "$REGION" \
        --schedule-expression "$SCHEDULE_EXPR" \
        --schedule-expression-timezone "$TZ_ID" \
        --state DISABLED \
        --flexible-time-window '{"Mode":"OFF"}' \
-       --target "$(aws scheduler get-schedule --name "$SCHED" --region "$REGION" --query Target --output json)"
+       --target "$TARGET_JSON"
 
 echo ">> [5/5] verify it exists and is DISABLED"
 aws scheduler get-schedule --name "$SCHED" --region "$REGION" \

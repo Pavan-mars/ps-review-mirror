@@ -1719,7 +1719,13 @@ _PS2V25 = {
         # burden and not device downtime. Availability must read
         # hardware_oos_union_minutes. Both are returned so the difference
         # stays visible rather than being silently swapped.
-        'hardware_oos_union_minutes,hardware_oos_onsets_distinct_interval',
+        'hardware_oos_union_minutes,hardware_oos_onsets_distinct_interval,'
+        # The ratio of the two minute columns. sql/46 creates it and comments
+        # it; the producer computes it twice; and until now no route selected
+        # it, so the one number that shows HOW MUCH the episode-sum column
+        # overstates a given day was unreachable. A documented correction that
+        # nothing serves is how the next reader concludes it was never made.
+        'oos_minutes_overlap_factor',
         "event_date, device_category", 2000, 5000, "event_date"),
     "exposure": ("ps2_v2_customer_exposure",
         'event_date,device_category,hardware_oos_onsets,hardware_oos_minutes,'
@@ -1757,7 +1763,8 @@ _PS2V25 = {
     "deterioration": ("ps2_v2_device_deterioration",
         'device_id,device_category,event_date,hardware_oos_onsets,hardware_oos_minutes,'
         'validated_failure_onsets,baseline_mean_28d,baseline_std_28d,oos_zscore_28d,alert_reason,'
-        'hardware_oos_union_minutes,hardware_oos_onsets_distinct_interval',
+        'hardware_oos_union_minutes,hardware_oos_onsets_distinct_interval,'
+        'oos_minutes_overlap_factor',
         "oos_zscore_28d DESC NULLS LAST", 1000, 5000, "event_date"),
     "clusters": ("ps2_v2_cofailure_clusters",
         'event_date,cluster_scope,cluster_id,device_category,facility_id,cofailing_devices,'

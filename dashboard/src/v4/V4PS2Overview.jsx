@@ -404,6 +404,15 @@ function ImpactView({ feeds }) {
   // against 0 available, across 0 days and 0 devices". A dead route read as
   // an estate that lost nothing.
   const unionCov = useMemo(() => unionCoverage(trend), [trend]);
+  // HOW MUCH WAS IT OVERSTATED? The producer publishes the ratio of the two
+  // minute columns and no route served it until 23-Sep, so the size of the
+  // correction was never on screen -- only its result. Weighted by the union
+  // minutes, so a big day counts more than a quiet one.
+  const overlapFactor = useMemo(() => {
+    const u = sumBy(trend, oosUnion);
+    const raw = sumBy(trend, 'hardware_oos_minutes');
+    return u > 0 ? raw / u : null;
+  }, [trend]);
 
   const heroPending = ['trend', 'exposure', 'labelSummary']
     .some((k) => feeds[k].loading || feeds[k].idle || feeds[k].error);
@@ -424,6 +433,9 @@ function ImpactView({ feeds }) {
             sub={loading ? '' : `${nfmt(totals.outageHours)} device-hours recorded against ${nfmt(totals.capacity)} available, across ${nfmt(totals.days)} days and ${nfmt(totals.devices)} devices`}
           />
           <Stat label="Devices in scope" value={loading ? '--' : nfmt(totals.devices)} foot="TVMs, fare gates and bus validators" />
+          <Stat label="Component episode overlap"
+                value={loading || !overlapFactor ? '--' : `${overlapFactor.toFixed(2)}x`}
+                foot="summed component episodes vs wall clock; 1.00x would mean none overlap" />
           <Stat label="Transactions exposed" value={loading ? '--' : compact(totals.txn)} foot="during an open OOS episode" />
         </Grid>
         {!loading && unionCov.n > 0 && unionCov.share < 1 && (

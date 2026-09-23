@@ -2248,39 +2248,6 @@ def route(method, path, params, body, headers=None):
     if _v25 is not None: return _v25
     _p3v25 = _ps3_v25_route(path, params, city)
     if _p3v25 is not None: return _p3v25
-    if path == "/ps2/windows":
-        return ok(rows("SELECT window_bucket,cascade_days,pct,total_cascade_days,slow_fast_fault_mult,slow_fast_duration_mult FROM ps2_cascade_window_summary WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_cascade_window_summary WHERE city_id=:c) ORDER BY cascade_days DESC", c=city))
-    if path == "/ps2/windowdetail":
-        return ok(rows("SELECT window_bucket,cascade_days,chain_len_mean,chain_len_median,chain_len_max,span_min_mean,span_min_median,velocity_min_per_fault FROM ps2_window_detail WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_window_detail WHERE city_id=:c) ORDER BY span_min_mean", c=city))
-    if path == "/ps2/topdevices":
-        # 27-Jul-2026. Repointed from ps2_top_devices to v_ps2_device_cascade.
-        #
-        # ps2_top_devices is NOT part of the PS2 S3 export. It was never loaded
-        # by the pipeline and held exactly one row -- BMV01005, a seed left over
-        # from an early backfill -- so this route has been reporting a fleet of
-        # one while 4,673 real devices sat in ps2_business_impact.
-        #
-        # dev_rank is kept as an alias of impact_rank so a caller ordering by it
-        # still works. The w0_5..w60plus time-window columns are GONE and are not
-        # faked: the export carries no per-device window split (the only velocity
-        # breakdown, ps2_cascade_velocity, is fleet-level). Returning zeros there
-        # would read as "this device never cascaded in 0-5 min", which is a claim
-        # the data does not support.
-        #
-        # limit defaults to 20 to match the route's original intent; ?limit=0
-        # returns all 4,673.
-        try:
-            lim = int((params or {}).get("limit", 20))
-        except (TypeError, ValueError):
-            lim = 20
-        sql = ("SELECT device_id,category,total_impact,avg_impact,"
-               "impact_cascade_days AS cascade_days,recurrence_cascade_days,"
-               "chronic,impact_rank,impact_rank_in_category,"
-               "impact_rank AS dev_rank "
-               "FROM v_ps2_device_cascade WHERE city_id=:c ORDER BY impact_rank")
-        if lim > 0:
-            sql += f" LIMIT {int(lim)}"
-        return ok(rows(sql, c=city))
     # ---- PS2 SERIAL-GRAIN  (added 01-Aug-2026) ----------------------------
     #
     # ONE route, seventeen metrics: GET /ps2/serial/{metric}?city=CHI
@@ -2343,105 +2310,15 @@ def route(method, path, params, body, headers=None):
                     f" WHERE city_id=:c){w} {order} LIMIT {lim}")
 
         M = {
-            "suppression": _latest(
-                "ps2_suppression_summary_serial",
-                'family, grain, min_support_floor, cells_suppressed, '
-                'cells_reported, run_id, computed_date',
-                "ORDER BY family"),
-            "chronic": _latest(
-                "ps2_chronic_recurrence_serial",
-                'serial_id, device_category, reference_period_days, '
-                'reference_period_source, n_cascades, recurrence_rate_per_day, '
-                'peer_pct_rank, chronicity_flag',
-                "ORDER BY recurrence_rate_per_day DESC NULLS LAST",
-                "serial_id"),
-            "recurrence": _latest(
-                "ps2_recurrence_serial",
-                'serial_id, cascade_days, chronic',
-                "ORDER BY cascade_days DESC NULLS LAST", "serial_id"),
-            "leadlag": _latest(
-                "ps2_leadlag_timing_serial",
-                'serial_id, sub_a, sub_b, "mean", median, p25, p75, n',
-                "ORDER BY serial_id, sub_a, sub_b", "serial_id"),
-            "assoc": _latest(
-                "ps2_association_rules_serial",
-                'serial_id, antecedents, consequents, support, confidence, '
-                'lift, conviction',
-                "ORDER BY lift DESC NULLS LAST", "serial_id"),
-            "impact": _latest(
-                "ps2_business_impact_serial",
-                'entity_id, cascade_days, total_impact, avg_impact',
-                "ORDER BY total_impact DESC NULLS LAST"),
-            "velocity": _latest(
-                "ps2_cascade_velocity_by_age_serial",
-                'age_bucket, n, mean_velocity_min_per_fault',
-                "ORDER BY age_bucket"),
-            "crossps": _latest(
-                "ps2_cross_ps_attribution_serial",
-                'entity_grain, n_ps2_ignition_entities, n_matched_in_cross_ps, '
-                'match_rate, ps1_high_risk_co_occur_n, '
-                'ps1_high_risk_co_occur_rate, ps4_anomaly_co_occur_n, '
-                'ps4_anomaly_co_occur_rate, note',
-                "ORDER BY entity_grain"),
-            # computed_date is SELECTED so the panel can state this family's own
-            # vintage instead of asserting one. The serial-grain tables are
-            # produced by a different notebook from the ps2_v25_* set and can
-            # sit weeks behind it -- they did, at 26-Jul against 29-Aug -- and
-            # /ps2/status covers only the v25 family, so nothing else on the
-            # tab can report it.                                  21-Sep-2026
             "sankey": _latest(
                 "ps2_cascade_sankey_subsystem",
                 'subsystem_from, subsystem_to, cascade_count, '
                 'total_business_impact, avg_severity, computed_date',
                 "ORDER BY cascade_count DESC NULLS LAST"),
-            "network": _latest(
-                "ps2_network_centrality",
-                'node_id AS subsystem, scope, betweenness, pagerank, '
-                'in_degree, out_degree',
-                "ORDER BY pagerank DESC NULLS LAST"),
-            # A PANEL THAT CANNOT DATE ITSELF.                      23-Sep-2026
-            # The Relationships section draws from two generations and stated
-            # one vintage for all of them. Each feed now carries its own, so
-            # computed_date joins the projection here and on /ps2/phi and
-            # /ps2/network. The tables already have the column; this is a
-            # zip-swap, no migration.
             "ignition": _latest(
                 "ps2_ignition_termination_subsystem",
                 'subsystem, ignition_count, termination_count, computed_date',
                 "ORDER BY ignition_count DESC NULLS LAST"),
-            "facility": _latest(
-                "ps2_facility_contagion_facility",
-                # contagion_rate is RETIRED (23-Sep-2026): it was
-                # cascade_days / distinct_devices, a per-device count that
-                # the tab rendered as a percentage -- 78,217.3% on facility
-                # 44 -- and it ranked single-device facilities first, which
-                # cannot exhibit contagion at all. Still selected so the
-                # 29-Aug rows remain readable; the panel reads the two new
-                # columns and shows an em dash until a corrected run lands.
-                'facility_id, cascade_days, distinct_devices, contagion_rate, '
-                'cascade_days_per_device, multi_device_contagion_rate, contagion_eligible',
-                "ORDER BY contagion_eligible DESC NULLS LAST, multi_device_contagion_rate DESC NULLS LAST, cascade_days DESC NULLS LAST"),
-            "phi": _latest(
-                "ps2_phi_matrix_serial",
-                'serial_id, sub_a, sub_b, phi',
-                "ORDER BY phi DESC NULLS LAST", "serial_id"),
-            "condprob": _latest(
-                "ps2_conditional_prob_serial",
-                'serial_id, sub_a, sub_b, "window", "window" AS window_bucket, '
-                'n_a, n_ab, p_b_given_a',
-                "ORDER BY p_b_given_a DESC NULLS LAST", "serial_id"),
-            "hmm": _latest(
-                "ps2_hmm_regimes_serial",
-                'serial_id, n_obs, pct_time_critical, mean_chain_length, '
-                'converged, n_iter_run',
-                "ORDER BY pct_time_critical DESC NULLS LAST", "serial_id"),
-            "markov": _latest(
-                "ps2_markov_self_transition_serial",
-                'serial_id, n_chains, self_transition_rate',
-                "ORDER BY n_chains DESC NULLS LAST", "serial_id"),
-            # The serial -> device map. ps2_device_catalog is the only place
-            # the two identifiers sit on one row. Without this every Analyse
-            # button on the serial tab stays disabled.
             "cmdb": ("SELECT DISTINCT serial AS serial_id, device_id"
                      " FROM ps2_device_catalog WHERE city_id=:c"
                      " AND serial IS NOT NULL AND device_id IS NOT NULL"
@@ -2459,36 +2336,15 @@ def route(method, path, params, body, headers=None):
             return ok(_safe_rows(M[metric], c=city, s=serial))
         return ok(_safe_rows(M[metric], c=city))
 
-    if path == "/ps2/hub":
-        return ok({"nodes": rows("SELECT node_id,freq,is_hub FROM ps2_subsystem_hub_summary WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_subsystem_hub_summary WHERE city_id=:c) ORDER BY freq DESC", c=city),
-                   "edges": rows("SELECT source_sub,target_sub,phi FROM ps2_subsystem_hub_edges WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_subsystem_hub_edges WHERE city_id=:c)", c=city)})
-    if path == "/ps2/facility":
-        r = rows("SELECT * FROM ps2_facility_contagion_summary WHERE city_id=:c ORDER BY computed_date DESC LIMIT 1", c=city)
-        return ok(r[0] if r else {})
-    if path == "/ps2/associations":
-        return ok(rows("SELECT antecedent_subsystem,consequent_subsystem,support,confidence,lift,conviction FROM ps2_subsystem_associations WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_subsystem_associations WHERE city_id=:c) ORDER BY lift DESC", c=city))
-    if path == "/ps2/hmm":
-        return ok(rows("SELECT regime,pct,dwell_days_min,dwell_days_max FROM ps2_hmm_regimes WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_hmm_regimes WHERE city_id=:c)", c=city))
     # ---- Phase-1e NEW PS2 analytics (return newest computed_date only) ----
-    if path == "/ps2/paths":
-        return ok(rows("SELECT path_rank,cascade_path,path_len,first_subsystem,last_subsystem,occurrences,pct_of_chains FROM ps2_cascade_paths WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_cascade_paths WHERE city_id=:c) ORDER BY path_rank", c=city))
-    if path == "/ps2/ignition":
-        return ok(rows("SELECT subsystem,rank,ignition_days,termination_days,ignition_pct,termination_pct,net_role FROM ps2_ignition_termination WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_ignition_termination WHERE city_id=:c) ORDER BY rank", c=city))
-    if path == "/ps2/impact":
-        return ok(rows("SELECT device_id,category,total_impact,cascade_days,avg_impact,max_impact,impact_rank FROM ps2_business_impact WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_business_impact WHERE city_id=:c) ORDER BY impact_rank", c=city))
     # ---- Phase-1f RICH PS2 (correlation/markov/network/error-codes/device drill-down) ----
     if path == "/ps2/devices":
         return ok(rows("SELECT device_id,device_name,serial,category,control_group,facility,operator,cascade_days,avg_chain_len,max_chain_len,dom_subsystem,dom_error_code,worst_cascade_path,worst_window FROM ps2_device_catalog WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_device_catalog WHERE city_id=:c) ORDER BY cascade_days DESC LIMIT 200", c=city))
     if path == "/ps2/devicecascades":
         dev = (params or {}).get("device", "")
         return ok(rows("SELECT device_id,transit_day,subsystem_chain,event_code_chain,severity_chain,chain_length,chain_span_min,first_subsystem,last_subsystem FROM ps2_device_cascades WHERE city_id=:c AND device_id=:d AND computed_date=(SELECT MAX(computed_date) FROM ps2_device_cascades WHERE city_id=:c) ORDER BY transit_day DESC LIMIT 100", c=city, d=dev))
-    if path == "/ps2/errorcodes":
-        return ok({"codes": rows("SELECT error_code,occurrences,top_subsystem,pct FROM ps2_error_codes WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_error_codes WHERE city_id=:c) ORDER BY occurrences DESC", c=city),
-                   "transitions": rows("SELECT from_code,to_code,occurrences FROM ps2_error_code_transitions WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_error_code_transitions WHERE city_id=:c) ORDER BY occurrences DESC", c=city)})
     if path == "/ps2/phi":
         return ok(rows("SELECT sub_a,sub_b,phi,computed_date FROM ps2_phi_matrix WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_phi_matrix WHERE city_id=:c)", c=city))
-    if path == "/ps2/markov":
-        return ok(rows("SELECT from_sub,to_sub,prob FROM ps2_markov_transitions WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_markov_transitions WHERE city_id=:c) ORDER BY prob DESC", c=city))
     if path == "/ps2/network":
         # 27-Jul-2026. The table is now keyed on scope as well, because the PS2
         # export carries each subsystem once per scope: ALL(10) + TVM(8) +
@@ -2520,8 +2376,6 @@ def route(method, path, params, body, headers=None):
             "WHERE city_id=:c AND scope=:s AND computed_date="
             "(SELECT MAX(computed_date) FROM ps2_network_centrality WHERE city_id=:c) "
             "ORDER BY betweenness DESC", c=city, s=sc))
-    if path == "/ps2/conditional":
-        return ok(rows("SELECT sub_a,sub_b,window_bucket,p_b_given_a FROM ps2_conditional_prob WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_conditional_prob WHERE city_id=:c) ORDER BY p_b_given_a DESC", c=city))
     # ---- PS1 model scorecard ----
     #
     # 2026-08-10 -- ps1_failure_summary RETIRED as the source of this route.
@@ -2553,77 +2407,6 @@ def route(method, path, params, body, headers=None):
     # source_table, so no city that has not been re-run yet goes dark. That
     # fallback is the reversibility of this change: delete the mp branch and the
     # 13-Jul behaviour returns byte for byte.
-    if path == "/ps1/summary":
-        mp = rows("SELECT device_category,model_name,algorithm,test_auc,test_ap,test_f1,"
-                  "test_prec,test_rec,decision_threshold,quality_gate,promoted,endpoint_name,"
-                  "mlflow_version,n_features,recall_floor,base_rate_pct,target_col,"
-                  "label_revision,run_id,computed_date "
-                  "FROM ps1_model_performance WHERE city_id=:c AND computed_date="
-                  "(SELECT MAX(computed_date) FROM ps1_model_performance WHERE city_id=:c)",
-                  c=city)
-        if mp:
-            conf = {str(r["device_category"]): r for r in rows(
-                "SELECT device_category,tp,fp,tn,fn FROM ps1_confusion WHERE city_id=:c "
-                "AND computed_date=(SELECT MAX(computed_date) FROM ps1_confusion WHERE city_id=:c)",
-                c=city)}
-            out = []
-            for r in mp:
-                cat = str(r.get("device_category") or "")
-                cm  = conf.get(cat) or {}
-                tp = fp = tn = fn = None
-                if all(cm.get(k) is not None for k in ("tp", "fp", "tn", "fn")):
-                    tp, fp, tn, fn = int(cm["tp"]), int(cm["fp"]), int(cm["tn"]), int(cm["fn"])
-                n       = (tp + fp + tn + fn) if tp is not None else None
-                pos     = (tp + fn) if tp is not None else None
-                flagged = (tp + fp) if tp is not None else None
-                # The confusion matrix IS the operating point: it was computed at
-                # decision_threshold, so precision and recall read off it are the
-                # operating precision and recall, not a second set of numbers.
-                acc  = round((tp + tn) / n, 6) if n else None
-                op_p = round(tp / flagged, 6) if flagged else None
-                op_r = round(tp / pos, 6) if pos else None
-                op_f2 = (round(5.0 * op_p * op_r / (4.0 * op_p + op_r), 6)
-                         if op_p and op_r else None)
-                out.append({
-                    "device": _PS1_DISPLAY.get(cat, cat), "device_category": cat,
-                    "champion_model": r.get("model_name") or r.get("algorithm"),
-                    "algorithm": r.get("algorithm"),
-                    "test_auc": r.get("test_auc"), "test_ap": r.get("test_ap"),
-                    "test_accuracy": acc, "test_f1": r.get("test_f1"),
-                    "test_precision": r.get("test_prec"), "test_recall": r.get("test_rec"),
-                    "op_threshold": r.get("decision_threshold"),
-                    "op_fleet_pct": round(100.0 * flagged / n, 2) if n else None,
-                    "op_precision": op_p, "op_recall": op_r, "op_f2": op_f2,
-                    "recall_floor": r.get("recall_floor"),
-                    "quality_gate": r.get("quality_gate"), "promoted": r.get("promoted"),
-                    # Not measured by the run that wrote ps1_model_performance.
-                    # Null on purpose -- see the note above this route.
-                    "brier_raw": None, "brier_cal": None, "auc_cal": None,
-                    "prec_at_k": None, "rec_at_k": None, "lift_at_k": None,
-                    "map_score": None, "sm_registered": None, "overfit_flag": None,
-                    "n_train": None,
-                    "n_test": n, "n_test_pos": pos,
-                    "base_rate_pct": (r.get("base_rate_pct") if r.get("base_rate_pct") is not None
-                                      else (round(100.0 * pos / n, 2) if n else None)),
-                    "n_features": r.get("n_features"),
-                    "mlflow_version": r.get("mlflow_version"),
-                    "endpoint_name": r.get("endpoint_name"),
-                    "target": r.get("target_col"), "label_revision": r.get("label_revision"),
-                    "run_id": r.get("run_id"), "as_of_date": r.get("computed_date"),
-                    "source_table": "ps1_model_performance + ps1_confusion",
-                })
-            # champion-first: promoted models, then strongest test AUC.
-            out.sort(key=lambda x: (x.get("promoted") is not True,
-                                    -(_num(x.get("test_auc")) or 0.0),
-                                    str(x.get("device"))))
-            return ok(out)
-        legacy = rows("SELECT device,champion_model,test_auc,test_ap,test_accuracy,test_f1,test_precision,test_recall,op_threshold,op_fleet_pct,op_precision,op_recall,op_f2,recall_floor,quality_gate,promoted,brier_raw,brier_cal,auc_cal,prec_at_k,rec_at_k,lift_at_k,map_score,mlflow_version,sm_registered,endpoint_name,overfit_flag,n_train,n_test,n_test_pos,base_rate_pct,target,run_id,as_of_date FROM ps1_failure_summary WHERE city_id=:c "
-                      "ORDER BY promoted DESC, test_auc DESC NULLS LAST, device", c=city)
-        for r in legacy:
-            r["device_category"] = _PS1_CATEGORY.get(str(r.get("device") or "").upper())
-            r["source_table"] = ("ps1_failure_summary -- RETIRED 2026-08-10, shown only "
-                                 "because ps1_model_performance has no row for this city")
-        return ok(legacy)
     if path == "/ps1/leaderboard":
         # 2026-07-26 -- was ORDER BY device,lb_rank, which put the *non*-champion
         # top-AUC row first and buried the deployed champion (Gates: CatBoost at
@@ -2685,8 +2468,6 @@ def route(method, path, params, body, headers=None):
         if _truthy((params or {}).get("exclude_degenerate")):
             lb = [r for r in lb if r["verdict"] != "degenerate"]
         return ok(lb)
-    if path == "/ps1/features":
-        return ok(rows("SELECT device,feature,mean_abs_shap,pct_total,feat_rank FROM ps1_features WHERE city_id=:c ORDER BY device,feat_rank", c=city))
     # ---- Phase-1g PS1 SERVING (backs the rich teammates' PS1 tab) ----
     if path == "/ps1/predictions":
         # 2026-07-26 -- BUG FIX. This route was
@@ -2742,190 +2523,6 @@ def route(method, path, params, body, headers=None):
     # ps1_feature_importance -- so the dashboard could show validator
     # predictions with no model behind them. This route makes that gap explicit
     # instead of leaving a silently empty panel.
-    if path == "/ps1/coverage":
-        out = []
-        for tbl, col in (("ps1_failure_predictions", "device_category"),
-                         ("ps1_failure_summary", "device"),
-                         ("ps1_leaderboard", "device"),
-                         ("ps1_model_performance", "device_category"),
-                         ("ps1_feature_importance", "device_category"),
-                         ("ps1_serial_predictions", "device_category"),
-                         ("ps1_risk_bands", "device_category"),
-                         ("ps1_threshold_sweep", "device_category")):
-            try:
-                r = rows(f"SELECT {col} AS category, COUNT(*) AS n FROM {tbl} "
-                         f"WHERE city_id=:c GROUP BY {col} ORDER BY {col}", c=city)
-                out.append({"table": tbl, "categories": r})
-            except Exception as e:
-                out.append({"table": tbl, "error": str(e)[:160]})
-        return ok(out)
-    if path == "/ps1/model-performance":
-        # 2026-08-10 -- target_col, label_revision, recall_floor, base_rate_pct and
-        # run_id were added to this table by sql/16 in July and have never been
-        # served. A scorecard that cannot say which label it was scored against,
-        # or what bar it had to clear, is not a scorecard. They are returned now.
-        mp = rows("SELECT device_category,model_name,algorithm,decision_threshold,mlflow_version,endpoint_name,n_features,quality_gate,promoted,computed_date,test_auc,test_ap,test_f1,test_prec,test_rec,target_col,label_revision,recall_floor,base_rate_pct,run_id FROM ps1_model_performance WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps1_model_performance WHERE city_id=:c)", c=city)
-        # 2026-07-26 -- accuracy is now COMPUTED from the real confusion matrix
-        # rather than hardcoded (the old {"TVM": 0.7033, "GATE": 0.9950} literal
-        # was removed) or left NULL. ps1_confusion holds the run's actual
-        # TP/FP/TN/FN, so accuracy = (TP+TN)/N is derived, not asserted.
-        #
-        # The baseline shipped alongside it is the MAJORITY-CLASS accuracy,
-        # max(prevalence, 1 - prevalence) -- NOT the positive prevalence.
-        #
-        # 2026-07-26 CORRECTION. This first used positive prevalence, which is
-        # only the right baseline when positives are the majority. On VALIDATOR
-        # they are not: 38.91% positive, so the accuracy you get for free is
-        # "always predict negative" = 61.09%. The old formula reported a lift of
-        # +59.8 points against 38.91 when the true gain is +37.6 -- and the
-        # notebook agrees with the corrected figure (gain=+0.3758). Overstating a
-        # model's edge is the same failure as the 99.11% severity head, just
-        # pointing the other way.
-        #
-        # Both numbers are returned: positive_prevalence_pct describes the data,
-        # majority_accuracy_pct is what accuracy must beat.
-        conf = {r["device_category"]: r for r in rows(
-            "SELECT device_category,tp,fp,tn,fn FROM ps1_confusion WHERE city_id=:c "
-            "AND computed_date=(SELECT MAX(computed_date) FROM ps1_confusion WHERE city_id=:c)",
-            c=city)}
-        # E-1. Which run is each endpoint actually serving? ps1_inference_runs
-        # records endpoint_name per device_category; if its run_id differs from
-        # the run that produced the scorecard row, the panel and the endpoint
-        # disagree and the reader must be told.
-        _serving_match = {}
-        try:
-            # run_kind MATTERS AND THE FIRST VERSION IGNORED IT.
-            # ps1_inference_runs mixes two kinds of row: run_kind='train', written
-            # when a model is produced and registered, and run_kind='batch_score',
-            # written by a loader every time it scores. Taking the latest row of
-            # ANY kind reported the most recent SCORING run as the model the
-            # endpoint serves. Caught on the live deploy: TVM came back as
-            # ps1_20260810 -- a batch_score row written by Path B this morning --
-            # while GATE and VALIDATOR correctly showed ps1_sklearn_20260726.
-            # A scoring run is not a served model. Only 'train' rows answer this.
-            for _s in rows("SELECT DISTINCT ON (device_category) device_category, run_id, "
-                           "endpoint_name, run_kind FROM ps1_inference_runs "
-                           "WHERE city_id=:c AND run_kind = 'train' "
-                           "ORDER BY device_category, run_ts DESC", c=city):
-                _serving_match[_s["device_category"]] = {
-                    "serving_run_id": _s.get("run_id"),
-                    "endpoint_name": _s.get("endpoint_name"),
-                    "serving_run_kind": _s.get("run_kind"),
-                    "matches": None, "caveat": None}
-        except Exception as _e:
-            print(f"[warn] serving-match probe failed: {type(_e).__name__}: {_e}")
-        out = []
-        for r in mp:
-            # A category with NO ps1_inference_runs row at all must not fall
-            # through as a silent None. An absent record and a verified match
-            # are different findings and the panel has to be able to tell them
-            # apart -- the same failure this morning's causation view had, where
-            # a missing fleet and a fleet with no signal looked identical.
-            _sm = _serving_match.setdefault(r["device_category"], {
-                "serving_run_id": None, "endpoint_name": None,
-                "matches": None,
-                "caveat": ("No ps1_inference_runs row exists for this fleet, so there is "
-                           "NO RECORD of any endpoint serving it. The link between this "
-                           "scorecard and any deployed endpoint is unverified and must not "
-                           "be presented as serving performance.")})
-            if _sm.get("serving_run_id") is not None or _sm.get("endpoint_name") is not None:
-                _same = (_sm["serving_run_id"] is not None and r.get("run_id") is not None
-                         and str(_sm["serving_run_id"]) == str(r.get("run_id")))
-                _sm["matches"] = _same if _sm["serving_run_id"] and r.get("run_id") else None
-                if _sm["matches"] is False:
-                    _sm["caveat"] = (
-                        f"The scorecard below describes run {r.get('run_id')}. The endpoint "
-                        f"{_sm['endpoint_name']} was last recorded serving run "
-                        f"{_sm['serving_run_id']}. These metrics are NOT what that endpoint "
-                        f"would return. Re-register the model or stop quoting these numbers "
-                        f"as serving performance.")
-                elif _sm["matches"] is None:
-                    _which = ("ps1_model_performance.run_id is NULL for this fleet"
-                              if r.get("run_id") is None
-                              else "ps1_inference_runs has no train-kind run_id for this fleet")
-                    _sm["caveat"] = (f"Cannot determine which run this endpoint is serving: "
-                                     f"{_which}. Treat the link between this scorecard and the "
-                                     f"endpoint as UNVERIFIED. Apply sql/52 to backfill the "
-                                     f"provenance columns the sql/load INSERT omitted.")
-            _acc = _base = _n = _prev = None
-            cm = conf.get(r["device_category"])
-            if cm and all(cm.get(k) is not None for k in ("tp", "fp", "tn", "fn")):
-                tp, fp, tn, fn = (int(cm["tp"]), int(cm["fp"]), int(cm["tn"]), int(cm["fn"]))
-                _n = tp + fp + tn + fn
-                if _n:
-                    _acc  = round((tp + tn) / _n, 4)
-                    _prev = round((tp + fn) * 100.0 / _n, 3)          # positives in the test set
-                    _base = round(max(tp + fn, tn + fp) * 100.0 / _n, 3)  # majority-class accuracy
-            out.append({"device_category": r["device_category"], "category": r["device_category"], "city": "Chicago",
-                        "model_name": r["model_name"], "algorithm": r["algorithm"], "prediction_head": r["device_category"],
-                        "test_auc": r["test_auc"], "test_pr_auc": r["test_ap"], "accuracy": _acc,
-                        "test_accuracy": _acc, "base_rate_pct": _base, "n_test": _n,
-                        "majority_accuracy_pct": _base, "positive_prevalence_pct": _prev,
-                        "accuracy_lift_over_base": (round(_acc * 100 - _base, 3)
-                                                    if _acc is not None and _base is not None else None),
-                        "decision_threshold": r["decision_threshold"], "mlflow_version": r["mlflow_version"],
-                        "model_version": r["mlflow_version"], "model_registry_id": r["endpoint_name"], "registry_alias": "champion",
-                        "endpoint_name": r["endpoint_name"], "n_features": r["n_features"],
-                        "status": ("promoted" if r["promoted"] else "not promoted"), "deployed_at": str(r["computed_date"]),
-                        "quality_gate": r["quality_gate"], "promoted": r["promoted"],
-                        # 2026-07-26 -- train_*/val_* were dropped from this payload.
-                        # They are in-sample fit statistics (GATE reported train AUC
-                        # 1.0000 / val AUC 1.0000) and drawing them next to the
-                        # held-out numbers on a client dashboard reads as model
-                        # quality when it is memorisation. Held-out test metrics only.
-                        # 2026-08-10 -- that overfit signal used to be described here as
-                        # "still served on /ps1/summary as ps1_failure_summary.overfit_flag".
-                        # It is not. /ps1/summary no longer reads that table and returns
-                        # overfit_flag as null, because ps1_model_performance does not
-                        # record one. Train/val AUC are the raw material for that flag and
-                        # they are deliberately withheld, so PS1 currently has NO served
-                        # overfit signal. Saying so is the honest state; the fix is for the
-                        # notebook to write the flag, not for this route to infer it.
-                        #
-                        # Provenance, added 2026-08-10. sql/16 put these five columns on
-                        # the table in July and nothing has ever served them.
-                        # base_rate_pct above is the DERIVED majority-class accuracy, so
-                        # the recorded column is returned under its own name rather than
-                        # overwriting it -- two different numbers, two different names.
-                        "target": r.get("target_col"), "target_col": r.get("target_col"),
-                        "label_revision": r.get("label_revision"),
-                        "recall_floor": r.get("recall_floor"),
-                        "recall_floor_met": (None if r.get("recall_floor") is None
-                                                     or r.get("test_rec") is None
-                                             else _num(r["test_rec"]) >= _num(r["recall_floor"])),
-                        "base_rate_pct_recorded": r.get("base_rate_pct"),
-                        "run_id": r.get("run_id"),
-                        # ---- E-1, 2026-08-10: THE ENDPOINT IS NOT SERVING THIS MODEL.
-                        # sql/load/ps1_sklearn_20260726.sql says so in a comment:
-                        #   "chicago-ps1-3d-{gate,tvm,validator}-failure-v1 are still
-                        #    serving the SPARK champion. Until those are re-registered,
-                        #    this scorecard describes the selected model, not the one
-                        #    answering inference calls."
-                        # A comment in a migration file is not a disclosure. Anyone
-                        # reading AUC 0.9040 on this panel reasonably assumes that is
-                        # what the endpoint would return. It is not, and the gap has
-                        # been open since 2026-07-26.
-                        #
-                        # serving_matches_scorecard is derived, not asserted: the run
-                        # that produced THIS row is compared against the run recorded
-                        # for the endpoint in ps1_inference_runs. Unknown stays
-                        # unknown -- None means "could not determine", never "fine".
-                        "serving_matches_scorecard": _serving_match.get(
-                            r["device_category"], {}).get("matches"),
-                        "serving_run_id": _serving_match.get(
-                            r["device_category"], {}).get("serving_run_id"),
-                        # run_kind is published, not implied: a reader must be able
-                        # to see that the comparison used a 'train' row and not a
-                        # scoring run, without trusting that the query got it right.
-                        "serving_run_kind": _serving_match.get(
-                            r["device_category"], {}).get("serving_run_kind"),
-                        "serving_caveat": _serving_match.get(
-                            r["device_category"], {}).get("caveat"),
-                        "s3_metrics": {"test_auc": r["test_auc"], "test_ap": r["test_ap"], "test_f1": r["test_f1"],
-                                       "test_prec": r["test_prec"], "test_rec": r["test_rec"]}})
-        # champion-first ordering for the model cards / registry table
-        out.sort(key=lambda m: (not m["promoted"], -(m["test_auc"] or 0)))
-        return ok(out)
     # ---- PS1 SERIAL grain + run lineage (added 2026-07-26) ----
     # ps1_serial_predictions is keyed (city_id, run_id, device_id,
     # matched_serial_nbr) -- one row per component on a device, per run. The
@@ -2947,13 +2544,6 @@ def route(method, path, params, body, headers=None):
             "s.serial_risk_score,s.risk_band,s.prediction_date,s.run_id "
             f"FROM ps1_serial_predictions s WHERE {where} "
             "ORDER BY s.serial_risk_score DESC NULLS LAST LIMIT 500", **kw))
-    if path == "/ps1/runs":
-        return ok(rows(
-            "SELECT run_id,run_ts,run_kind,device_category,scoring_date,endpoint_name,"
-            "model_version,mlflow_version,target_col,decision_threshold,"
-            "n_devices_scored,n_flagged,gold_snapshot_s3,status "
-            "FROM ps1_inference_runs WHERE city_id=:c "
-            "ORDER BY run_ts DESC LIMIT 50", c=city))
     if path == "/ps1/load-audit":
         return ok(rows(
             "SELECT ps_id,run_id,target_table,s3_source,rows_read,rows_loaded,"
@@ -3187,9 +2777,6 @@ def route(method, path, params, body, headers=None):
                          ps1_fail_prob DESC NULLS LAST""", c=city, t=per_type))
     if path == "/ps1/table-status":
         return ok(_xw("SELECT * FROM v_ps1_table_status ORDER BY table_name"))
-    if path == "/ps1/feature-importance":
-        dc = (params or {}).get("device_category", "TVM")
-        return ok(rows("SELECT feature_name,avg_importance,avg_shap FROM ps1_feature_importance WHERE city_id=:c AND device_category=:d AND computed_date=(SELECT MAX(computed_date) FROM ps1_feature_importance WHERE city_id=:c) ORDER BY feat_rank", c=city, d=dc))
     # ---- shared fleet base statistic (added 2026-07-27) ----------------
     # One route, read by the PS1, PS2, PS3 and PS5 tabs alike, so the programme
     # states its headline event counts once. OOS is the denominator and
@@ -3272,16 +2859,9 @@ def route(method, path, params, body, headers=None):
         return ok(rows("SELECT device_category,band,device_count,pct FROM ps1_risk_bands WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps1_risk_bands WHERE city_id=:c)", c=city))
     if path == "/ps1/threshold-sweep":
         return ok(rows("SELECT device_category,threshold,precision,recall,alert_rate,f1 FROM ps1_threshold_sweep WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps1_threshold_sweep WHERE city_id=:c) ORDER BY device_category,threshold", c=city))
-    if path == "/ps1/calibration":
-        return ok(rows("SELECT device_category,bin_lo,bin_hi,pred_mean,actual_rate,n FROM ps1_calibration WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps1_calibration WHERE city_id=:c) ORDER BY device_category,bin_lo", c=city))
     if path == "/ps1/confusion":
         return ok(rows("SELECT device_category,tp,fp,tn,fn FROM ps1_confusion WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps1_confusion WHERE city_id=:c)", c=city))
     # ---- PS3 failure-SEVERITY ----
-    if path == "/ps3/summary":
-        r = rows("SELECT * FROM ps3_severity_summary WHERE city_id=:c ORDER BY as_of_date DESC LIMIT 1", c=city)
-        return ok(r[0] if r else {})
-    if path == "/ps3/drivers":
-        return ok(rows("SELECT feature,shap_importance,solo_auc,driver_rank FROM ps3_severity_drivers WHERE city_id=:c ORDER BY driver_rank ASC", c=city))
     if path == "/ps3/devices":
         # 2026-07-26 -- held-out split only. The train/val rows were in-sample fit
         # statistics; serving them let the dashboard draw TVM train f1_macro 0.920

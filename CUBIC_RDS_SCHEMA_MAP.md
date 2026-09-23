@@ -201,12 +201,20 @@ how `ps2_leadlag_timing` nearly went — the database reported no dependents whi
 `safe_to_drop`: it can see views, matviews, rules and foreign keys, and it
 cannot see Python.
 
-Also retired that day, outside Aurora: `fastapi_app/main.py` still declares 17
-`/ps2/*` routes against tables this change drops. It is not deployed — the
-`BackendFastApi-V3` task was already stopped on 25-Aug and its task definition
-captured to `tooling/out/` — so nothing breaks, but redeploying it now would
-serve 17 routes onto dropped tables. It needs the same RETIRED header that
-`api/lambda/cubic-mars-ps2-rds-push/README.md` carries, or deletion.
+One thing outside Aurora, corrected on the record. `fastapi_app/main.py`
+declares 17 `/ps2/*` routes, and an earlier note here said redeploying it would
+"serve 17 routes onto dropped tables". That was wrong — it never reads a table.
+Its only imports are `math`, `random`, `datetime`, `typing` and `fastapi`, and
+every value comes from `RNG = random.Random(42)`; the names that looked like
+tables (`ps2_devices`, `ps2_hub`, `ps2_errorcodes`) are the Python functions
+behind the routes.
+
+The real risk is not a broken query, it is a convincing answer: it serves the
+same paths the live API serves, from a seeded RNG, with no error and no empty
+state. PK's decision on 23-Sep is to KEEP it — it is the fastest way to render
+the dashboard with no VPN, no Aurora and no credentials — so it now carries a
+`fastapi_app/README.md` and a rewritten module docstring saying so. Never behind
+a shared hostname, and never as `API_BASE_URL` for anything a client sees.
 
 
 ### PS3 — Root Cause

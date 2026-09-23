@@ -1,9 +1,45 @@
 """
-Local API server for the CUBIC MARS dashboard.
-Serves PS1, PS2, PS5 endpoints with realistic data derived from notebook outputs.
+NOT DEPLOYED, AND NOT A BACKEND. Kept deliberately -- do not delete.
+Read this before running it anywhere anything else can reach.
+
+Local API server for the CUBIC MARS dashboard: 25 routes -- /health, six
+/ps1/*, seventeen /ps2/*, one /ps5/*.
+
+EVERY NUMBER IT RETURNS IS SYNTHETIC. There is no database here. The imports
+are math, random, datetime, typing and fastapi -- no pg8000, no psycopg, no
+boto3, no Secrets Manager, no SQL. Values come from `RNG = random.Random(42)`,
+which is why they look plausible and never change: the original docstring
+called them "realistic data derived from notebook outputs", and realistic is
+the whole problem.
+
+THE HAZARD IS NOT STALENESS, IT IS THE PATHS. This serves /ps2/network,
+/ps2/phi, /ps2/devices and fourteen more at exactly the paths the real API
+serves from Aurora. Anything pointed at it renders fabricated numbers with no
+error, no empty state and no badge -- the dashboard cannot tell the
+difference, and neither can a reviewer reading a screenshot.
+
+STATUS 23-Sep-2026. The BackendFastApi-V3 ECS task was already stopped on
+25-Aug and its task definition captured to
+tooling/out/backendfastapi_capture_25Aug2026.json. Nothing runs this. It is
+kept because it is still the fastest way to render the dashboard with no VPN,
+no Aurora and no credentials.
+
+Seventeen of its /ps2/* paths no longer exist on the real API: sql/62 and
+sql/63 dropped 29 PS2 tables on 23-Sep and the surviving surface is six route
+families. So the two are now DIVERGENT as well as different -- this one will
+happily answer /ps2/windows and /ps2/topdevices long after the real API
+returns 404 for them. That divergence is not a defect to fix here; it is the
+reason to keep the two straight.
+
+ps5_reliability_routes.py in this directory is NOT part of this app. Nothing
+imports it, there is no include_router anywhere, and its own header says it is
+for the dashboard-api. It does connect to Aurora. It is a snippet parked in
+the wrong folder, not a route of this server.
 
 Run:  uvicorn fastapi_app.main:app --reload --port 8000
   or: python -m fastapi_app.main
+Never behind a shared hostname, and never as the dashboard's API_BASE_URL for
+anything a client sees.
 """
 
 from __future__ import annotations

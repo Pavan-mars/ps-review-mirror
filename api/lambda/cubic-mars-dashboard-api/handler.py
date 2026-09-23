@@ -1817,19 +1817,35 @@ def _ps2_v25_route(path, params, city):
         # healthy state and the old definition would read as permanently
         # broken across 47 tables. The run_ids are reported per producer
         # instead, which is the thing a reader actually wants to see.
-        _cat = _safe_rows(
-            "SELECT c.table_name AS t, "
-            "       bool_or(c.column_name='city_id')          AS has_city, "
-            "       bool_or(c.column_name='computed_date')    AS has_date, "
-            "       bool_or(c.column_name='run_id')           AS has_run, "
-            "       bool_or(c.column_name='notebook_version') AS has_ver, "
-            "       bool_or(c.column_name='as_of_ts')         AS has_asof "
-            "  FROM information_schema.columns c "
-            "  JOIN information_schema.tables t "
-            "    ON t.table_schema=c.table_schema AND t.table_name=c.table_name "
-            " WHERE c.table_schema='public' AND t.table_type='BASE TABLE' "
-            "   AND c.table_name ~ '^ps2_' "
-            " GROUP BY c.table_name ORDER BY c.table_name")
+        # A SILENT FAILURE HERE READS AS AN EMPTY ESTATE.        23-Sep-2026
+        # The first version ran this through _safe_rows, which returns [] on
+        # any error -- so when the discovery query failed the route answered
+        # "0 tables of 0, not coherent" and looked like a truthful report of an
+        # empty database rather than a broken query. That is the same class of
+        # defect this route exists to expose, so the error is captured and
+        # returned instead.
+        #
+        # THE CAST IS LOAD-BEARING. information_schema.columns.table_name is
+        # type information_schema.sql_identifier, and the regex operator does
+        # not resolve against it without a cast -- equality does, which is why
+        # the catalog action nearby works while this did not.
+        _cat, _discovery_error = [], None
+        try:
+            _cat = rows(
+                "SELECT c.table_name::text AS t, "
+                "       bool_or(c.column_name='city_id')          AS has_city, "
+                "       bool_or(c.column_name='computed_date')    AS has_date, "
+                "       bool_or(c.column_name='run_id')           AS has_run, "
+                "       bool_or(c.column_name='notebook_version') AS has_ver, "
+                "       bool_or(c.column_name='as_of_ts')         AS has_asof "
+                "  FROM information_schema.columns c "
+                "  JOIN information_schema.tables t "
+                "    ON t.table_schema=c.table_schema AND t.table_name=c.table_name "
+                " WHERE c.table_schema='public' AND t.table_type='BASE TABLE' "
+                "   AND c.table_name::text LIKE 'ps2#_%' ESCAPE '#' "
+                " GROUP BY c.table_name ORDER BY c.table_name")
+        except Exception as _e:
+            _discovery_error = str(_e)[:400]
         _safe = re.compile(r"^ps2_[a-z0-9_]+$")
         _parts, _skipped = [], []
         for _r in _cat:
@@ -1850,9 +1866,12 @@ def _ps2_v25_route(path, params, city):
                     asof=("MAX(as_of_ts)" if _r["has_asof"] else "NULL::timestamp"),
                     where=(" WHERE city_id=:c GROUP BY city_id" if _r["has_city"] else ""),
                 ))
-        data = []
+        data, _count_error = [], None
         if _parts:
-            data = _safe_rows(" UNION ALL ".join(_parts) + " ORDER BY table_name", c=city)
+            try:
+                data = rows(" UNION ALL ".join(_parts) + " ORDER BY table_name", c=city)
+            except Exception as _e:
+                _count_error = str(_e)[:400]
 
         # A TABLE WITH NO run_id WAS NEVER LOADED BY THE LOADER. It is a SQL
         # seed or an artifact of the retired auto-creating push Lambda, and it
@@ -1890,9 +1909,14 @@ def _ps2_v25_route(path, params, city):
             "producers": sorted(producers.values(), key=lambda p: -p["tables"]),
             "empty_tables": empty,
             "unnamed_skipped": _skipped,
+            # Present only when something went wrong. Their absence is the
+            # signal that "0 tables" would mean an empty database.
+            "discovery_error": _discovery_error,
+            "count_error": _count_error,
             # One vintage across every LOADER-MANAGED table, none of them
             # empty. Seeded tables are reported but do not decide this.
-            "coherent": (len(dates) == 1 and bool(managed)
+            "coherent": (not _discovery_error and not _count_error
+                         and len(dates) == 1 and bool(managed)
                          and not [t for t in empty if t not in unmanaged]),
             "computed_date": (dates[-1] if dates else None),
             "as_of_ts": next((r["as_of_ts"] for r in data if r.get("as_of_ts")), None),

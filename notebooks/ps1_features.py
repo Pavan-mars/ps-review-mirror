@@ -1042,14 +1042,31 @@ def read_spine(
                 if _lookback:
                     _pre_obs = (_idx.where((F.col("cal_day") < F.lit(min_day)) & (F.col("_obs") == 1))
                                     .select("cal_day").distinct().count())
+                    # Distinguish the two reasons the lookback can come up short. If the
+                    # fleet has NO events at all before min_day then the window starts at
+                    # the data floor and no lookback can ever help -- that is a fact about
+                    # the extract, not a misconfiguration, and raising would make the guard
+                    # unusable on any full-history run. If events DO exist earlier and we
+                    # simply did not read far enough, that IS a misconfiguration.
+                    _has_earlier = _cov.where(F.col("cal_day") < F.lit(min_day)).limit(1).count() > 0
                     print(f"[label] lookback         : {_lookback}d calendar bought "
                           f"{_pre_obs:,} observed days before {min_day} (need > {_gap})")
                     if _pre_obs <= _gap:
-                        raise RuntimeError(
-                            f"[label] completeness guard: the {_lookback}-day lookback yielded only "
-                            f"{_pre_obs} observed days before {min_day}, but the gap rule needs more "
-                            f"than {_gap}. Raise PS1_COVERAGE_LOOKBACK_DAYS, or the first in-window "
-                            f"failure day per device will be minted as a start by the boundary.")
+                        if not _has_earlier:
+                            print(f"[label] !! LEFT-CENSORED. The fleet has no events at all before "
+                                  f"{min_day}, so the window starts at the data floor and no lookback "
+                                  f"can supply a predecessor. Each device's FIRST failure day in the "
+                                  f"window is therefore counted as an episode start whether or not it "
+                                  f"really begins one. Measured on TVM that is 557 starts in 2023-07. "
+                                  f"Treat the first month as warm-up: exclude or down-weight it, and "
+                                  f"do not read its base rate as comparable to later months.")
+                        else:
+                            raise RuntimeError(
+                                f"[label] completeness guard: the {_lookback}-day lookback yielded only "
+                                f"{_pre_obs} observed days before {min_day}, but the gap rule needs more "
+                                f"than {_gap} -- and earlier events DO exist, so the read simply did not "
+                                f"reach them. Raise PS1_COVERAGE_LOOKBACK_DAYS. Leaving it would mint one "
+                                f"spurious start per device at the window boundary.")
 
                 # The escape stays attached to PREDECESSOR EXISTENCE, never to the
                 # arithmetic -- the same shape as the calendar rule it replaces.

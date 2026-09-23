@@ -63,6 +63,7 @@ FLEET = (globals().get("DEVICE_CATEGORY")
 START, END = "2023-07-01", "2026-08-29"
 SUSPECT = ("2024-03", "2025-03", "2025-11", "2026-04")
 FLOORS = (0.9, 0.7, 0.5)          # fractions of the median device count
+GAP_DAYS = 3                      # PS1_EVENT_SESSION_GAP_DAYS -- the label's own rule
 
 _silver = globals().get("S3_SILVER_RUNTIME") or globals().get("s3_silver")
 if not _silver:
@@ -267,7 +268,7 @@ fd = oos.select(F.col(C_DEV).alias("dev"), F.col("_d").alias("d")).distinct()
 w = Window.partitionBy("dev").orderBy("d")
 starts = (fd.withColumn("_prev", F.lag("d").over(w))
             .withColumn("_gapdays", F.datediff(F.col("d"), F.col("_prev")))
-            .where(F.col("_prev").isNull() | (F.col("_gapdays") > 3)))
+            .where(F.col("_prev").isNull() | (F.col("_gapdays") > GAP_DAYS)))
 # Persist: the loop below evaluates this once per floor, and without it each pass
 # re-scans the whole category slice of device_event_enriched.
 starts = starts.persist()
@@ -276,11 +277,20 @@ print(f"  episode starts under the CALENDAR rule: {starts.count():,}\n")
 for floor in FLOORS:
     observed = {d for _, days in by_month.items() for d, dv, _ in days if dv >= floor * med}
     obs_b = spark.sparkContext.broadcast(observed)
-    # a start is MANUFACTURED if any calendar day strictly inside its preceding gap
-    # was unobserved -- we could not have seen a failure there even if one occurred
-    _chk = F.udf(lambda d, p: bool(p is not None and any(
-        (p + _dt.timedelta(days=k)) not in obs_b.value
-        for k in range(1, (d - p).days))), "boolean")
+    # This MUST be the rule ps1_features.py actually implements, or the numbers below
+    # are not a prediction of anything. The guard builds an index that advances only on
+    # observed days and suppresses a start when
+    #       obs_idx(day) - obs_idx(previous failure day)  <=  GAP_DAYS
+    # which is exactly: COUNT the observed days in (prev, day] and compare to the gap.
+    #
+    # An earlier revision of this probe used a cruder proxy -- "was ANY day inside the
+    # preceding gap unobserved" -- which suppresses far more aggressively and does NOT
+    # match the guard. A single unobserved day in a 20-day gap tripped the proxy while
+    # the guard correctly keeps that start, because 19 observed days still clear the
+    # 3-day rule. Do not reintroduce it.
+    _chk = F.udf(lambda d, p: bool(p is not None and sum(
+        1 for k in range(1, (d - p).days + 1)
+        if (p + _dt.timedelta(days=k)) in obs_b.value) <= GAP_DAYS), "boolean")
     sus = starts.withColumn("_manuf", _chk(F.col("d"), F.col("_prev")))
     agg = (sus.withColumn("_m", F.date_format(F.col("d"), "yyyy-MM"))
               .groupBy("_m")

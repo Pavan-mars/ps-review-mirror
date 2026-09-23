@@ -964,8 +964,12 @@ def read_spine(
                     # Exact countDistinct, not approx. At ~465 devices over ~1,200 days the
                     # exact count is free next to the scan, and an approximation that flips
                     # one day across the floor inside a gap MERGES two genuine episodes.
+                    # Persist: approxQuantile and the later count() are two separate
+                    # actions, and without this each one re-scans the whole TVM slice of
+                    # device_event_enriched -- an entirely wasted ~190M-row pass.
                     _daily = _cov.groupBy("cal_day").agg(
-                        F.countDistinct("DEVICE_ID").alias("dev_cnt"))
+                        F.countDistinct("DEVICE_ID").alias("dev_cnt")
+                    ).persist(StorageLevel.MEMORY_AND_DISK)
                     _med = _daily.approxQuantile("dev_cnt", [0.5], 0.001)[0]
                     _thresh = _floor * _med
                     _flags = (

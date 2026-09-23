@@ -92,9 +92,25 @@ const FEED_FN = {
   // their denominators for that reason.
   phi:           (city) => getRows('/ps2/phi', { city, limit: 5000 }),
   network:       (city) => getRows('/ps2/network', { city, limit: 5000 }),
-  paths:         (city) => getRows('/ps2/paths', { city, limit: 500 }),
+  // A MIGRATION SEED IS NOT AN OBSERVATION.                  23-Sep-2026
+  // /ps2/paths reads ps2_cascade_paths and /ps2/ignition reads
+  // ps2_ignition_termination. NEITHER table has a producer: no cell in either
+  // PS2 notebook writes them and the loader has no alias for them. Their rows
+  // come from sql/07 and sql/08 -- hand-written INSERTs dated 2026-07-11 and
+  // 2026-07-14 -- so no run can ever displace them.
+  //
+  // The paths panel presented those rows as 'the actual subsystem sequences
+  // recorded'; sql/08:58-61 is a ten-row literal in which every path was seen
+  // exactly once, and sql/07:52 computes its occurrences as
+  // round(support * 2,198,548) from association rules -- an estimate, printed
+  // under a column headed 'Times seen'. The panel is gone.
+  //
+  // Ignition has a real equivalent: ps2_ignition_termination_subsystem, which
+  // the serial-grain notebook writes every run. It carries counts rather than
+  // the percentages the seeded table had, so the share is computed here where
+  // the denominator is visible.
   sankey:        (city) => getRows('/ps2/serial/sankey', { city, limit: 500 }),
-  ignition:      (city) => getRows('/ps2/ignition', { city, limit: 500 }),
+  ignition:      (city) => getRows('/ps2/serial/ignition', { city, limit: 500 }),
   trend:         (city) => getRows('/ps2/v25/oos-trend', { city, limit: 5000 }),
   exposure:      (city) => getRows('/ps2/v25/exposure', { city, limit: 5000 }),
   governance:    (city) => getRows('/ps2/v25/governance', { city }),
@@ -126,7 +142,7 @@ const VIEWS = [
   { key: 'where',      label: 'Location',            feeds: ['clusters'] },
   { key: 'devices',    label: 'Devices',             feeds: ['deterioration'] },
   { key: 'components', label: 'Components & repairs', feeds: ['serials', 'repairs'] },
-  { key: 'relationships', label: 'Component relationships', feeds: ['phi', 'network', 'ignition', 'paths', 'sankey'] },
+  { key: 'relationships', label: 'Component relationships', feeds: ['phi', 'network', 'ignition', 'sankey'] },
   { key: 'evidence',   label: 'How we know',         feeds: ['runQuality', 'labelSummary', 'labelDaily', 'labelHorizon', 'parity', 'alignment', 'modelPerf', 'categories', 'crossPs', 'governance'] },
 ];
 
@@ -1194,8 +1210,11 @@ function CascadesView({ feeds }) {
 //   /ps2/phi       10 x 10, every ordered pair of the ten subsystems. The
 //                  substantial one.
 //   /ps2/network   ten nodes, one per subsystem, with centrality.
-//   /ps2/ignition  THREE subsystems.
-//   /ps2/paths     TEN chains in total, and the top path occurs ONCE.
+//   /ps2/ignition  now /ps2/serial/ignition -- the table a run writes.
+//
+// /ps2/paths IS GONE (23-Sep-2026). Its ten chains, each seen once, were a
+// hand-written INSERT in sql/08 dated 2026-07-14, presented on screen as the
+// sequences actually recorded. Nothing produces that table.
 //
 // THE COLUMN CALLED phi IS NOT A CORRELATION COEFFICIENT. Its values here run
 // from -160.8 to +210.5. A phi (Matthews) coefficient is bounded to [-1, 1] by
@@ -1203,17 +1222,31 @@ function CascadesView({ feeds }) {
 // like an unnormalised association statistic. It is rendered as relative
 // strength and never as "r = ...", because printing an out-of-range number
 // under a familiar name is how a plausible chart becomes a wrong one.
+//
+// The measured range is now printed from the data rather than quoted, and the
+// producer's own arithmetic is under review: the four-way marginal product is
+// computed in int64 and can overflow, which is the leading explanation for
+// values this far outside [-1, 1].
 // ---------------------------------------------------------------------
 function RelationshipsView({ feeds }) {
   // The serial-grain family has no status view of its own -- v_ps2_v25_status
   // unions only the 20 ps2_v25_* tables -- so the vintage has to come off the
   // rows themselves.
-  const sankeyDate = ((feeds.sankey && feeds.sankey.rows && feeds.sankey.rows[0]) || {}).computed_date || null;
+  // ONE SENTENCE CANNOT DATE FOUR FEEDS.                      23-Sep-2026
+  // These panels draw from two different generations and the section said
+  // they were all "the earlier run". Ignition now comes from the
+  // serial-grain notebook and is current; phi and network are the older
+  // family. Each states its own vintage, from its own rows, and says
+  // nothing where the route does not return one.
+  const feedDate = (f) => (((f && f.rows && f.rows[0]) || {}).computed_date) || null;
+  const sankeyDate = feedDate(feeds.sankey);
+  const phiDate = feedDate(feeds.phi);
+  const netDate = feedDate(feeds.network);
+  const ignDate = feedDate(feeds.ignition);
   const tabDate = (((feeds.status && feeds.status.rows && feeds.status.rows[0]) || {}).computed_date) || null;
   const phiRows = feeds.phi.rows || [];
   const net = feeds.network.rows || [];
   const ign = feeds.ignition.rows || [];
-  const paths = feeds.paths.rows || [];
 
   // Self-pairs carry no information about a RELATIONSHIP and they dominate the
   // colour scale, so they are dropped from the heat grid.
@@ -1245,8 +1278,9 @@ function RelationshipsView({ feeds }) {
 
   const nSubs = useMemo(
     () => new Set(phiRows.flatMap((r) => [r.sub_a, r.sub_b])).size, [phiRows]);
-  const nChains = useMemo(
-    () => paths.reduce((t, r) => t + (Number(r.occurrences) || 0), 0), [paths]);
+  // The ignition shares: counts in, percentages out, denominator on screen.
+  const ignTot = useMemo(() => ign.reduce((t, r) => t + (Number(r.ignition_count) || 0), 0), [ign]);
+  const termTot = useMemo(() => ign.reduce((t, r) => t + (Number(r.termination_count) || 0), 0), [ign]);
 
   return (
     <>
@@ -1256,12 +1290,13 @@ function RelationshipsView({ feeds }) {
         sub={`Pairwise association across the ${nfmt(nSubs)} subsystems, plus which one tends to start a chain and which tends to end it.`}
       >
         <Note>
-          These four feeds come from the earlier Failure Pattern & Cascade Identification run, not the v2.5 generation the rest of this
-          screen uses, and they are small: {nfmt(nSubs)} subsystems, {nfmt(net.length)} network nodes,{' '}
-          {nfmt(ign.length)} subsystems with an ignition role, and{' '}
-          <strong>{nfmt(nChains)} cascade chains in total</strong>. Every percentage below is over
-          those denominators, not over the fleet. They are shown because they are the only published
-          source of subsystem-to-subsystem structure -- not because the sample is large.
+          These panels are small, and they are not all from the same run. Association and
+          centrality cover {nfmt(nSubs)} subsystems and {nfmt(net.length)} network nodes from the
+          earlier generation{phiDate || netDate ? <> (analysed as of <strong>{dfmt(phiDate || netDate)}</strong>)</> : null};
+          the ignition roles cover {nfmt(ign.length)} subsystems from the serial-grain run
+          {ignDate ? <> of <strong>{dfmt(ignDate)}</strong></> : null}. Every percentage below is
+          over those denominators, not over the fleet. They are shown because they are the only
+          published source of subsystem-to-subsystem structure -- not because the sample is large.
         </Note>
       </Section>
 
@@ -1337,8 +1372,8 @@ function RelationshipsView({ feeds }) {
             <ColumnBars
               data={ign.map((r) => ({
                 subsystem: r.subsystem,
-                Ignites: Number(r.ignition_pct) || 0,
-                Terminates: Number(r.termination_pct) || 0,
+                Ignites: ignTot ? (100 * (Number(r.ignition_count) || 0)) / ignTot : 0,
+                Terminates: termTot ? (100 * (Number(r.termination_count) || 0)) / termTot : 0,
               }))}
               xKey="subsystem"
               series={[
@@ -1352,48 +1387,9 @@ function RelationshipsView({ feeds }) {
           ) : <Empty height={240}>No ignition rows published.</Empty>)}
         </Feed>
         <Note>
-          Only {nfmt(ign.length)} subsystems carry a role, over {nfmt(nChains)} chains. At that
-          sample size a single extra chain moves a bar by {nChains ? (100 / nChains).toFixed(0) : '--'} points,
-          so read the ordering rather than the values.
-        </Note>
-      </Panel>
-
-      <Panel
-        title="Observed cascade paths"
-        hint="The actual subsystem sequences recorded, ranked by how often each occurred."
-      >
-        <Feed feed={feeds.paths} height={260}>
-          {() => (
-          <DataTable
-            rows={paths.map((r) => ({
-              path_rank: Number(r.path_rank),
-              cascade_path: r.cascade_path,
-              path_len: Number(r.path_len),
-              first_subsystem: r.first_subsystem,
-              last_subsystem: r.last_subsystem,
-              occurrences: Number(r.occurrences),
-              pct_of_chains: Number(r.pct_of_chains),
-            }))}
-            height={300} pageSize={50} searchable={false}
-            exportName="ps2_cascade_paths"
-            emptyText="No cascade paths published."
-            columns={[
-              { key: 'path_rank', label: '#', num: true, d: 0, width: 60 },
-              { key: 'cascade_path', label: 'Path', width: 300 },
-              { key: 'path_len', label: 'Steps', num: true, d: 0, width: 80 },
-              { key: 'first_subsystem', label: 'Starts at', width: 130 },
-              { key: 'last_subsystem', label: 'Ends at', width: 130 },
-              { key: 'occurrences', label: 'Times seen', num: true, d: 0, width: 110 },
-              { key: 'pct_of_chains', label: 'Share of chains', num: true, d: 1, width: 130 },
-            ]}
-          />
-        )}
-          </Feed>
-        <Note>
-          <strong>Share of chains is out of {nfmt(nChains)}.</strong> The top path was observed{' '}
-          {nfmt(Number((paths[0] || {}).occurrences) || 0)} time
-          {Number((paths[0] || {}).occurrences) === 1 ? '' : 's'}. This table describes the chains
-          that were recorded, not a rate the fleet can be expected to repeat.
+          {nfmt(ign.length)} subsystems carry a role. Each bar is that subsystem's share of all
+          {' '}{nfmt(ignTot)} chain starts, and of all {nfmt(termTot)} chain ends, so the two
+          series each total 100% across the chart and are not comparable cell by cell.
         </Note>
       </Panel>
 
@@ -1402,8 +1398,17 @@ function RelationshipsView({ feeds }) {
           It is fed by the serial-grain notebook, NOT by the patterns notebook
           that fills the rest of this tab, so its vintage is stated rather
           than assumed to match. */}
-      <Panel title="Cascade flow between subsystems"
-             hint="Where a cascade goes next, weighted by how often. Left is the subsystem a cascade leaves, right is the one it reaches.">
+      {/* FIRST AND LAST, NOT NEXT.                                23-Sep-2026
+          The producer builds this from first_last(chain) -- the FIRST and LAST
+          subsystem of each chain -- and groups on that pair. A chain that ran
+          COMMS -> SYSTEM -> BHU contributes one COMMS -> BHU edge and nothing
+          about SYSTEM. The panel called it "where a cascade goes next", which
+          is a different quantity the same notebook also computes, adjacent-pair,
+          for the Markov matrix. Proof of the grain: this table's row marginals
+          equal ignition_count and its column marginals equal termination_count,
+          unit for unit, in ps2_ignition_termination_subsystem. */}
+      <Panel title="Where cascades start and where they end"
+             hint="Each ribbon counts cascade chains that BEGAN in the left subsystem and ENDED in the right one. It is not the next hop -- a chain that ran COMMS to SYSTEM to BHU is counted once, as COMMS to BHU.">
         <Feed feed={feeds.sankey} height={400}>
           {(rows) => (
             <>
@@ -1427,7 +1432,7 @@ function RelationshipsView({ feeds }) {
                 {sankeyDate && tabDate && sankeyDate !== tabDate
                   ? <> That is <strong>not</strong> the same day as the rest of this tab
                       ({dfmt(tabDate)}); read the shape, not the totals, until it is re-run.</>
-                  : <> Cascade flow is counted, not inferred.</>}
+                  : <> Counted from the first and last subsystem of each chain, not inferred, and not a hop-by-hop transition.</>}
               </Note>
             </>
           )}

@@ -476,8 +476,10 @@ export function SankeyFlow({
     // On the 29-Aug data DOPP->DOPP, SYSTEM->SYSTEM, COMMS->COMMS and
     // CSC_READER->CSC_READER together are 37.3% of the total. Drawn as ribbons
     // they read as "a third of cascades move between subsystems that way",
-    // when they are cascades that never left their subsystem. They are counted
-    // and reported instead of drawn, so the number is not lost.
+    // when they are chains that BEGAN and ENDED in one subsystem. On a
+    // first-last grain that is not the same as never having left it -- a
+    // chain COMMS -> SYSTEM -> COMMS lands here too -- so the wording says
+    // began-and-ended. They are counted and reported instead of drawn.
     const clean = all.filter((r) => r.s !== r.t);
     const selfV = all.filter((r) => r.s === r.t).reduce((t, r) => t + r.v, 0);
     const allV = all.reduce((t, r) => t + r.v, 0);
@@ -589,8 +591,8 @@ export function SankeyFlow({
                   / (ribbons.reduce((t, d) => t + d.v, 0) || 1);
   const selfNote = selfV > 0
     ? `Same-subsystem cascades are excluded: ${nfmt(selfV)} of ${nfmt(allV)} `
-      + `(${((selfV / (allV || 1)) * 100).toFixed(1)}%) never left their own subsystem, so they are `
-      + `not flow between subsystems. `
+      + `(${((selfV / (allV || 1)) * 100).toFixed(1)}%) began and ended in the same subsystem, so they are `
+      + `not drawn as flow between subsystems. `
     : '';
   const unlabelled = [...L.values(), ...R.values()].filter((p) => (p.y1 - p.y0) < 11).length;
   const labelNote = unlabelled

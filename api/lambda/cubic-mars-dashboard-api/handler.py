@@ -2273,9 +2273,15 @@ def route(method, path, params, body, headers=None):
                 'node_id AS subsystem, scope, betweenness, pagerank, '
                 'in_degree, out_degree',
                 "ORDER BY pagerank DESC NULLS LAST"),
+            # A PANEL THAT CANNOT DATE ITSELF.                      23-Sep-2026
+            # The Relationships section draws from two generations and stated
+            # one vintage for all of them. Each feed now carries its own, so
+            # computed_date joins the projection here and on /ps2/phi and
+            # /ps2/network. The tables already have the column; this is a
+            # zip-swap, no migration.
             "ignition": _latest(
                 "ps2_ignition_termination_subsystem",
-                'subsystem, ignition_count, termination_count',
+                'subsystem, ignition_count, termination_count, computed_date',
                 "ORDER BY ignition_count DESC NULLS LAST"),
             "facility": _latest(
                 "ps2_facility_contagion_facility",
@@ -2346,7 +2352,7 @@ def route(method, path, params, body, headers=None):
         return ok({"codes": rows("SELECT error_code,occurrences,top_subsystem,pct FROM ps2_error_codes WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_error_codes WHERE city_id=:c) ORDER BY occurrences DESC", c=city),
                    "transitions": rows("SELECT from_code,to_code,occurrences FROM ps2_error_code_transitions WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_error_code_transitions WHERE city_id=:c) ORDER BY occurrences DESC", c=city)})
     if path == "/ps2/phi":
-        return ok(rows("SELECT sub_a,sub_b,phi FROM ps2_phi_matrix WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_phi_matrix WHERE city_id=:c)", c=city))
+        return ok(rows("SELECT sub_a,sub_b,phi,computed_date FROM ps2_phi_matrix WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_phi_matrix WHERE city_id=:c)", c=city))
     if path == "/ps2/markov":
         return ok(rows("SELECT from_sub,to_sub,prob FROM ps2_markov_transitions WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_markov_transitions WHERE city_id=:c) ORDER BY prob DESC", c=city))
     if path == "/ps2/network":
@@ -2367,14 +2373,14 @@ def route(method, path, params, body, headers=None):
         sc = str((params or {}).get("scope") or "ALL").upper().strip()
         if sc == "*":
             return ok(rows(
-                "SELECT scope,is_fleet,node_id,betweenness,pagerank,in_degree,"
+                "SELECT computed_date,scope,is_fleet,node_id,betweenness,pagerank,in_degree,"
                 "out_degree,total_degree,pagerank_rank,betweenness_rank,"
                 "n_nodes_in_scope FROM v_ps2_network_centrality "
                 "WHERE city_id=:c AND computed_date="
                 "(SELECT MAX(computed_date) FROM ps2_network_centrality WHERE city_id=:c) "
                 "ORDER BY scope, betweenness DESC", c=city))
         return ok(rows(
-            "SELECT scope,is_fleet,node_id,betweenness,pagerank,in_degree,"
+            "SELECT computed_date,scope,is_fleet,node_id,betweenness,pagerank,in_degree,"
             "out_degree,total_degree,pagerank_rank,betweenness_rank,"
             "n_nodes_in_scope FROM v_ps2_network_centrality "
             "WHERE city_id=:c AND scope=:s AND computed_date="

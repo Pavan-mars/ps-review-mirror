@@ -1216,6 +1216,14 @@ function CascadesView({ feeds }) {
 // hand-written INSERT in sql/08 dated 2026-07-14, presented on screen as the
 // sequences actually recorded. Nothing produces that table.
 //
+// ps2_phi_matrix, BY CONTRAST, DOES HAVE A PRODUCER. A note here briefly said
+// it did not. write_output() keeps three device-grain table names stable --
+// ps2_phi_matrix, ps2_markov_transitions, ps2_conditional_prob -- instead of
+// appending "_device" to them, so the write is spelled
+// write_output(phi_device_long, "phi_matrix", "device") and the literal table
+// name never appears next to it. A search for the table name found only the
+// stability tuple, and a miscounted grep turned that into an absence.
+//
 // THE COLUMN CALLED phi IS NOT A CORRELATION COEFFICIENT. Its values here run
 // from -160.8 to +210.5. A phi (Matthews) coefficient is bounded to [-1, 1] by
 // construction, so whatever this column holds, it is not that -- it behaves
@@ -1290,14 +1298,11 @@ function RelationshipsView({ feeds }) {
         sub={`Pairwise association across the ${nfmt(nSubs)} subsystems, plus which one tends to start a chain and which tends to end it.`}
       >
         <Note>
-          These panels are small, and they do not share a producer. Centrality
-          ({nfmt(net.length)} nodes){netDate ? <>, as of <strong>{dfmt(netDate)}</strong>,</> : null} and the
-          ignition roles ({nfmt(ign.length)} subsystems){ignDate ? <>, as of <strong>{dfmt(ignDate)}</strong>,</> : null}
-          {' '}are rebuilt by the serial-grain run. The association matrix ({nfmt(nSubs)} subsystems)
-          {phiDate ? <> carries <strong>{dfmt(phiDate)}</strong> and</> : null} has <strong>no producer</strong>:
-          the notebook publishes its association matrices at device and serial grain under different
-          names, and nothing writes the subsystem table this panel reads, so it will not move until
-          something does. Every percentage below is over these denominators, not over the fleet.
+          These panels are small. All three are rebuilt by the serial-grain run: the association
+          matrix ({nfmt(nSubs)} subsystems){phiDate ? <>, as of <strong>{dfmt(phiDate)}</strong></> : null},
+          centrality ({nfmt(net.length)} nodes){netDate ? <>, as of <strong>{dfmt(netDate)}</strong></> : null},
+          and the ignition roles ({nfmt(ign.length)} subsystems){ignDate ? <>, as of <strong>{dfmt(ignDate)}</strong></> : null}.
+          Every percentage below is over these denominators, not over the fleet.
         </Note>
       </Section>
 

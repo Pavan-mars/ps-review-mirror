@@ -61,7 +61,12 @@ FLEET = (globals().get("DEVICE_CATEGORY")
          or globals().get("DEVICE_CAT")
          or "TVM")
 START, END = "2023-07-01", "2026-08-29"
-SUSPECT = ("2024-03", "2025-03", "2025-11", "2026-04")
+# Prior suspects are FLEET-SPECIFIC. The four below came from TVM's episode-start counts
+# and mean nothing on another fleet. GATE and VALIDATOR have never been probed, so they
+# run in pure DISCOVERY mode: nothing is pre-marked, and section 1's discovery block plus
+# section 4's per-month suppression are what identify the bad months.
+SUSPECT_BY_FLEET = {"TVM": ("2024-03", "2025-03", "2025-11", "2026-04")}
+SUSPECT = SUSPECT_BY_FLEET.get(FLEET.strip().upper(), ())
 FLOORS = (0.9, 0.7, 0.5)          # fractions of the median device count
 GAP_DAYS = 3                      # PS1_EVENT_SESSION_GAP_DAYS -- the label's own rule
 
@@ -71,7 +76,9 @@ if not _silver:
 print(f"[coverage] fleet   : {FLEET}")
 print(f"[coverage] silver  : {_silver}")
 print(f"[coverage] window  : {START} -> {END}")
-print(f"[coverage] suspect : {', '.join(SUSPECT)}\n")
+print("[coverage] suspect : "
+      + (", ".join(SUSPECT) if SUSPECT else "none known for this fleet -- DISCOVERY run")
+      + "\n")
 
 dee = spark.read.parquet(f"{_silver}/device_event_enriched/")
 lc = {c.casefold(): c for c in dee.columns}
@@ -178,6 +185,31 @@ for m in months:
     print(f"  {m:8s} {cal_days:4d} {present:8d} {cal_days - present:8d} "
           + "".join(f"{t:10d}" for t in thin)
           + f" {devs[0] if devs else 0:8,} {mdev:8,} {tot_rows:12,}{mark}")
+
+# Discovery: name the months that fail, rather than making the reader scan 38 rows.
+_bad = []
+for m in months:
+    if m in (months[0], months[-1]):        # window edges are partial by construction
+        continue
+    _y, _mo = int(m[:4]), int(m[5:7])
+    _caldays = _cal.monthrange(_y, _mo)[1]
+    _days = by_month[m]
+    _miss = _caldays - len(_days)
+    _thin50 = sum(1 for _, _dv, _ in _days if _dv < 0.5 * med)
+    if _miss or _thin50:
+        _bad.append((m, _miss, _thin50))
+print("\n  " + "=" * 108)
+if _bad:
+    print(f"  DISCOVERED -- {len(_bad)} month(s) with missing days or days below the 50% floor:")
+    for m, _miss, _thin50 in sorted(_bad, key=lambda r: -(r[1] + r[2])):
+        print(f"      {m}   missing {_miss:2d} days, thin<50% on {_thin50:2d} days")
+    print("  These are the months a fleet-level guard would act on. Cross-check against")
+    print("  section 4, which says how many episode starts each one would actually lose.")
+else:
+    print("  DISCOVERED -- NOTHING. Outside the window edges, no month has a missing day or")
+    print("  a day below 50% of the median device count. A fleet-level floor is INERT on this")
+    print("  fleet; section 3 is where to look for a per-device loss instead.")
+print("  " + "=" * 108)
 
 print("\n  missing  = calendar days with ZERO rows for this fleet. The cleanest gap signature.")
 print("  thin<N%  = days present but below N% of the median device count.")

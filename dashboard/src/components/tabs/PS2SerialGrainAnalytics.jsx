@@ -504,11 +504,22 @@ function FacilityContagionPanel({ city }) {
   return (
     <div style={card}>
       <h3 style={h3}>Facility Contagion (Facility Grain)</h3>
-      <p style={note}>Per-facility cascade-day burden, distinct devices involved, and same-day multi-device contagion rate — the facility-level companion to the city-wide contagion summary shown in the Cascade Overview tab.</p>
+      {/* THE PERCENT SIGN WAS THE TELL.                          23-Sep-2026
+          contagion_rate is cascade_days / distinct_devices -- mean cascade-DAYS
+          PER DEVICE, an unbounded count -- and it was rendered through pct1(),
+          so facility 44 printed 78,217.3%. It also ranked single-device
+          facilities first: one device carrying every cascade-day maximises the
+          ratio, and a facility with one device cannot exhibit contagion at all.
+          Three of the shipped top ten had exactly one device.
+          The producer now emits cascade_days_per_device (the same quantity,
+          honestly named) and multi_device_contagion_rate (the real one, bounded
+          0-1). Until that run lands, both new columns are absent and the cells
+          read '--' rather than reprinting the old number under a new header. */}
+      <p style={note}>Per-facility cascade-day burden, distinct devices involved, mean cascade-days per device, and the share of this facility's cascade-days on which two or more distinct devices cascaded — the facility-level companion to the city-wide contagion summary shown in the Cascade Overview tab. A facility with a single device cannot exhibit contagion and is ranked last, not dropped.</p>
       <FilterNarrowedHint shown={rows.length} total={rowsRaw} />
       <EmptyOrEach rows={rows} loading={loading} emptyText="No facility-grain contagion data yet — run the PS2 serial-grain notebook.">
         <table style={{ width:'100%', borderCollapse:'collapse' }}>
-          <thead><tr><th style={th}>Facility</th><th style={{ ...th, width:'30%' }}>Cascade days</th><th style={th}>Distinct devices</th><th style={th}>Contagion rate</th></tr></thead>
+          <thead><tr><th style={th}>Facility</th><th style={{ ...th, width:'30%' }}>Cascade days</th><th style={th}>Distinct devices</th><th style={th}>Cascade days / device</th><th style={th}>Multi-device contagion</th></tr></thead>
           <tbody>{rows.slice(0, 25).map((r, i) => (
             <tr key={i}>
               <td style={{ ...td, fontWeight:700, color:NAVY }}>{r.facility_id}</td>
@@ -517,7 +528,8 @@ function FacilityContagionPanel({ city }) {
                   <div style={{ width:`${((r.cascade_days || 0) / maxD) * 100}%`, height:10, borderRadius:6, background:P.teal }} /></div>
                 <span style={{ minWidth:34, color:INK }}>{fmt(r.cascade_days)}</span></div></td>
               <td style={td}>{fmt(r.distinct_devices)}</td>
-              <td style={td}>{pct1(r.contagion_rate)}</td>
+              <td style={td}>{r.cascade_days_per_device == null ? '—' : fmt(r.cascade_days_per_device)}</td>
+              <td style={td}>{r.multi_device_contagion_rate == null ? '—' : pct1(r.multi_device_contagion_rate)}</td>
             </tr>))}</tbody>
         </table>
       </EmptyOrEach>

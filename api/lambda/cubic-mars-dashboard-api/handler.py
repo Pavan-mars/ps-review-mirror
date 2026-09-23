@@ -2285,8 +2285,16 @@ def route(method, path, params, body, headers=None):
                 "ORDER BY ignition_count DESC NULLS LAST"),
             "facility": _latest(
                 "ps2_facility_contagion_facility",
-                'facility_id, cascade_days, distinct_devices, contagion_rate',
-                "ORDER BY cascade_days DESC NULLS LAST"),
+                # contagion_rate is RETIRED (23-Sep-2026): it was
+                # cascade_days / distinct_devices, a per-device count that
+                # the tab rendered as a percentage -- 78,217.3% on facility
+                # 44 -- and it ranked single-device facilities first, which
+                # cannot exhibit contagion at all. Still selected so the
+                # 29-Aug rows remain readable; the panel reads the two new
+                # columns and shows an em dash until a corrected run lands.
+                'facility_id, cascade_days, distinct_devices, contagion_rate, '
+                'cascade_days_per_device, multi_device_contagion_rate, contagion_eligible',
+                "ORDER BY contagion_eligible DESC NULLS LAST, multi_device_contagion_rate DESC NULLS LAST, cascade_days DESC NULLS LAST"),
             "phi": _latest(
                 "ps2_phi_matrix_serial",
                 'serial_id, sub_a, sub_b, phi',

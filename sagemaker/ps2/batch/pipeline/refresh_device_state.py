@@ -96,8 +96,20 @@ def phi_corr(x, y):
     n = len(x)
     n11 = (x & y).sum(); n10 = (x & ~y).sum(); n01 = (~x & y).sum(); n00 = (~x & ~y).sum()
     n1_, n0_, n_1, n_0 = n11 + n10, n01 + n00, n11 + n01, n10 + n00
-    denom = np.sqrt(n1_ * n0_ * n_1 * n_0)
-    return (n * n11 - n1_ * n_1) / denom if denom > 0 else 0.0
+    # SECOND COPY OF THE int64 OVERFLOW.                        23-Sep-2026
+    # Identical expression to the serial-grain notebook's phi_corr, fixed
+    # there the same day. At PS2 row counts the four-way int64 product wraps:
+    # negative wraps fail `denom > 0` and return 0.0, positive ones leave a
+    # tiny denominator and phi escapes [-1, 1]. This path feeds
+    # ps2_subsystem_hub_edges.
+    denom = np.sqrt(float(n1_) * float(n0_) * float(n_1) * float(n_0))
+    if not np.isfinite(denom) or denom <= 0:
+        return 0.0
+    phi = (float(n) * float(n11) - float(n1_) * float(n_1)) / denom
+    assert -1.0000001 <= phi <= 1.0000001, (
+        f"phi out of range: {phi} (n={int(n)}, "
+        f"marginals={int(n1_)},{int(n0_)},{int(n_1)},{int(n_0)})")
+    return phi
 
 
 def compute_phi_matrix(df):

@@ -53,6 +53,30 @@ def _exclude_relieved() -> bool:
     return os.environ.get("PS1_EXCLUDE_RELIEVED", "false").strip().lower() == "true"
 
 
+def _exclude_failure_history() -> bool:
+    """Withhold EVERY feature derived from the device's own OOS failure history.
+    Default OFF. This is a DIAGNOSTIC, not a recommended configuration.
+
+    Why it exists: the 23-Sep guard run showed the model had been predicting the FEED
+    GAP rather than the device. Suppressing 2026-04's manufactured starts made that
+    month HARDER -- 0.8259 -> 0.7096 -- while every other month moved less than 0.004,
+    which can only happen if those starts were being predicted better than chance.
+    `roll_fail_90d` sits at SHAP #2 (0.499). During a coverage outage every device's
+    failure counters fall together, so the family identifies that the FLEET is inside a
+    gap, and the start that follows a gap is then trivially predictable.
+
+    PS1_EXCLUDE_GAP_FEATURES removes only the features that encode the 3-day
+    sessionisation window. This removes the whole family, so the question it answers is:
+    how much of the remaining AUC is device-level risk, and how much is the model
+    noticing an outage?
+
+    Read the MONTHLY table, not the headline. If only 2026-04 and 2025-03 fall, the
+    family was carrying gap detection. If every month falls together, it was carrying
+    genuine signal and should be kept.
+    """
+    return os.environ.get("PS1_EXCLUDE_FAILURE_HISTORY", "false").strip().lower() == "true"
+
+
 def _exclude_gap_features() -> bool:
     """Withhold features that encode the sessionisation gap rather than predict it.
 
@@ -518,9 +542,47 @@ GAP_ENCODING_FEATURES = [
     "roll_fail_7d",                  # a 7-day window overlapping the 3-day gap
     "usage_daily_failure_count",     # failures today => no episode start for 3 days
 ]
-# Retained deliberately -- failure history beyond the gap window is a legitimate
-# predictor: roll_fail_30d, roll_fail_90d, usage_failure_count_30d,
-# usage_cumulative_failure_count, mttr_failure_days_30d, mttr_failure_days_90d.
+# Retained deliberately -- failure history beyond the gap window was assumed to be a
+# legitimate predictor: roll_fail_30d, roll_fail_90d, usage_cumulative_failure_count,
+# mttr_failure_days_30d, mttr_failure_days_90d. (An earlier version of this comment also
+# named usage_failure_count_30d, which is not a feature in any fleet's candidate list.)
+# That assumption is what PS1_EXCLUDE_FAILURE_HISTORY now tests -- see below.
+# Everything derived from the device's own OOS failure history. These are precisely the
+# features that go quiet for EVERY device at once during a coverage outage, which is how
+# the model learned to recognise a feed gap. Verified present in the candidate lists.
+FAILURE_HISTORY_FEATURES = [
+    # counts -- these fall to zero across the fleet during an outage
+    "roll_fail_30d", "roll_fail_90d",
+    "usage_cumulative_failure_count", "cumulative_failures_lifetime",
+    "mttr_failure_days_30d", "mttr_failure_days_90d",
+    "chain_length", "chain_failure_count",
+    # shape -- derived from the same failure sequences
+    "inter_failure_days_mean", "inter_failure_days_min", "failure_acceleration_rate",
+    "max_chain_downtime_min", "chain_event_diversity", "chain_component_diversity",
+]
+# DELIBERATELY RETAINED: hardware_oos_count_prior_sum_7d and
+# chargeable_outage_count_prior_sum_{7,30}d. These are prior-window sums of the OOS event
+# itself, so they also fall to zero in an outage and can also signal a gap -- but they are
+# the most legitimate predictor the model has, and removing them would gut it for reasons
+# that have nothing to do with coverage. There is no clean separation here: the features
+# that detect a gap ARE the features that predict a failure.
+#
+# That is why the diagnostic is the MONTHLY table rather than the headline AUC. A family
+# carrying genuine device risk costs every month roughly equally; a family carrying gap
+# detection costs 2026-04 and 2025-03 and almost nothing else. The 23-Sep guard run showed
+# exactly that shape in reverse -- one month moved 0.116, every other under 0.004.
+if _exclude_failure_history():
+    _dropped = set()
+    for _cfg in FLEET_CONFIG.values():
+        for _lst in (_cfg.all_candidate_features, _cfg.failure_features,
+                     _cfg.chain_features, _cfg.mttr_features):
+            _dropped |= {c for c in _lst if c in FAILURE_HISTORY_FEATURES}
+            _lst[:] = [c for c in _lst if c not in FAILURE_HISTORY_FEATURES]
+    print(f"[features] PS1_EXCLUDE_FAILURE_HISTORY=true -- withheld {len(_dropped)} "
+          f"failure-history features. DIAGNOSTIC RUN: read the MONTHLY drift table. "
+          f"If only the coverage-gap months fall, this family was carrying gap "
+          f"detection rather than device risk.")
+
 if _exclude_gap_features():
     for _cfg in FLEET_CONFIG.values():
         _before = len(_cfg.all_candidate_features)

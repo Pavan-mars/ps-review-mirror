@@ -1290,13 +1290,14 @@ function RelationshipsView({ feeds }) {
         sub={`Pairwise association across the ${nfmt(nSubs)} subsystems, plus which one tends to start a chain and which tends to end it.`}
       >
         <Note>
-          These panels are small, and they are not all from the same run. Association and
-          centrality cover {nfmt(nSubs)} subsystems and {nfmt(net.length)} network nodes from the
-          earlier generation{phiDate || netDate ? <> (analysed as of <strong>{dfmt(phiDate || netDate)}</strong>)</> : null};
-          the ignition roles cover {nfmt(ign.length)} subsystems from the serial-grain run
-          {ignDate ? <> of <strong>{dfmt(ignDate)}</strong></> : null}. Every percentage below is
-          over those denominators, not over the fleet. They are shown because they are the only
-          published source of subsystem-to-subsystem structure -- not because the sample is large.
+          These panels are small, and they do not share a producer. Centrality
+          ({nfmt(net.length)} nodes){netDate ? <>, as of <strong>{dfmt(netDate)}</strong>,</> : null} and the
+          ignition roles ({nfmt(ign.length)} subsystems){ignDate ? <>, as of <strong>{dfmt(ignDate)}</strong>,</> : null}
+          {' '}are rebuilt by the serial-grain run. The association matrix ({nfmt(nSubs)} subsystems)
+          {phiDate ? <> carries <strong>{dfmt(phiDate)}</strong> and</> : null} has <strong>no producer</strong>:
+          the notebook publishes its association matrices at device and serial grain under different
+          names, and nothing writes the subsystem table this panel reads, so it will not move until
+          something does. Every percentage below is over these denominators, not over the fleet.
         </Note>
       </Section>
 

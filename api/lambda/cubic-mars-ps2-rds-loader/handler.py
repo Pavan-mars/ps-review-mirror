@@ -51,7 +51,15 @@ can be written against real shapes rather than guessed ones. They are not
 silently skipped.
 
 TRIGGERS
-  1. S3 ObjectCreated on ps2_outputs/*/manifest.json
+  1. S3 ObjectCreated on chicago/ps2_outputs/_runs/*/run_complete.json
+     NOT per-table manifest.json: this handler ignores event["Records"] and
+     always loads every table, so a manifest filter fired one FULL 47-table
+     load per manifest written -- roughly 47 of them per run.
+     CAVEAT (23-Sep-2026): only the patterns notebook writes that marker. The
+     serial-grain notebook writes none, and runs AFTER patterns, so an
+     event-driven load still catches its 27 tables one run behind. The
+     scheduled load at 13:30 UTC is the one that covers both. Leave the S3
+     notification off until the serial producer emits a marker of its own.
   2. EventBridge schedule / {}   -> newest computed_date
   3. Manual {"computed_date": "2026-07-26", "dry_run": true}
      {"only": ["ps2_phi_matrix"]} to load one table
@@ -83,6 +91,10 @@ CITY_ID = os.environ.get("CITY_ID", "CHI")
 # Fraction of the target's columns the source must supply. Below this the names
 # disagree and the load is refused rather than half-completed.
 MIN_MATCH = float(os.environ.get("MIN_MATCH", "0.5"))
+
+# A run is one vintage. Set true only to publish a deliberate mixed load.
+ALLOW_MIXED_VINTAGE = os.environ.get(
+    "PS2_ALLOW_MIXED_VINTAGE", "false").strip().lower() == "true"
 
 # Source table -> Aurora table, only where the names genuinely differ. Everything
 # else maps to itself; the loader checks information_schema and reports anything
@@ -151,8 +163,15 @@ COL_ALIASES = {
         # (city_id, node_id, scope, computed_date). No rename is needed here:
         # the source column is already called scope.
     },
-    "ps2_cascade_velocity_by_age_serial": {"n": "n_events"},
-    "ps2_leadlag_timing_serial": {"n": "n_events"},
+    # NO RENAMES FOR THE TWO _serial TABLES.                     23-Sep-2026
+    # These two entries renamed n -> n_events, but the _serial targets were
+    # auto-created from the notebook's own parquet by the retired
+    # cubic-mars-ps2-rds-push, so their column really IS called "n". The
+    # rename made the source column unplaceable: it was dropped, and the route
+    # -- which selects n -- read NULL on every row. The device-grain pair five
+    # lines below IS correct, because sql/27 declares those targets by hand
+    # with n_events. Same metric, two grains, two different column names; the
+    # entries look copy-pasteable and are not.
     # 27-Jul-2026. The three tables the 27-Jul run reported as no_target. sql/27
     # creates them; these are the two renames that run needs.
     #
@@ -558,9 +577,43 @@ def lambda_handler(event, context):
                 "rows": len(shaped), "columns_used": use,
                 "columns_dropped": dropped, "columns_missing": missing}
 
-        if not dry:
-            c.run("COMMIT")
-        res["status"] = "dry_run_ok" if dry else "committed"
+        # ONE RUN IS ONE VINTAGE.                                 23-Sep-2026
+        # latest_partition resolves per TABLE, so each table independently
+        # picks its own newest computed_date. A family that computed empty
+        # writes no partition at all -- write_output returns on len(frame)==0
+        # with "SKIPPED (0 rows)" before it uploads -- so this loader silently
+        # falls back to that table's PREVIOUS partition, DELETEs its rows and
+        # writes the same stale vintage back, inside a load it then reports as
+        # "committed". Nothing downstream can catch it: v_ps2_v25_status
+        # unions only the 20 ps2_v25_*/ps2_v2_* tables, so /ps2/status leaves
+        # all 27 serial tables unmeasured, and every serial route filters on
+        # its own table's MAX(computed_date).
+        # Report the spread, and refuse a mixed load unless it was asked for.
+        vintages = {}
+        for _t, _v in res["loaded"].items():
+            _cd = _v.get("computed_date")
+            if _cd:
+                vintages.setdefault(str(_cd), []).append(_t)
+        res["vintages"] = {k: sorted(v) for k, v in sorted(vintages.items())}
+        res["vintage_count"] = len(vintages)
+        if len(vintages) > 1 and not ALLOW_MIXED_VINTAGE:
+            res["status"] = "refused_mixed_vintage"
+            res["error"] = (
+                "tables resolved to %d different computed_dates: %s. One run is "
+                "one vintage; a table falling back to an older partition means "
+                "its family produced nothing this run. Re-run the producer, or "
+                "set PS2_ALLOW_MIXED_VINTAGE=true to publish deliberately."
+                % (len(vintages), ", ".join(sorted(vintages)))
+            )
+            if not dry:
+                try:
+                    c.run("ROLLBACK")
+                except Exception:
+                    pass
+        else:
+            if not dry:
+                c.run("COMMIT")
+            res["status"] = "dry_run_ok" if dry else "committed"
     except Exception as e:
         if not dry:
             try:
@@ -583,5 +636,25 @@ def lambda_handler(event, context):
     # "did it commit". The compact line goes FIRST and always survives.
     log.info("PS2 %s %s", res.get("status"), json.dumps(res["summary"]))
     log.info(json.dumps(res, default=str)[:3000])
-    return {"statusCode": 200 if res.get("status") != "failed" else 500,
+    # A REFUSAL IS NOT A SUCCESS.                                 23-Sep-2026
+    # This read `!= "failed"`, so any other non-committing status -- the new
+    # refused_mixed_vintage among them -- would have gone back as 200. A
+    # caller that checks the status code, and Step Functions in particular,
+    # reads 200 as "the load happened". Enumerate what counts as OK instead.
+    _OK_STATUS = ("committed", "dry_run_ok")
+    _ok = res.get("status") in _OK_STATUS
+    # AND A GREEN RUN THAT REFUSED TABLES IS NOT GREEN EITHER.
+    # status is set once, at the end, for the transaction as a whole -- so a
+    # load where a table errored or was refused still committed the rest and
+    # reported "committed" with 200, and the counts sat in a summary nobody
+    # reads programmatically. The refusals are deliberate and per-table, but
+    # the CALLER has to be able to tell that the 47 it asked for are not the
+    # 47 it got.
+    _bad = int(res.get("summary", {}).get("errors", 0)) +            int(res.get("summary", {}).get("refused", 0))
+    if _ok and _bad:
+        res["status"] = "committed_with_failures"
+        res["error"] = ("%d table(s) errored or were refused and %d loaded; the "
+                        "loaded ones were committed. Read res['errors'] and "
+                        "res['refused']." % (_bad, len(res.get("loaded", {}))))
+    return {"statusCode": 200 if (_ok and not _bad) else 500,
             "body": json.dumps(res, default=str)}

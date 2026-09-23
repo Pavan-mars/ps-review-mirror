@@ -160,6 +160,19 @@ def _coverage_floor() -> float:
     advancing, and since the minimum qualifying gap is exactly 4 calendar days, that
     collapses the delta to 3 and silently MERGES two genuine episodes. A lost true
     positive is worse than a manufactured start, which is merely orthogonal noise.
+
+    MEASURED 23-Sep-2026 on TVM, 38 months (ps1_coverage_probe.py). Median 442 devices
+    per day. The distribution is BIMODAL and 0.5 sits in an empty band: no day in the
+    whole series has a device count between 221 (0.50x) and 309 (0.70x), so those two
+    floors give identical results, and the lowest monthly minimum outside a known
+    outage is 332. A threshold in an empty band cannot be tripped by ordinary variance,
+    which is what makes the merge hazard above tolerable here.
+
+    The acceptance test at each floor, against 9,337 calendar-rule starts:
+        0.90  2,311 suppressed, but only 68.3% in the four known-bad months --
+              31.7% COLLATERAL, including 245 of 2024-04's 344 starts. Fails.
+        0.50    934 suppressed, 99.0% of it in two months, 9 starts elsewhere. Passes.
+    Do not raise this above 0.5 without re-running the probe.
     """
     return float(os.environ.get("PS1_COVERAGE_FLOOR", "0.5"))
 

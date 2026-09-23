@@ -159,10 +159,14 @@ export default function ExecutiveOverview() {
             className="card"
             style={{
               borderLeft: `4px solid ${city.color}`,
-              cursor: 'pointer',
+              cursor: city.id === 'CHI' ? 'pointer' : 'default',
               transition: 'transform 0.15s, box-shadow 0.15s',
             }}
-            onClick={() => navigate(`/dashboard/city/${city.id}`)}
+            // /dashboard/city/:cityId was removed on 23-Sep-2026 with the rest
+            // of the pre-V4 dashboard. Chicago is the only city with a built
+            // dashboard, and it is V4; the other three cards had nothing real
+            // behind them, so they no longer pretend to navigate.
+            onClick={city.id === 'CHI' ? () => navigate('/v4') : undefined}
             onMouseEnter={(e) => {
               e.currentTarget.style.transform = 'translateY(-2px)';
               e.currentTarget.style.boxShadow = `0 4px 20px ${city.color}33`;

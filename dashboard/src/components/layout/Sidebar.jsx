@@ -5,10 +5,10 @@ import { useAuth } from '../../auth/AuthContext';
 import { ROLE_LABELS } from '../../auth/mockAuthAPI';
 
 const cityItems = [
-  { to: '/dashboard/city/CHI', label: 'Chicago', color: '#6366f1', cityCode: 'CHI', badge: 'Pilot', badgeClass: 'nav-badge daily' },
-  { to: '/dashboard/city/BOS', label: 'Boston', color: '#f59e0b', cityCode: 'BOS' },
-  { to: '/dashboard/city/LAX', label: 'Los Angeles', color: '#ef4444', cityCode: 'LAX' },
-  { to: '/dashboard/city/TOC', label: 'TOC (UK)', color: '#10b981', cityCode: 'TOC', badge: '11 Co.', badgeClass: 'nav-badge rt' },
+  // The four city links pointed at /dashboard/city/:cityId, the pre-V4
+  // dashboard, removed 23-Sep-2026. They were the reason a reviewer
+  // could leave V4 without meaning to: clicking 'Chicago' in this nav
+  // landed on the uncorrected tabs.
 ];
 
 const Sidebar = () => {
@@ -51,7 +51,11 @@ const Sidebar = () => {
           <span>Executive Overview</span>
         </NavLink>
 
-        <label className="nav-label" style={{ marginTop: 16 }}>CITIES</label>
+        {/* Hidden while cityItems is empty: a section heading with nothing
+            under it reads as a nav that failed to load. */}
+        {cityItems.length > 0 && (
+          <label className="nav-label" style={{ marginTop: 16 }}>CITIES</label>
+        )}
         {cityItems
           .filter((city) => canAccessCity(city.cityCode))
           .map((city) => {

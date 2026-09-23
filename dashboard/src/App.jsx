@@ -7,7 +7,6 @@ import FilterBar from './components/layout/FilterBar';
 import LoginPage from './pages/LoginPage';
 import AdminConsole from './pages/AdminConsole';
 import ExecutiveOverview from './pages/ExecutiveOverview';
-import CityDashboard from './pages/CityDashboard';
 import V4Shell from './v4/V4Shell';
 
 function DashboardLayout({ children }) {
@@ -57,12 +56,15 @@ function App() {
               </ProtectedRoute>
             } />
 
-            {/* City-based dashboard routes */}
-            <Route path="/dashboard/city/:cityId" element={
-              <ProtectedRoute>
-                <DashboardLayout><CityDashboard /></DashboardLayout>
-              </ProtectedRoute>
-            } />
+            {/* The /dashboard/city/:cityId route is GONE.          23-Sep-2026
+                It rendered the pre-V4 dashboard: its own PS1/PS2/PS4/PS5 tabs,
+                its own API client in data/api.js, and its own copies of panels
+                V4 had already replaced. Two dashboards read the same Aurora
+                tables and only one of them got the corrections -- so the OOS
+                overstatement, the fabricated cascade-paths table and the
+                ignition seed were all fixed in V4 and still rendered here.
+                Worse, this was not an obscure URL: Sidebar.jsx linked four
+                cities straight to it, from inside the V4 shell. */}
 
             {/* V4 -- the CURRENT Chicago dashboard: PS1-PS5, Device 360,
                 shared location + evidence modules. / and * both redirect here.

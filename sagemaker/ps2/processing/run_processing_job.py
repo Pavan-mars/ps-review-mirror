@@ -8,11 +8,11 @@
 # is Spark-native (1,061 pyspark references) and already runs as a Databricks
 # task in medallion_ps2_daily. THIS notebook has zero pyspark references, eight
 # sagemaker imports and a SageMaker MLflow ARN -- pandas end to end. It had no
-# schedule at all, which is why its 27 tables sat at computed_date 2026-07-26
+# schedule at all, which is why its tables sat at computed_date 2026-07-26
 # while its sibling's 20 reached 2026-08-29, unlabelled, on the same tab.
 #
 # WHAT THE JOB PRODUCES. The image papermill-executes the notebook, which
-# writes its 27 tables to s3://<artifacts>/chicago/ps2_outputs/ itself, with
+# writes its tables to s3://<artifacts>/chicago/ps2_outputs/ itself, with
 # boto3, from write_output(). The ProcessingOutput here is ONLY the executed
 # .ipynb -- the run record. cubic-mars-ps2-rds-loader already watches that
 # prefix and needs no change.
@@ -50,6 +50,11 @@ import sys
 import time
 from pathlib import Path
 
+# TABLE COUNT, 23-Sep-2026. This file used to say 27 everywhere. The notebook
+# wrote 27 families until sql/62 dropped the twelve ps2_*_serial tables and four
+# others, and commit 443649d retired the 17 write calls that fed them. It now
+# publishes 11. The count is stated in the submit warning because an operator
+# who expects 27 and sees 11 will read a correct run as a truncated one.
 DEFAULT_BUCKET = "cubic-mars-pm-s3-datalake-dev-artifacts-170202974600"
 NOTEBOOK_NAME = "PS2_Serial_Grain_Analysis_v1_FIXED.ipynb"
 DEFAULT_NOTEBOOK = (Path(__file__).resolve().parents[3]
@@ -129,7 +134,7 @@ def collect_env(allow_missing_date, region):
               "prevent; be certain the mismatch is deliberate.")
 
     print("NOTE: this notebook ALWAYS publishes. It has no REPLAY mode and no isolated prefix -- "
-          "it writes 27 tables straight to chicago/ps2_outputs/, which the RDS loader reads. "
+          "it writes 11 tables straight to chicago/ps2_outputs/, which the RDS loader reads. "
           "There is no rehearsal; the date guard is the only thing between a wrong label and "
           "the dashboard.")
     return env
@@ -171,7 +176,7 @@ def main():
             }
         ],
         # The run record only. The engine's data outputs are the notebook's own
-        # 27 S3 writes, which is where cubic-mars-ps2-rds-loader already reads.
+        # its S3 writes, which is where cubic-mars-ps2-rds-loader already reads.
         "ProcessingOutputConfig": {
             "Outputs": [
                 {

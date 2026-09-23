@@ -1798,22 +1798,104 @@ def _ps2_v25_route(path, params, city):
     params = params or {}
 
     if path == "/ps2/status":
-        # One row per table. A coherent load shows ONE distinct run_id across
-        # all 20. More than one means a partial load -- the failure that
-        # otherwise shows up as a tab where 18 panels are today and 2 are last
-        # week. The view does the UNION so this route stays a one-liner.
-        data = rows(
-            "SELECT table_name, run_id, computed_date, notebook_version, as_of_ts, row_count "
-            "FROM v_ps2_v25_status WHERE city_id=:c ORDER BY table_name", c=city)
-        run_ids = sorted({r["run_id"] for r in data if r.get("run_id")})
+        # EVERY ps2_ TABLE, NOT THE TWENTY IN A HAND-WRITTEN VIEW. 23-Sep-2026
+        # This read v_ps2_v25_status, a static 20-way UNION over the patterns
+        # producer's output. The serial-grain producer's 27 tables were absent
+        # from it, so two thirds of the PS2 estate was invisible to its own
+        # status route: a family that republished a stale vintage, or stopped
+        # being written at all, could not be seen from here. That is also why
+        # the loader's mixed-vintage guard had nothing to check against.
+        #
+        # Discovered from the catalog rather than listed, so it cannot drift:
+        # a table added by a future producer appears here the first time it is
+        # loaded, and one that is dropped stops being counted. Names come from
+        # information_schema, never from the caller, and are re-validated
+        # against ^ps2_[a-z0-9_]+$ before they are interpolated.
+        #
+        # COHERENCE IS ONE computed_date, NOT ONE run_id. PS2 has two producer
+        # notebooks and each stamps its own RUN_ID, so two run_ids is the
+        # healthy state and the old definition would read as permanently
+        # broken across 47 tables. The run_ids are reported per producer
+        # instead, which is the thing a reader actually wants to see.
+        _cat = _safe_rows(
+            "SELECT c.table_name AS t, "
+            "       bool_or(c.column_name='city_id')          AS has_city, "
+            "       bool_or(c.column_name='computed_date')    AS has_date, "
+            "       bool_or(c.column_name='run_id')           AS has_run, "
+            "       bool_or(c.column_name='notebook_version') AS has_ver, "
+            "       bool_or(c.column_name='as_of_ts')         AS has_asof "
+            "  FROM information_schema.columns c "
+            "  JOIN information_schema.tables t "
+            "    ON t.table_schema=c.table_schema AND t.table_name=c.table_name "
+            " WHERE c.table_schema='public' AND t.table_type='BASE TABLE' "
+            "   AND c.table_name ~ '^ps2_' "
+            " GROUP BY c.table_name ORDER BY c.table_name")
+        _safe = re.compile(r"^ps2_[a-z0-9_]+$")
+        _parts, _skipped = [], []
+        for _r in _cat:
+            _t = str(_r["t"])
+            if not _safe.match(_t):
+                _skipped.append(_t)
+                continue
+            _parts.append(
+                "SELECT '{t}'::text AS table_name, "
+                "{city} AS city_id, {run} AS run_id, {date} AS computed_date, "
+                "{ver} AS notebook_version, {asof} AS as_of_ts, COUNT(*) AS row_count "
+                "FROM {t}{where}".format(
+                    t=_t,
+                    city=("city_id" if _r["has_city"] else "NULL::city_code"),
+                    run=("MAX(run_id)" if _r["has_run"] else "NULL::varchar"),
+                    date=("MAX(computed_date)" if _r["has_date"] else "NULL::date"),
+                    ver=("MAX(notebook_version)" if _r["has_ver"] else "NULL::varchar"),
+                    asof=("MAX(as_of_ts)" if _r["has_asof"] else "NULL::timestamp"),
+                    where=(" WHERE city_id=:c GROUP BY city_id" if _r["has_city"] else ""),
+                ))
+        data = []
+        if _parts:
+            data = _safe_rows(" UNION ALL ".join(_parts) + " ORDER BY table_name", c=city)
+
+        # A TABLE WITH NO run_id WAS NEVER LOADED BY THE LOADER. It is a SQL
+        # seed or an artifact of the retired auto-creating push Lambda, and it
+        # will not move when a producer runs. Those are separated rather than
+        # folded into coherence, which would otherwise read false forever
+        # because sql/07 and sql/08 seeded two different July dates.
+        managed = [r for r in data if r.get("run_id")]
+        unmanaged = sorted(r["table_name"] for r in data if not r.get("run_id"))
+        run_ids = sorted({r["run_id"] for r in managed})
+        dates = sorted({str(r["computed_date"]) for r in managed if r.get("computed_date")})
+        all_dates = sorted({str(r["computed_date"]) for r in data if r.get("computed_date")})
+        populated = [r for r in data if (r.get("row_count") or 0) > 0]
+        empty = sorted(r["table_name"] for r in data if not (r.get("row_count") or 0))
+        # One entry per producer, keyed by the run_id it stamped.
+        producers = {}
+        for r in managed:
+            p = producers.setdefault(str(r["run_id"]), {
+                "run_id": str(r["run_id"]), "tables": 0, "rows": 0,
+                "computed_date": r.get("computed_date"),
+                "notebook_version": r.get("notebook_version")})
+            p["tables"] += 1
+            p["rows"] += int(r.get("row_count") or 0)
         return ok({
             "city": city,
-            "tables": len(data),
-            "expected_tables": len(_PS2V25),
+            "tables": len(populated),
+            "tables_total": len(data),
+            "tables_managed": len(managed),
+            "unmanaged_tables": unmanaged,
+            "computed_dates_all": all_dates,
+            # Kept so existing callers keep rendering "N/M tables". It is now
+            # the DISCOVERED total rather than a constant of 20.
+            "expected_tables": len(data),
             "run_ids": run_ids,
-            "coherent": len(run_ids) == 1 and len(data) == len(_PS2V25),
-            "computed_date": (data[0]["computed_date"] if data else None),
-            "as_of_ts": (data[0]["as_of_ts"] if data else None),
+            "computed_dates": dates,
+            "producers": sorted(producers.values(), key=lambda p: -p["tables"]),
+            "empty_tables": empty,
+            "unnamed_skipped": _skipped,
+            # One vintage across every LOADER-MANAGED table, none of them
+            # empty. Seeded tables are reported but do not decide this.
+            "coherent": (len(dates) == 1 and bool(managed)
+                         and not [t for t in empty if t not in unmanaged]),
+            "computed_date": (dates[-1] if dates else None),
+            "as_of_ts": next((r["as_of_ts"] for r in data if r.get("as_of_ts")), None),
             "rows": data,
         })
 

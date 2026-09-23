@@ -1863,14 +1863,36 @@ function StatusBar({ feed }) {
       display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
       background: CARD, border: `1px solid ${LINE}`, borderRadius: 12, padding: '9px 14px', marginBottom: 14,
     }}>
+      {/* TWO PRODUCERS MEANS TWO RUN IDS.                       23-Sep-2026
+          /ps2/status used to cover only the 20 tables of a hand-written view,
+          all from the patterns notebook, so one run id was the healthy state
+          and this bar printed run_ids[0]. It now covers every ps2_ table in
+          the database, and the serial-grain producer stamps its own id -- so
+          two ids is correct and the thing worth showing is whether both
+          producers landed on the SAME DATE, which is what coherent now means.
+          Tables the loader does not manage (SQL seeds, and leftovers of the
+          retired auto-creating push Lambda) are counted separately: they
+          cannot move when a producer runs, so they must not be read as part
+          of this run. */}
       <Badge tone={coherent ? 'good' : 'warning'}>
-        {coherent ? 'All tables from one run' : `${(s.run_ids || []).length} run ids across ${s.tables} tables`}
+        {coherent
+          ? `All ${nfmt(s.tables_managed || s.tables)} tables from one date`
+          : `${(s.computed_dates || []).length} vintages across ${nfmt(s.tables_managed || s.tables)} tables`}
       </Badge>
       <span style={{ fontSize: 12.6, color: INK_2 }}>
         Analysis as of <strong style={{ color: INK }}>{s.computed_date ? dfmt(s.computed_date) : 'unknown'}</strong>
       </span>
       <span style={{ ...font.micro }}>
-        {s.tables}/{s.expected_tables} tables &middot; run {String((s.run_ids || [])[0] || '').slice(0, 8)}
+        {nfmt(s.tables)}/{nfmt(s.expected_tables)} tables carry rows
+        {(s.producers || []).length
+          ? <> &middot; {(s.producers || []).map((p) => `${String(p.run_id).slice(0, 8)} (${p.tables})`).join(' + ')}</>
+          : null}
+        {(s.unmanaged_tables || []).length
+          ? <> &middot; <span title={(s.unmanaged_tables || []).join(', ')}>{nfmt((s.unmanaged_tables || []).length)} not loader-managed</span></>
+          : null}
+        {(s.empty_tables || []).length
+          ? <> &middot; <span title={(s.empty_tables || []).join(', ')}>{nfmt((s.empty_tables || []).length)} empty</span></>
+          : null}
       </span>
       <span style={{ ...font.micro, marginLeft: 'auto' }}>
         {/* This read "Source extract ends 11 Apr 2026" as a literal until

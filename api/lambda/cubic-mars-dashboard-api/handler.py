@@ -4423,14 +4423,24 @@ def depends(evt):
             rec["computed_date"] = None   # no such column; not an error here
         out[t] = rec
 
-    safe = sorted(t for t, r in out.items()
-                  if r.get("exists") and not r.get("dependents")
-                  and not r.get("inbound_fks"))
+    # NECESSARY, NOT SUFFICIENT -- and the name used to say otherwise.
+    # This reports the DATABASE's answer: views, matviews, rules and foreign
+    # keys. It cannot see application code. On the first real use
+    # ps2_leadlag_timing came back under the old key "safe_to_drop" while
+    # /device/360's causation panel reads it directly, so a reader trusting
+    # the key alone would have dropped a live table. Renamed to say exactly
+    # what was checked; a drop still needs a separate code search.
+    clear = sorted(t for t, r in out.items()
+                   if r.get("exists") and not r.get("dependents")
+                   and not r.get("inbound_fks"))
     blocked = sorted(t for t, r in out.items()
                      if r.get("exists") and (r.get("dependents") or r.get("inbound_fks")))
     return ok({"action": "depends", "read_only": True,
                "checked": len(out),
-               "safe_to_drop": safe,
+               "no_database_dependents": clear,
+               "caveat": ("no_database_dependents means no view, matview, rule or FK "
+                          "reads it. It does NOT mean no code reads it -- search the "
+                          "handler and the dashboard before dropping."),
                "blocked_by_a_dependent": blocked,
                "absent": sorted(t for t, r in out.items() if not r.get("exists")),
                "detail": out})

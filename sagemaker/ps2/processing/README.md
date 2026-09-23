@@ -93,13 +93,37 @@ A `Completed` status proves nothing on its own. All three:
 2. objects under `chicago/ps2_outputs/<table>/computed_date=<the date you set>/`
 3. the loader commits them, and `/ps2/serial/sankey` returns that `computed_date`
 
-## Unverified
+## Verified 22-Sep-2026, and what is still not
 
-Nothing in this kit has been run yet. In particular:
+The image IS built and HAS run. `cubic-mars-ps2-processing:v1`, 3,457,010,889
+bytes, pushed 2026-09-22 05:29 UTC. Three Processing jobs ran that morning --
+`...-20260922-060637` and `...-20260922-073237` Failed with
+`AlgorithmError: , exit code: 1`, and `...-20260922-073331` **Completed** in
+17m52s (07:34:15 -> 07:52:07). All three predate the first commit of this kit
+at 10:33 UTC, so the two failures were debugged from a working copy and their
+fixes are what those commits are.
 
-- **The image is unbuilt.** No version resolution has been proven; the
-  requirements are deliberately loose where the notebook is loose, and pip has
-  not yet had to satisfy them together.
+The proven configuration is NOT this file's stated default. The run that worked
+used **`ml.r7i.4xlarge`** with role
+`arn:aws:iam::170202974600:role/cubic-mars-role-sagemaker-exec-dev` and
+`PS2SG_COMPUTED_DATE=2026-08-29`. `run_processing_job.py` defaults to
+`ml.r7i.2xlarge`, which a 20 GB peak RSS would fit but which nothing has
+actually run. Pass `--instance-type ml.r7i.4xlarge` to reproduce the known-good
+case.
+
+THE NOTEBOOK IS NOT IN THE IMAGE, which is why a rebuild is not needed after a
+notebook change. The Dockerfile COPYs only `requirements.txt` and
+`gate_notebook.ipynb`; `run_processing_job.py:200` uploads the local notebook to
+`chicago/ps2/processing_code/<job>/` at submit time and mounts it as the
+`notebook` ProcessingInput at `/opt/ml/processing/input/notebook`, exactly where
+the ENTRYPOINT reads it. The image supplies the runtime, nothing more.
+
+Still unverified:
+
+- **The notebook is six commits ahead of the version that last ran.** 128d603,
+  53b0c23, c1e4b62, e1f445e and 443649d all landed after the Completed run.
+  The last of those retired 17 of its 27 write calls, so a run now publishes 11
+  families, not 27.
 - **MLflow.** The notebook sets a SageMaker MLflow tracking ARN and calls
   `set_experiment` at config time. That needs both the plugin (in the image) and
   IAM on the execution role. If the role cannot reach the tracking server, that

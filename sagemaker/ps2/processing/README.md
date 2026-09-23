@@ -96,12 +96,33 @@ A `Completed` status proves nothing on its own. All three:
 ## Verified 22-Sep-2026, and what is still not
 
 The image IS built and HAS run. `cubic-mars-ps2-processing:v1`, 3,457,010,889
-bytes, pushed 2026-09-22 05:29 UTC. Three Processing jobs ran that morning --
-`...-20260922-060637` and `...-20260922-073237` Failed with
-`AlgorithmError: , exit code: 1`, and `...-20260922-073331` **Completed** in
-17m52s (07:34:15 -> 07:52:07). All three predate the first commit of this kit
-at 10:33 UTC, so the two failures were debugged from a working copy and their
-fixes are what those commits are.
+bytes, pushed 2026-09-22 05:29:12 UTC.
+
+THE TIMELINE, IN UTC. An earlier version of this paragraph said the three jobs
+"predate the first commit of this kit at 10:33 UTC" and concluded the failures
+were debugged from a working copy. That was wrong in both directions: 10:33 was
+IST read off a `--date=format-local` git log and labelled UTC, and the commits
+in fact come BEFORE the jobs, not after. The real order:
+
+| UTC | what |
+|---|---|
+| 05:03:02 | `695a2b7` the kit committed |
+| 05:03:56 | `609f681` buildspec pins the ECR repository |
+| 05:29:12 | image `v1` pushed |
+| 06:05:46 | `8876860` default instance type changed to one the account can run |
+| 06:06:01 | `a86eaf6` quota-query comment repaired |
+| 06:06:37 | job 1 **Failed**, `AlgorithmError: , exit code: 1` |
+| 07:30:18 | `863ceb6` region put into the job environment |
+| 07:32:41 | job 2 **Failed**, same empty AlgorithmError, in under four seconds |
+| 07:33:31 | job 3 **Completed**, 07:34:15 -> 07:52:07, 17m52s |
+
+So each job ran code that had just been committed, and the two failures are not
+explained by anything in this repo. Job 2 died in under four seconds, which is
+container start rather than notebook execution, and job 3 succeeded 50 seconds
+later with no commit in between -- so whatever changed was a submit parameter or
+the failure was transient. `FailureReason` is empty on both; only the CloudWatch
+logs under `/aws/sagemaker/ProcessingJobs` would say. **This remains
+unestablished, and a fourth failure would not be a surprise.**
 
 The proven configuration is NOT this file's stated default. The run that worked
 used **`ml.r7i.4xlarge`** with role

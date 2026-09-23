@@ -4340,6 +4340,102 @@ def catalog(evt):
                "objects": out})
 
 
+def depends(evt):
+    """What still depends on a set of tables, before anyone drops them.
+
+    WHY THIS EXISTS. A retirement list built from the repo alone has been
+    wrong twice: on 20-Sep it marked seven live tables retirable because the
+    PS2 loader RENAMES tables through its ALIASES map, and on 23-Sep
+    ps2_network_centrality looked orphaned through /ps2/serial/network while
+    V4 read it through /ps2/network. Greps resolve names; only the database
+    resolves DEPENDENCIES. A view over a table is invisible to both.
+
+    Read-only. Returns, per table:
+      exists, rows, newest computed_date,
+      dependent views and matviews (pg_depend, so rules and matviews count),
+      inbound foreign keys.
+
+    A table is safe to drop only when dependents and inbound_fks are both
+    empty -- or when whatever they name is going in the same change.
+
+        {"action": "depends", "tables": ["ps2_recurrence_serial", ...]}
+    """
+    c = conn()
+    names = [str(t).strip() for t in ((evt or {}).get("tables") or [])]
+    names = [t for t in names if re.fullmatch(r"[a-z][a-z0-9_]{0,62}", t)]
+    if not names:
+        return {"statusCode": 400, "body": json.dumps({
+            "error": "pass tables: a list of lower-case identifiers",
+            "example": {"action": "depends", "tables": ["ps2_recurrence_serial"]}})}
+
+    out = {}
+    for t in names:
+        rec = {"exists": False, "rows": None, "computed_date": None,
+               "dependents": [], "inbound_fks": []}
+        try:
+            rec["exists"] = bool(c.run(
+                "SELECT to_regclass(:t) IS NOT NULL", t="public." + t)[0][0])
+        except Exception as e:
+            rec["error"] = str(e)[:200]
+            out[t] = rec
+            continue
+        if not rec["exists"]:
+            out[t] = rec
+            continue
+
+        # Views, matviews and rules that read it. pg_depend catches what
+        # information_schema.view_table_usage does not.
+        try:
+            rec["dependents"] = [
+                {"name": r[0], "kind": r[1]} for r in c.run(
+                    "SELECT DISTINCT dep.relname, dep.relkind "
+                    "  FROM pg_depend d "
+                    "  JOIN pg_rewrite rw ON rw.oid = d.objid "
+                    "  JOIN pg_class dep  ON dep.oid = rw.ev_class "
+                    "  JOIN pg_class src  ON src.oid = d.refobjid "
+                    " WHERE src.relname = :t AND dep.relname <> src.relname "
+                    " ORDER BY 1", t=t)]
+        except Exception as e:
+            rec["dependents"] = "check failed: " + str(e)[:120]
+
+        try:
+            rec["inbound_fks"] = [
+                {"table": r[0], "column": r[1]} for r in c.run(
+                    "SELECT tc.table_name, kcu.column_name "
+                    "  FROM information_schema.table_constraints tc "
+                    "  JOIN information_schema.key_column_usage kcu "
+                    "    ON kcu.constraint_name = tc.constraint_name "
+                    "  JOIN information_schema.constraint_column_usage ccu "
+                    "    ON ccu.constraint_name = tc.constraint_name "
+                    " WHERE tc.constraint_type = 'FOREIGN KEY' "
+                    "   AND ccu.table_name = :t", t=t)]
+        except Exception as e:
+            rec["inbound_fks"] = "check failed: " + str(e)[:120]
+
+        try:
+            rec["rows"] = int(c.run('SELECT COUNT(*) FROM "%s"' % t)[0][0])
+        except Exception as e:
+            rec["rows"] = "count failed: " + str(e)[:80]
+        try:
+            rec["computed_date"] = str(c.run(
+                'SELECT MAX(computed_date) FROM "%s"' % t)[0][0])
+        except Exception:
+            rec["computed_date"] = None   # no such column; not an error here
+        out[t] = rec
+
+    safe = sorted(t for t, r in out.items()
+                  if r.get("exists") and not r.get("dependents")
+                  and not r.get("inbound_fks"))
+    blocked = sorted(t for t, r in out.items()
+                     if r.get("exists") and (r.get("dependents") or r.get("inbound_fks")))
+    return ok({"action": "depends", "read_only": True,
+               "checked": len(out),
+               "safe_to_drop": safe,
+               "blocked_by_a_dependent": blocked,
+               "absent": sorted(t for t, r in out.items() if not r.get("exists")),
+               "detail": out})
+
+
 def inspect(evt):
     c = conn()
     want = list(PURGE_TABLES["ps1"]) + list(PURGE_TABLES["ps3"])
@@ -4484,6 +4580,8 @@ def lambda_handler(event, context):
         return catalog(event)
     if isinstance(event, dict) and event.get("action") == "inspect":
         return inspect(event)
+    if isinstance(event, dict) and event.get("action") == "depends":
+        return depends(event)
     if isinstance(event, dict) and event.get("action") == "recreate":
         return recreate(event)
     if isinstance(event, dict) and event.get("action") == "load_run":

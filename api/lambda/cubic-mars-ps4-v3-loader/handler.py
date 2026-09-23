@@ -89,6 +89,15 @@ COLS_DEVICE = [
     "anomaly_score_max", "anomaly_score_mean", "anomaly_score_p95",
     "max_abs_z", "cluster_distance_ratio_max", "has_low_coverage_day",
     "dominant_cluster_id", "anomaly_types", "severity", "asof_date", "run_id",
+    # max_fault_z is the value the notebook's alert RULES read; max_abs_z above
+    # is the diagnostic they used to read. Three of the five signals are
+    # one-sided, so taking abs() of all five let a device with oos_rate_z = -4
+    # -- far FEWER out-of-service events than its baseline -- clear the
+    # `>= 4.0` door and alert for being unusually healthy.
+    # ORDER MATTERS: sql/65 must be applied before this list is deployed, or
+    # insert() builds a column list Aurora does not have. It is nullable, so
+    # every row loaded before the notebook re-runs carries NULL here.
+    "max_fault_z",
 ]
 
 DATASETS = {

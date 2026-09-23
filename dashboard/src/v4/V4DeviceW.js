@@ -85,8 +85,14 @@ export function deviceProfile(agg, d) {
 
   const weeks = arr(p4.weeks);
   const lastWeek = weeks.length ? weeks[weeks.length - 1] : null;
+  // Ranked on max_fault_z, falling back to max_abs_z for rows written before
+  // 23-Sep-2026. max_abs_z is |z| across all five metrics while three of the
+  // five signals are one-sided, so an unusually HEALTHY week can carry the
+  // largest max_abs_z and win this reduce -- which then reports its severity
+  // (Normal) as the device's worst. See V4Device360.jsx for the full note.
+  const w4rank = (w) => (num(w.max_fault_z != null ? w.max_fault_z : w.max_abs_z) || 0);
   const worstWeek = weeks.length
-    ? weeks.reduce((x, y) => ((num(y.max_abs_z) || 0) > (num(x.max_abs_z) || 0) ? y : x))
+    ? weeks.reduce((x, y) => (w4rank(y) > w4rank(x) ? y : x))
     : null;
 
   const where = {

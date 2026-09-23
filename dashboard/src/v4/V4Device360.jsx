@@ -473,8 +473,22 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
   const ps4Weeks = Array.isArray(ps4v3.weeks) ? ps4v3.weeks : [];
   const ps4Cluster = Array.isArray(ps4v3.cluster) ? ps4v3.cluster[0] : (ps4v3.cluster || null);
   const ps4Persist = Array.isArray(ps4v3.persistent) ? ps4v3.persistent[0] : null;
+  // RANK ON max_fault_z, NOT max_abs_z.                          23-Sep-2026
+  // max_abs_z takes |z| of all five metrics, but three of PS4's five signals
+  // are one-sided -- only the HIGH side of oos_rate, hardware_rate and
+  // tap_reject_rate is a fault. So a week where a device logged far FEWER
+  // out-of-service events than its baseline (oos_rate_z = -5) publishes
+  // max_abs_z = 5.0 while its severity is Normal. Ranking on max_abs_z hands
+  // that healthy week the "worst week" slot and prints "Worst severity:
+  // Normal" over a week that was actually High.
+  //
+  // max_fault_z applies abs() only to the two-sided metrics and is what the
+  // alert rules read. It is NULL on every row loaded before the notebook
+  // re-ran, hence the fallback -- which reproduces the old behaviour exactly
+  // for historic rows rather than ranking them as 0.
+  const ps4Rank = (w) => num(w.max_fault_z != null ? w.max_fault_z : w.max_abs_z);
   const ps4Worst = ps4Weeks.length
-    ? ps4Weeks.reduce((a, b) => (num(b.max_abs_z) > num(a.max_abs_z) ? b : a))
+    ? ps4Weeks.reduce((a, b) => (ps4Rank(b) > ps4Rank(a) ? b : a))
     : null;
   // The legacy Anomaly & Outlier Analysis block and the v3 block can disagree. Say so rather than
   // picking one -- the disagreement is the finding.
@@ -744,6 +758,11 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
               <KV k="Worst severity" v={ps4Worst ? ps4Worst.severity : null} tone={ps4Worst && String(ps4Worst.severity).toUpperCase() === 'CRITICAL' ? 'warn' : undefined} />
               <KV k="Worst week" v={ps4Worst && ps4Worst.week_start ? dfmt(ps4Worst.week_start) : null} />
               <KV k="Largest absolute z" v={ps4Worst && ps4Worst.max_abs_z !== undefined ? nfmt(ps4Worst.max_abs_z, 1) : null} />
+              {/* The week above is now RANKED on this one, not on the absolute z.
+                  Showing both because they can disagree: an unusually healthy week
+                  carries a large |z| on a one-sided metric and a small fault z. Null
+                  for rows loaded before 23-Sep-2026, where the two were the same. */}
+              <KV k="Largest fault-direction z" v={ps4Worst && ps4Worst.max_fault_z != null ? nfmt(ps4Worst.max_fault_z, 1) : null} />
               <KV k="Cluster" v={ps4Cluster ? ps4Cluster.cluster_id : null} />
               <KV k="Cluster silhouette" v={ps4Cluster && ps4Cluster.silhouette !== undefined ? nfmt(ps4Cluster.silhouette, 2) : null} />
               <KV k="Persistent" v={ps4Persist ? `yes, ${ps4Persist.actionable_weeks} week(s)` : 'no'} />

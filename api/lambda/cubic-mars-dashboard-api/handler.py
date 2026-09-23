@@ -1214,13 +1214,26 @@ def _device_360(city, dev):
         # fleet-level chain while implying it is device-specific would be worse
         # than showing nothing -- the whole point of this panel is what follows
         # THIS device.
+        # THESE TWO QUERIES NAMED COLUMNS THAT DO NOT EXIST.      23-Sep-2026
+        # ps2_markov_transitions is (from_sub, to_sub, prob) -- sql/09:48-53 --
+        # with no transition_prob and no n_events at all. ps2_leadlag_timing is
+        # (sub_a, sub_b, n_events, mean, median, p25, p75) -- sql/27:44-54 --
+        # with no from_sub, no to_sub and no median_minutes. Both statements
+        # raised 42703 every time, and _safe_rows turns that into [], so the
+        # fleet fallback -- the branch that runs when a device has no anchor
+        # subsystem -- has been rendering empty rather than erroring. A 200
+        # response does not prove this fixed; the arrays have to be non-empty.
+        # Also adds the latest-vintage predicate the anchored branch uses, so
+        # the fallback cannot serve an older run than the panel above it.
         _fleet = _safe_rows(
-            "SELECT from_sub, to_sub, transition_prob AS confidence, n_events "
+            "SELECT from_sub, to_sub, prob AS confidence "
             "FROM ps2_markov_transitions WHERE city_id=:c "
-            "ORDER BY n_events DESC NULLS LAST LIMIT 6", c=city)
+            "AND computed_date=(SELECT MAX(computed_date) FROM ps2_markov_transitions WHERE city_id=:c) "
+            "ORDER BY prob DESC NULLS LAST LIMIT 6", c=city)
         _ftime = _safe_rows(
-            "SELECT from_sub, to_sub, median_minutes AS median, n_events "
+            "SELECT sub_a AS from_sub, sub_b AS to_sub, median, n_events "
             "FROM ps2_leadlag_timing WHERE city_id=:c "
+            "AND computed_date=(SELECT MAX(computed_date) FROM ps2_leadlag_timing WHERE city_id=:c) "
             "ORDER BY n_events DESC NULLS LAST LIMIT 6", c=city)
         out["causation"] = {
             "anchor_subsystem": None,

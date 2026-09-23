@@ -403,6 +403,11 @@ function CascadeSankeyPanel({ city }) {
       <p style={note}>
         Real Sankey diagram — flow width = cascade volume between subsystems. Click a subsystem node to
         drill down (focuses the shared Component filter on it across every filter-aware PS2 panel).
+        {' '}Each row counts chains that BEGAN in the left subsystem and ENDED in the right one — it is
+        not the next hop. Avg chain impact is the mean, per cascade, of the SUMMED segment severity
+        weights (INFO 1 / WARNING 3 / MAJOR 7 / CRITICAL 15), so it scales with chain length and is not
+        bounded by 15; the column was labelled “Avg severity”, which made values like 119.2 read as an
+        impossible severity rather than a long chain.
       </p>
       <FilterNarrowedHint shown={rows.length} total={rowsRaw} />
       <EmptyOrEach rows={rows} loading={loading} emptyText="No cascade-sankey data yet — run the PS2 serial-grain notebook.">
@@ -424,7 +429,7 @@ function CascadeSankeyPanel({ city }) {
           </div>
         )}
         <table style={{ width:'100%', borderCollapse:'collapse', marginTop: 12 }}>
-          <thead><tr><th style={th}>From</th><th style={th}>To</th><th style={th}>Cascade count</th><th style={th}>Total business impact</th><th style={th}>Avg severity</th></tr></thead>
+          <thead><tr><th style={th}>From</th><th style={th}>To</th><th style={th}>Cascade count</th><th style={th}>Total business impact</th><th style={th}>Avg chain impact</th></tr></thead>
           <tbody>{rows.slice(0, 20).map((r, i) => (
             <tr key={i}>
               <td style={{ ...td, fontFamily:'monospace', fontWeight:700, color:NAVY }}>{r.subsystem_from}</td>

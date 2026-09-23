@@ -99,6 +99,10 @@ const FEED_FN = {
   // come from sql/07 and sql/08 -- hand-written INSERTs dated 2026-07-11 and
   // 2026-07-14 -- so no run can ever displace them.
   //
+  // Both tables were DROPPED later the same day (sql/63), together with the
+  // eleven other PS2 tables no current notebook writes. The paragraph above
+  // is why, and is kept so the next reader does not re-add a panel for them.
+  //
   // The paths panel presented those rows as 'the actual subsystem sequences
   // recorded'; sql/08:58-61 is a ten-row literal in which every path was seen
   // exactly once, and sql/07:52 computes its occurrences as

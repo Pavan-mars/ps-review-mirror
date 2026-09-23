@@ -146,27 +146,67 @@ artefacts vs scored output) but it should be stated, not inferred.
 
 **Endpoints and the objects they read**
 
-| Endpoint | Reads |
-|---|---|
-| `/ps2/associations` | `ps2_subsystem_associations` |
-| `/ps2/conditional` | `ps2_conditional_prob` |
-| `/ps2/devicecascades` | `ps2_device_cascades` |
-| `/ps2/devices` | `ps2_device_catalog` |
-| `/ps2/errorcodes` | `ps2_error_code_transitions`, `ps2_error_codes` |
-| `/ps2/facility` | `ps2_facility_contagion_summary` |
-| `/ps2/hmm` | `ps2_hmm_regimes` |
-| `/ps2/hub` | `ps2_subsystem_hub_edges`, `ps2_subsystem_hub_summary` |
-| `/ps2/ignition` | `ps2_ignition_termination` |
-| `/ps2/impact` | `ps2_business_impact` |
-| `/ps2/markov` | `ps2_markov_transitions` |
-| `/ps2/network` | `ps2_network_centrality`, `v_ps2_network_centrality` |
-| `/ps2/paths` | `ps2_cascade_paths` |
-| `/ps2/phi` | `ps2_phi_matrix` |
-| `/ps2/serial/` | `ps2_device_catalog` |
-| `/ps2/status` | `v_ps2_v25_status` |
-| `/ps2/topdevices` | `ps2_top_devices`, `v_ps2_device_cascade` |
-| `/ps2/windowdetail` | `ps2_window_detail` |
-| `/ps2/windows` | `ps2_cascade_window_summary` |
+**Rewritten 23-Sep-2026.** The table below used to list twenty PS2 endpoints.
+Fifteen of them served the pre-V4 page at `/dashboard/city/:cityId`, which was
+removed that day; the tables underneath them were dropped by `sql/62` and
+`sql/63`, and both PS2 notebooks stopped writing those families in the same
+commit. What follows is what a request can actually reach. The retired rows are
+listed after it rather than deleted, because a map that simply goes quiet about
+an endpoint reads as an oversight.
+
+| Endpoint | Reads | Called by |
+|---|---|---|
+| `/ps2/devices` | `ps2_device_catalog` | `V4GlobalSearch.jsx` |
+| `/ps2/network` | `ps2_network_centrality`, `v_ps2_network_centrality` | `V4PS2Overview.jsx` |
+| `/ps2/phi` | `ps2_phi_matrix` | `V4PS2Overview.jsx` |
+| `/ps2/serial/sankey` | `ps2_cascade_sankey_subsystem` | `V4PS2Overview.jsx` |
+| `/ps2/serial/ignition` | `ps2_ignition_termination_subsystem` | `V4PS2Overview.jsx` |
+| `/ps2/status` | discovered from `information_schema`, all `ps2_*` | `V4PS2Overview.jsx` |
+| `/ps2/v25/{metric}` (20) | the eight `ps2_v25_*` and twelve `ps2_v2_*` tables | `V4PS2Overview.jsx` |
+
+`ps2_device_catalog` is the one entry above with no producer: no cell in either
+PS2 notebook writes it, so it is frozen at its July vintage. It is kept because
+`_device_360` and `v_ps2_device_latest` read it on the live `/ps1/device-360`
+and `/device/360/risk` paths. That is a staleness problem, not a retirement one.
+
+**Retired 23-Sep-2026** — endpoint removed AND table dropped unless noted:
+
+| Endpoint | Read | Table |
+|---|---|---|
+| `/ps2/associations` | `ps2_subsystem_associations` | KEPT — still written by the serial notebook |
+| `/ps2/conditional` | `ps2_conditional_prob` | KEPT — still written |
+| `/ps2/impact` | `ps2_business_impact` | KEPT — still written |
+| `/ps2/markov` | `ps2_markov_transitions` | KEPT — still written |
+| `/ps2/devicecascades` | `ps2_device_cascades` | KEPT — `_device_360` reads it |
+| `/ps2/serial/cmdb` | `ps2_device_catalog` | KEPT — see above |
+| `/ps2/errorcodes` | `ps2_error_code_transitions`, `ps2_error_codes` | dropped, sql/63 |
+| `/ps2/facility` | `ps2_facility_contagion_summary` | dropped, sql/63 |
+| `/ps2/hmm` | `ps2_hmm_regimes` | dropped, sql/62 |
+| `/ps2/hub` | `ps2_subsystem_hub_edges`, `ps2_subsystem_hub_summary` | dropped, sql/63 |
+| `/ps2/ignition` | `ps2_ignition_termination` | dropped, sql/63 |
+| `/ps2/paths` | `ps2_cascade_paths` | dropped, sql/63 |
+| `/ps2/topdevices` | `ps2_top_devices` | dropped, sql/63 (`v_ps2_device_cascade` KEPT) |
+| `/ps2/windowdetail` | `ps2_window_detail` | dropped, sql/63 |
+| `/ps2/windows` | `ps2_cascade_window_summary` | dropped, sql/63 |
+| `/ps2/serial/{13 others}` | twelve `ps2_*_serial` tables + `ps2_facility_contagion_facility` | dropped, sql/62 |
+| `/ps2/serial/network` | `ps2_network_centrality` | KEPT — V4 reads it through `/ps2/network` |
+
+Seven of those endpoints kept their table, because another reader still exists
+even though the endpoint went: four are still written by the serial notebook and
+read through `/device/360`, and three are read in handler code that is not a PS2
+route. An endpoint and its table are separate decisions, and conflating them is
+how `ps2_leadlag_timing` nearly went — the database reported no dependents while
+`/device/360`'s causation panel read it in code. That is also why the handler's
+`depends` action now answers `no_database_dependents` rather than
+`safe_to_drop`: it can see views, matviews, rules and foreign keys, and it
+cannot see Python.
+
+Also retired that day, outside Aurora: `fastapi_app/main.py` still declares 17
+`/ps2/*` routes against tables this change drops. It is not deployed — the
+`BackendFastApi-V3` task was already stopped on 25-Aug and its task definition
+captured to `tooling/out/` — so nothing breaks, but redeploying it now would
+serve 17 routes onto dropped tables. It needs the same RETIRED header that
+`api/lambda/cubic-mars-ps2-rds-push/README.md` carries, or deletion.
 
 
 ### PS3 — Root Cause

@@ -107,9 +107,12 @@ ALIASES = {
     # Loads to ps2_facility_contagion_facility (sql/42) under its own name.
     "ps2_association_rules_device": "ps2_subsystem_associations",
     "ps2_business_impact_device": "ps2_business_impact",
-    "ps2_hmm_regimes_device": "ps2_hmm_regimes",
+    # 23-Sep-2026. ps2_hmm_regimes_device and ps2_cascade_velocity_device are
+    # gone from both ends: the serial notebook no longer writes them and
+    # sql/62 dropped ps2_hmm_regimes and ps2_cascade_velocity. An alias for a
+    # source that no longer exists is not inert -- it is the instruction that
+    # would silently recreate the mapping if anyone restored the write.
     "ps2_recurrence_device": "ps2_recurrence",
-    "ps2_cascade_velocity_device": "ps2_cascade_velocity",
     "ps2_leadlag_timing_device": "ps2_leadlag_timing",
 }
 
@@ -144,10 +147,6 @@ COL_ALIASES = {
         "entity_id": "device_id",
         "mars_device_category": "category",
     },
-    "ps2_hmm_regimes_device": {
-        "state": "regime",
-        "pct_time": "pct",
-    },
     "ps2_network_centrality_subsystem": {
         "subsystem": "node_id",
         # scope is deliberately NOT aliased to role. The first version did that
@@ -180,7 +179,10 @@ COL_ALIASES = {
     # quoted in every statement that touches it forever after. The loader does
     # quote identifiers now, but the dashboard's route SQL is hand-written and
     # would not, so the name is fixed at the boundary instead.
-    "ps2_cascade_velocity_device": {"window": "window_bucket", "n": "n_events"},
+    # 23-Sep-2026. The ps2_cascade_velocity_device entry that sat here is
+    # removed with its table (sql/62). Its `window` -> `window_bucket` rename
+    # is still live for ps2_conditional_prob above, which is what the comment
+    # block immediately above is really about; only the velocity half went.
     "ps2_leadlag_timing_device": {"n": "n_events"},
     # ps2_recurrence_device needs no renames: device_id, cascade_days and
     # chronic already match sql/27.

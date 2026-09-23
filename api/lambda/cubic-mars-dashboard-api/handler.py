@@ -2248,66 +2248,43 @@ def route(method, path, params, body, headers=None):
     if _v25 is not None: return _v25
     _p3v25 = _ps3_v25_route(path, params, city)
     if _p3v25 is not None: return _p3v25
-    # ---- PS2 SERIAL-GRAIN  (added 01-Aug-2026) ----------------------------
+    # ---- PS2 SERIAL-GRAIN  (added 01-Aug, cut back 23-Sep-2026) -----------
     #
-    # ONE route, seventeen metrics: GET /ps2/serial/{metric}?city=CHI
+    # ONE route, TWO metrics: GET /ps2/serial/{metric}?city=CHI
     #
-    # The front end for this has existed since 26-Jul and was already correct.
-    # PS2SerialGrainAnalytics.jsx, PS2RichAnalytics.jsx and useSerialDeviceMap
-    # all call apiPS2SerialMetric(), which fetches /ps2/serial/{metric} --
-    # a path this handler had no branch for. api.js swallows a non-2xx and
-    # returns [], so all thirteen panels rendered their "no data yet" message
-    # instead of an error. Nothing was broken; the server end was never built.
-    # The 01-Aug PS2 load put ~158,000 serial-grain rows into Aurora. This is
-    # the only thing standing between those rows and the screen.
+    # It had seventeen. Fifteen served the pre-V4 page at
+    # /dashboard/city/:cityId, which was removed on 23-Sep; sql/62 then
+    # dropped the twelve _serial tables underneath them and the serial
+    # notebook stopped writing those families in the same commit. The two
+    # that remain are the two V4 reads, in V4PS2Overview.jsx:112-113.
     #
-    # Column names below are NOT chosen -- each one is what the JSX reads off
-    # the row object. Verified panel by panel before writing this:
-    #   suppression family/min_support_floor/cells_reported/cells_suppressed
-    #   chronic     serial_id/device_category/reference_period_days/
-    #               reference_period_source/n_cascades/recurrence_rate_per_day/
-    #               peer_pct_rank/chronicity_flag
-    #   recurrence  serial_id/cascade_days/chronic
-    #   leadlag     serial_id/sub_a/sub_b/mean/median/p25/p75/n
-    #   assoc       serial_id/antecedents/consequents/support/confidence/
-    #               lift/conviction
-    #   impact      entity_id (NOT serial_id)/cascade_days/total_impact/avg_impact
-    #   velocity    age_bucket/n/mean_velocity_min_per_fault
-    #   crossps     entity_grain/n_ps2_ignition_entities/n_matched_in_cross_ps/
-    #               match_rate/ps1_*/ps4_*/note
+    # cmdb went with them. Its comment said it "drives every Analyse button
+    # on this tab", and that was true of the tab that no longer exists --
+    # nothing in dashboard/src requests it now. It is worth being exact about
+    # how that was established, because a route is easy to keep by accident:
+    # every API path in dashboard/src was listed, and the front end builds no
+    # path by template literal or concatenation, so the list is complete
+    # rather than merely long. ps2_device_catalog, which cmdb read, is NOT
+    # dropped -- /ps2/devices and _device_360 still read it.
+    #
+    # Column names are what the JSX reads off the row object, not a choice:
     #   sankey      subsystem_from/subsystem_to/cascade_count/
     #               total_business_impact/avg_severity
-    #   network     subsystem (the table column is node_id -- aliased)/scope/
-    #               betweenness/pagerank/in_degree/out_degree
     #   ignition    subsystem/ignition_count/termination_count
-    #   facility    facility_id/cascade_days/distinct_devices/contagion_rate
-    #   phi         serial_id/sub_a/sub_b/phi
-    #   condprob    serial_id/sub_a/sub_b/window/window_bucket/n_a/n_ab/
-    #               p_b_given_a   ("window" is a RESERVED KEYWORD -- quoted,
-    #               and emitted twice because the JSX reads both spellings)
-    #   hmm         serial_id/n_obs/pct_time_critical/mean_chain_length/
-    #               converged/n_iter_run
-    #   markov      serial_id/n_chains/self_transition_rate  (roster)
-    #   cmdb        serial_id/device_id  (drives every Analyse button on this
-    #               tab -- an empty map disables all of them)
     #
-    # Every metric returns the NEWEST computed_date for the city only, the
-    # same rule the device-grain PS2 routes use.
+    # Both return the NEWEST computed_date for the city only, the same rule
+    # the device-grain PS2 routes use.
     if path.startswith("/ps2/serial/"):
         metric = path[len("/ps2/serial/"):].strip("/").lower()
-        serial = ((params or {}).get("serial_id") or "").strip()
-        # ps2_conditional_prob_serial is 89,990 rows and ps2_phi_matrix_serial
-        # is 30,430. Both are always requested WITH a serial_id by the JSX;
-        # the cap is the guard for when they are not.
         lim = _clamp_int((params or {}).get("limit"), 500, 1, 5000)
 
-        def _latest(tbl, cols, order="", serial_col=None):
-            w = ""
-            if serial_col and serial:
-                w = f" AND {serial_col}=:s"
+        # serial_id is gone with the per-serial metrics: neither surviving
+        # metric is keyed on one, and a filter no table can honour is how a
+        # parameter becomes a 42703 at request time instead of a no-op.
+        def _latest(tbl, cols, order=""):
             return (f"SELECT {cols} FROM {tbl} WHERE city_id=:c"
                     f" AND computed_date=(SELECT MAX(computed_date) FROM {tbl}"
-                    f" WHERE city_id=:c){w} {order} LIMIT {lim}")
+                    f" WHERE city_id=:c) {order} LIMIT {lim}")
 
         M = {
             "sankey": _latest(
@@ -2319,11 +2296,6 @@ def route(method, path, params, body, headers=None):
                 "ps2_ignition_termination_subsystem",
                 'subsystem, ignition_count, termination_count, computed_date',
                 "ORDER BY ignition_count DESC NULLS LAST"),
-            "cmdb": ("SELECT DISTINCT serial AS serial_id, device_id"
-                     " FROM ps2_device_catalog WHERE city_id=:c"
-                     " AND serial IS NOT NULL AND device_id IS NOT NULL"
-                     " AND computed_date=(SELECT MAX(computed_date)"
-                     " FROM ps2_device_catalog WHERE city_id=:c) LIMIT 20000"),
         }
         if metric not in M:
             return err(404, "unknown ps2 serial metric '%s' -- known: %s"
@@ -2331,18 +2303,17 @@ def route(method, path, params, body, headers=None):
         # One metric failing must not take the tab down. _safe_rows returns []
         # and logs rather than raising, so a table that has not been loaded
         # yet degrades to that panel's own "no data yet" message.
-        if serial and metric in ("chronic", "recurrence", "leadlag", "assoc",
-                                 "phi", "condprob", "hmm", "markov"):
-            return ok(_safe_rows(M[metric], c=city, s=serial))
         return ok(_safe_rows(M[metric], c=city))
 
     # ---- Phase-1e NEW PS2 analytics (return newest computed_date only) ----
     # ---- Phase-1f RICH PS2 (correlation/markov/network/error-codes/device drill-down) ----
     if path == "/ps2/devices":
         return ok(rows("SELECT device_id,device_name,serial,category,control_group,facility,operator,cascade_days,avg_chain_len,max_chain_len,dom_subsystem,dom_error_code,worst_cascade_path,worst_window FROM ps2_device_catalog WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_device_catalog WHERE city_id=:c) ORDER BY cascade_days DESC LIMIT 200", c=city))
-    if path == "/ps2/devicecascades":
-        dev = (params or {}).get("device", "")
-        return ok(rows("SELECT device_id,transit_day,subsystem_chain,event_code_chain,severity_chain,chain_length,chain_span_min,first_subsystem,last_subsystem FROM ps2_device_cascades WHERE city_id=:c AND device_id=:d AND computed_date=(SELECT MAX(computed_date) FROM ps2_device_cascades WHERE city_id=:c) ORDER BY transit_day DESC LIMIT 100", c=city, d=dev))
+    # /ps2/devicecascades REMOVED 23-Sep-2026. It served ps2_device_cascades
+    # to the pre-V4 page only; nothing in dashboard/src requests it. The
+    # TABLE stays -- _device_360 reads the same rows as `recent_cascades`
+    # and V4api.js calls that through /ps1/device-360, so this is one
+    # duplicate reader going, not a data source.
     if path == "/ps2/phi":
         return ok(rows("SELECT sub_a,sub_b,phi,computed_date FROM ps2_phi_matrix WHERE city_id=:c AND computed_date=(SELECT MAX(computed_date) FROM ps2_phi_matrix WHERE city_id=:c)", c=city))
     if path == "/ps2/network":

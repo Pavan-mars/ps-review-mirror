@@ -145,6 +145,20 @@ def _enable_uptime_features() -> bool:
     return os.environ.get("PS1_ENABLE_UPTIME_FEATURES", "false").strip().lower() == "true"
 
 
+def _label_observed_edge() -> bool:
+    """Drop rows whose label lookahead runs past the last day the event feed observed.
+
+    A row on day D is labelled from events on D+1..D+horizon. When the feed stops before
+    D+horizon the missing days count as "no failure", so the label is biased toward 0 --
+    silently, because a stopped feed and a quiet fleet look identical to the join. The
+    left edge has had a LEFT-CENSORED guard for weeks; this is its mirror.
+    EDW.DEVICE_EVENT stopped at 2026-08-29 (NB16 preflight, 24-Sep: SOURCE FROZEN), so
+    every run since has carried a censored final horizon. Default OFF so past runs stay
+    reproducible; the RIGHT-CENSORED warning prints either way.
+    """
+    return os.environ.get("PS1_LABEL_OBSERVED_EDGE", "false").strip().lower() == "true"
+
+
 def _completeness_guard() -> bool:
     """Count OBSERVED days rather than calendar days when sessionising. Default OFF.
 
@@ -948,6 +962,8 @@ def read_spine(
         print(f"[label] horizon          : {horizon_days} day(s)")
         print(f"[label] exclude relieved : {_relief}")
         print(f"[label] session gap days : {_gap}" + ("  (0 = count every event-day)" if not _gap else ""))
+        _edge = _label_observed_edge()
+        print(f"[label] observed edge    : {'ON -- rows with an unobservable lookahead are dropped' if _edge else 'off'}")
         _guard = _completeness_guard()
         if _guard:
             print(f"[label] completeness grd : ON  signal={_coverage_signal()} "
@@ -957,7 +973,8 @@ def read_spine(
                       "(PS1_EVENT_SESSION_GAP_DAYS=0). No gap rule runs, so the guard "
                       "has nothing to modify and will report zeros. That is NOT a clean "
                       "feed -- it is a guard that never fired.")
-        if _defn != PS1_EVENT_DEFINITION_DEFAULT or horizon_days != 3 or _relief or _gap or _guard:
+        if (_defn != PS1_EVENT_DEFINITION_DEFAULT or horizon_days != 3 or _relief or _gap
+                or _guard or _edge):
             print(f"[label] !! NON-DEFAULT LABEL. {TARGET_COL} holds a "
                   f"{_defn}/{horizon_days}-day label, NOT the published 3-day one. "
                   "Do not publish this run to Aurora or the dashboard.")
@@ -1289,7 +1306,7 @@ def read_spine(
             .select("DEVICE_ID", "label_day")
             .distinct()
         )
-        return (
+        _labelled = (
             base.alias("sp")
             .join(
                 label_days.alias("ld"),
@@ -1303,6 +1320,30 @@ def read_spine(
             )
             .select("sp.*", TARGET_COL)
         )
+
+        # ---- the RIGHT edge: where does the event feed actually stop? --------------
+        # Measured over EVERY event, not just OOS Sets: a fleet can be quiet for days,
+        # but the feed as a whole only goes silent when it has stopped. Future-dated
+        # keys exist in this estate, so they are excluded from the max.
+        _ev_max = (
+            dee_raw.select(F.to_date(F.col(dee_dtm)).alias("_d"))
+            .where(F.col("_d") <= F.current_date())
+            .agg(F.max("_d")).collect()[0][0]
+        )
+        if _ev_max is not None and max_day is not None:
+            _cut = _ev_max - _dt.timedelta(days=horizon_days)
+            if max_day > _cut:
+                _n_tail = _labelled.where(F.col("transit_day") > F.lit(_cut)).count()
+                if _edge:
+                    _labelled = _labelled.where(F.col("transit_day") <= F.lit(_cut))
+                    print(f"[label] observed edge    : events end {_ev_max}; dropped {_n_tail:,} "
+                          f"rows after {_cut} -- their {horizon_days}-day lookahead is not observable")
+                else:
+                    print(f"[label] !! RIGHT-CENSORED. Events end {_ev_max} but the spine runs to "
+                          f"{max_day}: {_n_tail:,} rows after {_cut} are labelled from a lookahead "
+                          f"that is partly unobserved, so their labels are biased toward 0. Set "
+                          f"PS1_LABEL_OBSERVED_EDGE=true to drop them.")
+        return _labelled
 
 
     df_ps1 = read_feature_source(spark, cfg.device_cat, 

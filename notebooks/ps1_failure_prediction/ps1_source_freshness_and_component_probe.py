@@ -69,6 +69,8 @@
 #   as ONE aggregation pass rather than a series of .count() calls, which is the
 #   difference between minutes and most of an hour.
 # =============================================================================
+import datetime as _dt
+
 from pyspark.sql import functions as F
 
 CATALOG = "mars_dev"
@@ -93,7 +95,20 @@ SOURCES = [
     ("silver", "station_network_daily",           "transit_day"),
     ("silver", "device_event_enriched",           "transit_day"),
     ("silver", "hw_config_current",               "LAST_REPORTED_DTM"),
+    # Read by ps1_features.py but absent from the GATE v3.3 list above. Without these
+    # the probe answers "is the GATE notebook fed" rather than "is PS1 fed".
+    ("silver", "device_mttr",                     "transit_day"),
+    ("silver", "dim_device",                      None),
+    ("silver", "read_tap_daily",                  "transit_day"),
+    ("silver", "read_tap_device_daily",           "transit_day"),
+    ("silver", "warnings_daily",                  "transit_day"),
+    ("silver", "kpi_daily",                       "transit_day"),
 ]
+
+# The date the feed is claimed to reach. Every source is scored against it, so the
+# question "did the incremental load actually land everywhere" gets a per-table answer
+# instead of one aggregate that a single stale table can hide.
+EXPECTED_THROUGH = _dt.date(2026, 9, 8)
 
 print("=" * 104)
 print("1. SOURCE FRESHNESS -- UC TABLE vs the S3 EXPORT the notebook actually reads")
@@ -134,8 +149,34 @@ for layer, tbl, datecol in SOURCES:
 _dates = [d for _, d in rows if d]
 if _dates:
     print(f"\n  EARLIEST export max-date across all sources: {min(_dates)}")
-    print("  Any source stopping before the label's 2026-08-29 end feeds NULL or stale")
+    print("  Any source stopping before the label window's end feeds NULL or stale")
     print("  features to every row after it. That is the degradation mechanism to rule in or out.")
+
+    # ---- per-source scoring against the claimed load date ----------------------
+    print(f"\n  AGAINST THE CLAIMED FEED DATE {EXPECTED_THROUGH}:")
+    _current, _behind, _unknown = [], [], []
+    for _t, _d in rows:
+        if _d is None:
+            _unknown.append(_t)
+        elif _d >= EXPECTED_THROUGH:
+            _current.append((_t, _d))
+        else:
+            _behind.append((_t, (EXPECTED_THROUGH - _d).days, _d))
+    print(f"    current  : {len(_current):>2d}")
+    print(f"    BEHIND   : {len(_behind):>2d}")
+    print(f"    no date  : {len(_unknown):>2d}  (reference tables and snapshots -- judge by row count)")
+    if _behind:
+        print("\n    Sources behind the claimed date, worst first:")
+        for _t, _n, _d in sorted(_behind, key=lambda x: -x[1]):
+            print(f"      {_t:34s} {str(_d):>12s}  {_n:>5d} days behind")
+        print("\n    A PS1 run whose label window extends past any of these dates trains on")
+        print("    NULL or stale values for that source on every row after it. Either shorten")
+        print("    the window to the earliest date above, or fix the load before retraining.")
+    else:
+        print("\n    Every dated source reaches the claimed date. The window is clear to")
+        print("    whatever the label builder asks for.")
+    if _unknown:
+        print(f"\n    No usable date column: {', '.join(_unknown)}")
 
 # ---------------------------------------------------------------------------
 print("\n" + "=" * 104)

@@ -20,7 +20,8 @@ CHAINS = [
 ]
 # first match wins, case-insensitive. TRANSIT_DAY_KEY is yyyyMMdd.
 DATE_CANDIDATES = ["transit_day", "TRANSIT_DAY_KEY", "EVENT_DTM", "incident_date",
-                   "opened_at", "eod_date", "failure_date", "AE_START_DTM", "event_date"]
+                   "opened_at", "eod_date", "failure_date", "AE_START_DTM", "event_date",
+                   "TRANSACTION_DTM"]   # edw_abp_tap has no TRANSIT_DAY_KEY
 
 
 def _day(col):

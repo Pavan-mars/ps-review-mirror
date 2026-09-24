@@ -1,3 +1,12 @@
+> **STALE — 2026-07-17 snapshot, hand-derived, no refresh path.**
+>
+> The generator emits `chicago_catalog_facts.**csv**`, not this `.md`. This file is a hand-made
+> conversion of a **2026-07-17** run, so every row count, size and freshness value below is from
+> July. None of the generator's actual outputs has ever been committed to this folder.
+>
+> Re-run `notebooks/catalog/generate_data_catalog.py` and read the results from
+> `mars_dev.audit.catalog_docs`.
+
 # Chicago Data Catalog - Facts (all tables)
 
 Snapshot 2026-07-17. Format: `layer.table | rows | cols | MB | files | [partitions] | date_col | min..max | stale`.

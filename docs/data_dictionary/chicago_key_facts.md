@@ -1,3 +1,20 @@
+> **STALE — and it names a source it does not come from.**
+>
+> This file's own header says `Source: notebooks/catalog/generate_data_catalog.py`. **That generator
+> does not write this file.** It emits `chicago_catalog_{bronze,silver,gold}.md`,
+> `chicago_samples_{...}.md`, `chicago_catalog_facts.csv` and `chicago_validation_scorecard.md`
+> into `mars_dev.audit.catalog_docs` — **none of which has ever been committed to this folder.**
+> So nothing refreshes this file and nothing ever did.
+>
+> Measured drift, 24-Sep-2026: it states **silver 29 / gold 5** tables. The repo DDL has
+> **silver 30 / gold 6**. The gold table it omits is **`device_ps3_oos_component`** — the
+> component-level OOS fact. Anyone asking "do we have component-level OOS?" and reading this file
+> would conclude we do not.
+>
+> Row counts, sizes and the validation summary below are a **2026-07-17** snapshot. Re-run the
+> generator and read `mars_dev.audit.catalog_docs`; treat the DDL under `sql/` as authoritative
+> for schema.
+
 # Chicago Data Catalog - Key Facts & Findings
 
 **Snapshot:** 2026-07-17 · **Catalog:** `mars_dev` · **Source:** `notebooks/catalog/generate_data_catalog.py`

@@ -73,6 +73,11 @@ phases:
              .config('spark.sql.session.timeZone','UTC').getOrCreate())
         assert s.range(5).count() == 5
         cls = s._jvm.java.lang.Class.forName('org.apache.hadoop.fs.s3a.S3AFileSystem')
+        import pandas as pd
+        s.conf.set('spark.sql.execution.arrow.pyspark.enabled', 'true')
+        rt = s.createDataFrame(pd.DataFrame({'a': [1, 2, 3]})).toPandas()
+        assert len(rt) == 3 and list(rt['a']) == [1, 2, 3], rt
+        print('arrow bridge OK, pyarrow', __import__('pyarrow').__version__)
         print('spark OK', s.version, '| S3AFileSystem loadable:', cls is not None)
         s.stop()
         "

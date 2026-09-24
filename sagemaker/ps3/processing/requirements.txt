@@ -10,11 +10,23 @@ pyspark==3.5.1
 # numpy<2 is a project-wide rule, not a guess: numpy 2.x broke the SageMaker
 # Studio kernels outright (the "_globals has no attribute _signature_descriptor"
 # trap) and the shap/sklearn wheels in use here are built against 1.x.
-numpy<2
+# EXACTLY ONE version satisfies this: scipy 1.17.1 requires numpy>=1.26.4 and
+# numpy<2 caps at 1.26.4. Stated explicitly so a future scipy that lifts its
+# floor fails legibly instead of as an unsolvable-resolution wall of text.
+numpy==1.26.4
 pandas>=2.0,<3
-pyarrow
+# NOT unpinned. The Dockerfile locks pyspark/hadoop-aws/aws-sdk as a triple but
+# pyarrow is just as load-bearing: the notebook enables
+# spark.sql.execution.arrow.pyspark.enabled, calls toPandas() three times, and
+# runs a direct pyarrow.dataset spine. pyspark 3.5.1 enforces only pyarrow>=4
+# with NO upper bound, so an unpinned pyarrow floats ~10 majors past anything
+# Spark 3.5.1 was tested against and nothing warns.
+pyarrow>=14,<16
 scikit-learn
-shap
+# shap dropped numpy 1.x at 0.50.0, so numpy<2 already caps this at 0.49.1.
+# Making the ceiling explicit rather than emergent: otherwise the day numpy
+# moves, shap jumps three minor versions silently and the SHAP drivers change.
+shap<0.50
 boto3
 
 # Execution layer. papermill over `nbconvert --execute` for per-cell logging:

@@ -66,7 +66,7 @@ const OV_FEEDS = {
   ps2Trend:    () => getRows('/ps2/v25/oos-trend', { city: 'CHI', limit: 5000 }),
   ps2Label:    () => getRows('/ps2/v25/label-summary', { city: 'CHI' }),
   ps4Timeline: () => ps4api.timeline('CHI'),
-  //   Root Cause Analysis  /ps3/status + /ps3/v25/commanded-split. status carries the run id,
+  //   Failure Severity and Device Reliability  /ps3/status + /ps3/v25/commanded-split. status carries the run id,
   //        the computed date and the row totals in one call; commanded-split is
   //        three rows and is the only per-fleet episode count that is a true
   //        denominator rather than a capped browse list.
@@ -372,7 +372,7 @@ function EstateOverview({ onOpen }) {
         />
 
         <PSCard
-          code="Root Cause Analysis" title="Root cause and severity" accent={TAB_COLOR.ps3}
+          code="Failure Severity and Device Reliability" title="Severity, component attribution and device reliability" accent={TAB_COLOR.ps3}
           what="Which component an OOS episode is attributed to, and how soon that device comes back."
           asOf={ps3AsOf}
           loading={f.ps3Status.loading || f.ps3Status.idle}
@@ -416,7 +416,7 @@ function EstateOverview({ onOpen }) {
           {[
             ['Failure Prediction', 'ps1', 'loader', 'Daily loader 06:40 UTC. Scoring itself is run by hand -- daily inference is not enabled yet.'],
             ['Failure Pattern & Cascade Identification', 'ps2', 'loader', '20 tables refreshed wholesale by the daily loader, 07:10 UTC. Notebook run is manual. No served model.'],
-            ['Root Cause Analysis', 'ps3', 'manual', '20 tables from the V26 source-first run. The v25 loader is invoked by hand -- it has no schedule.'],
+            ['Failure Severity and Device Reliability', 'ps3', 'manual', '20 tables from the V26 source-first run. The v25 loader is invoked by hand -- it has no schedule.'],
             ['Anomaly & Outlier Analysis', 'ps4', 'loader', 'Daily loader 07:35 UTC plus a weekly v3 loader. Anomaly scoring at device-week grain is run by hand.'],
             ['Remaining Useful Life & SLA Breach', 'ps5', 'loader', 'Daily loader 07:20 UTC. Survival models per fleet, served from Aurora. Notebook run is manual; registry sign-off outstanding.'],
           ].map(([k, key, s, d]) => (
@@ -459,7 +459,7 @@ const TABS = [
   { key: 'overview', label: 'Overview' },
   { key: 'ps1', label: 'Failure Prediction' },
   { key: 'ps2', label: 'Failure Patterns & Cascades' },
-  { key: 'ps3', label: 'Root Cause Analysis' },
+  { key: 'ps3', label: 'Failure Severity and Device Reliability' },
   { key: 'ps4', label: 'Anomaly & Outliers' },
   { key: 'ps5', label: 'Remaining Life & SLA' },
   { key: 'device', label: 'Device 360' },

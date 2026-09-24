@@ -505,7 +505,7 @@ function ImpactView({ feeds }) {
 
           {/* PK's wording, agreed 04-Aug. This is the ONLY one of the three
               asterisks that names ServiceNow, and deliberately: Failure Pattern & Cascade Identification's validated
-              share is a ServiceNow join, whereas Root Cause Analysis is device-native now and
+              share is a ServiceNow join, whereas Failure Severity and Device Reliability is device-native now and
               Failure Prediction's absence is about the OOS window. Using the same sentence on
               all three would undo the contract work. */}
           <div style={{ ...font.note, fontSize: 12.2, marginTop: 12 }}>
@@ -1914,7 +1914,7 @@ function StatusBar({ feed }) {
 export default function PS2Overview({ city = 'CHI' }) {
   const [view, setView] = useState('impact');
   // Clicking a row opens Analyse, which carries an "Open in Device 360"
-  // button. Same drill-down Failure Prediction, Root Cause Analysis, Anomaly & Outlier Analysis and Remaining Useful Life & SLA Breach use, so a device found in
+  // button. Same drill-down Failure Prediction, Failure Severity and Device Reliability, Anomaly & Outlier Analysis and Remaining Useful Life & SLA Breach use, so a device found in
   // any problem statement opens with all five in view.
   const [analyse, setAnalyse] = useState(null);
   const { feeds, request } = useFeeds(city);

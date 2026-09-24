@@ -1,8 +1,8 @@
 // =====================================================================
-// v2/PS3Overview.jsx -- Root Cause Analysis (root cause and severity) in the v2 shape.
+// v2/PS3Overview.jsx -- Failure Severity and Device Reliability (root cause and severity) in the v2 shape.
 //
 // WHAT THIS TAB HONESTLY IS. The tab is named "root cause and severity" and
-// Root Cause Analysis v2.5 can currently deliver NEITHER of those. Measured on the loaded run:
+// Failure Severity and Device Reliability v2.5 can currently deliver NEITHER of those. Measured on the loaded run:
 //   confirmed_root_cause_coverage  0.0  on all three fleets
 //   severity_coverage              0.0  on all three fleets
 // All seven root-cause evidence sources report status not_configured, and
@@ -11,7 +11,7 @@
 // type, not an observation of the incident. event_type_severity is 99.98%
 // null.
 //
-// So this screen does not pretend. It reports what Root Cause Analysis DOES establish --
+// So this screen does not pretend. It reports what Failure Severity and Device Reliability DOES establish --
 // which component an episode is attributed to, how soon that device comes
 // back, where it happens, and which devices carry the most -- and it states
 // the two absences on the first screen rather than leaving a reader to infer
@@ -592,7 +592,7 @@ function ComponentsView({ feeds }) {
 //
 // This tab exists because the screen was answering "what breaks" and "which
 // devices" while the tab was named for root cause and severity, and a reader
-// had no place to go to find out what Root Cause Analysis means by either or why neither is
+// had no place to go to find out what Failure Severity and Device Reliability means by either or why neither is
 // populated. Saying "not available" in a note on another tab is not the same
 // as showing the chain and where it stops.
 // =====================================================================
@@ -787,7 +787,7 @@ function RootCauseView({ feeds }) {
     <>
       <Section accent={TAB_COLOR.ps3}
         eyebrow="Definition"
-        title="What Root Cause Analysis means by a root cause"
+        title="What Failure Severity and Device Reliability means by a root cause"
         sub="Five stages. An episode has to clear all of them before the screen can name a cause."
       >
         <Note>
@@ -829,7 +829,7 @@ function RootCauseView({ feeds }) {
       </Section>
 
       <Section accent={TAB_COLOR.ps3} eyebrow="What is populated" title="Component and subsystem"
-        sub="The nearest thing Root Cause Analysis currently has to a mechanical cause, and it is on every episode.">
+        sub="The nearest thing Failure Severity and Device Reliability currently has to a mechanical cause, and it is on every episode.">
         <Feed feed={feeds.episodes} height={300}>
           {() => (
             <>
@@ -1072,7 +1072,7 @@ function DevicesView({ feeds, onAnalyse }) {
       </Section>
 
       <Section accent={TAB_COLOR.ps3} eyebrow="Lookup" title="Find a device"
-        sub="Type a device id for its Root Cause Analysis v2.5 record, then open the cross-problem Device 360.">
+        sub="Type a device id for its Failure Severity and Device Reliability v2.5 record, then open the cross-problem Device 360.">
         <Card>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ minWidth: 260, flex: '0 1 320px' }}>
@@ -1088,7 +1088,7 @@ function DevicesView({ feeds, onAnalyse }) {
             </Chip>
             {!!lookup && (
               <span style={{ ...font.micro }}>
-                {lookup.found ? 'found in this run' : 'not present in the Root Cause Analysis v2.5 run'}
+                {lookup.found ? 'found in this run' : 'not present in the Failure Severity and Device Reliability v2.5 run'}
               </span>
             )}
           </div>
@@ -1111,7 +1111,7 @@ function DevicesView({ feeds, onAnalyse }) {
 
           {!!lookup && !lookup.found && q.trim() && (
             <Note>
-              No Root Cause Analysis v2.5 record for <strong>{q.trim().toUpperCase()}</strong> in this run
+              No Failure Severity and Device Reliability v2.5 record for <strong>{q.trim().toUpperCase()}</strong> in this run
               -- it either recorded no OOS episode in the window, or it is not a TVM,
               fare gate or validator. Device 360 may still hold Failure Prediction, Failure Pattern & Cascade Identification and Anomaly & Outlier Analysis
               history for it, so the Analyse button is still worth pressing.
@@ -1509,7 +1509,7 @@ function RepeatsView({ feeds }) {
       <Section accent={TAB_COLOR.ps3} eyebrow="Recurrence" title="Does the same component come back"
         sub="An estimate of how much an episode being attributed to a component changes the chance of another episode on that device within 30 days.">
         <Note>
-          This is the one part of Root Cause Analysis that makes a causal claim, so it carries the most caveats.
+          This is the one part of Failure Severity and Device Reliability that makes a causal claim, so it carries the most caveats.
           The estimator is cross-fitted AIPW over time folds with Holm adjustment for testing six
           components at once. It is not a randomised comparison, and a component is not assigned to
           a device -- so read these as "episodes attributed to X are followed by another episode
@@ -1728,11 +1728,11 @@ function EvidenceView({ feeds }) {
 // run without anyone editing this file.
 //
 // WHAT IS DELIBERATELY *NOT* PRINTED HERE IS A FRACTION. There is no fleet
-// total on this tab that Root Cause Analysis's numerator divides into:
+// total on this tab that Failure Severity and Device Reliability's numerator divides into:
 //     /ps5/summary        4,103 devices   (452 GATE / 416 TVM / 3,235 VALIDATOR)
 //     /ps2/v25/label-summary  4,337 eligible (825 / 473 / 3,039)
 //     this run                2,806 devices  (854 / 449 / 1,503)
-// Root Cause Analysis counts 854 gates where Remaining Useful Life & SLA Breach has 452, and 475 of Root Cause Analysis's 2,806 devices do
+// Failure Severity and Device Reliability counts 854 gates where Remaining Useful Life & SLA Breach has 452, and 475 of Failure Severity and Device Reliability's 2,806 devices do
 // not appear in the Remaining Useful Life & SLA Breach roster at all (measured, live, 04-Aug). These are
 // overlapping populations, not nested ones. "2,806 of 4,103" would put a
 // coverage percentage on screen that no query reproduces, so the bar states
@@ -1805,7 +1805,7 @@ export default function PS3Overview({ city = 'CHI' }) {
   const active = VIEWS.find((v) => v.key === view) || VIEWS[0];
 
   return (
-    <DrilldownProvider rootLabel="Root Cause Analysis - root cause and severity">
+    <DrilldownProvider rootLabel="Failure Severity and Device Reliability - root cause and severity">
       <div style={{ padding: '4px 2px 40px' }}>
         <StatusBar feed={feeds.status} />
 
@@ -1814,8 +1814,8 @@ export default function PS3Overview({ city = 'CHI' }) {
             Duplicate <style> tags are identical rules and are harmless. */}
         <V2Style />
 
-        {/* Sub-tabs. Each one carries its own colour off the Root Cause Analysis rotation of the
-            nav ramp, and the rail underneath is Root Cause Analysis's own colour -- so the row
+        {/* Sub-tabs. Each one carries its own colour off the Failure Severity and Device Reliability rotation of the
+            nav ramp, and the rail underneath is Failure Severity and Device Reliability's own colour -- so the row
             identifies both which sub-tab is open and which problem statement it
             belongs to. See theme.js navColor() for the rotation. */}
         <Tabs items={VIEWS} value={view} onChange={setView} variant="sub" parent="ps3" />
@@ -1830,8 +1830,8 @@ export default function PS3Overview({ city = 'CHI' }) {
         {active.key === 'evidence' && <EvidenceView feeds={feeds} />}
 
         {/* The same cross-problem modal Failure Prediction and Anomaly & Outlier Analysis open. It reads
-            /ps1/device-360, which carries Failure Prediction, Failure Pattern & Cascade Identification, Anomaly & Outlier Analysis and the PLAN-B Root Cause Analysis
-            generation -- ps3_v25_* is not in that route yet, so the Root Cause Analysis detail
+            /ps1/device-360, which carries Failure Prediction, Failure Pattern & Cascade Identification, Anomaly & Outlier Analysis and the PLAN-B Failure Severity and Device Reliability
+            generation -- ps3_v25_* is not in that route yet, so the Failure Severity and Device Reliability detail
             on this screen is the panel above, not the modal. */}
         {analyse && (
           <AnalyseModal city={city} deviceId={analyse} onClose={() => setAnalyse(null)} />

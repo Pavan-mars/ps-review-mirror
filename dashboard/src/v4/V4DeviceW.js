@@ -186,7 +186,7 @@ export function deviceProfile(agg, d) {
 }
 
 // ---------------------------------------------------------------------
-// Component rows, one per serial. Root Cause Analysis attribution and the
+// Component rows, one per serial. Failure Severity and Device Reliability attribution and the
 // Remaining Useful Life estimate are joined on the serial number, which is
 // the only key the two runs share.
 // ---------------------------------------------------------------------

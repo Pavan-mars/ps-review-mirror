@@ -681,28 +681,28 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
               <KV k="In device catalog" v={ps2.in_catalog === true ? 'yes' : ps2.in_catalog === false ? 'no' : null} />
             </SourcePanel>
 
-            {/* A device absent from Root Cause Analysis is not a lookup failure, and the panel
+            {/* A device absent from Failure Severity and Device Reliability is not a lookup failure, and the panel
                 should not read like one.
                 --------------------------------------------------------------
                 THE "2,485 OF 4,103" FRACTION THAT USED TO BE HERE WAS WRONG,
                 and measurably so. 4,103 is the Remaining Useful Life & SLA Breach device roster
-                (/ps5/summary: 452 gates + 416 TVMs + 3,235 validators). Root Cause Analysis's
+                (/ps5/summary: 452 gates + 416 TVMs + 3,235 validators). Failure Severity and Device Reliability's
                 device population is not a subset of it -- measured against the
                 live API on 04-Aug, 475 of the 2,806 devices in
                 ps3_v25_device_summary do not appear in the Remaining Useful Life & SLA Breach roster at all,
-                and Root Cause Analysis counts 854 gates where Remaining Useful Life & SLA Breach has 452. Printing one over
+                and Failure Severity and Device Reliability counts 854 gates where Remaining Useful Life & SLA Breach has 452. Printing one over
                 the other asserts a containment that does not hold, and would
                 have put a "coverage" percentage on screen that no query could
                 reproduce.
                 So the note states the BOUNDARY instead of a fraction. The
-                measurable coverage number now lives on the Root Cause Analysis tab's status
+                measurable coverage number now lives on the Failure Severity and Device Reliability tab's status
                 bar, where it is read live from the run's own table counts and
                 cannot drift. */}
             <SourcePanel
-              ps="Root Cause Analysis" title="Root cause and severity"
+              ps="Failure Severity and Device Reliability" title="Severity, component attribution and device reliability"
               found={ps3.found}
               note={ps3.found === false
-                ? 'The published Root Cause Analysis run scores the held-out test window, not the whole estate, so a device outside that window has no root-cause row by construction. That is a boundary, not a lookup failure. The Root Cause Analysis tab states how many devices the run covers.'
+                ? 'The published Failure Severity and Device Reliability run scores the held-out test window, not the whole estate, so a device outside that window has no root-cause row by construction. That is a boundary, not a lookup failure. The Failure Severity and Device Reliability tab states how many devices the run covers.'
                 : 'Cause not attributable or the out-of-service event carries no component subsystem. Severity is blank across every device in this run: it publishes a root-cause head only.'}
             >
               <KV k="Dominant component" v={ps3.dominant_pred_component} />
@@ -719,7 +719,7 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
                 but it carries no model output and says so.
 
                 THE COUNT ON THIS PANEL AND THE ONE ON ROOT CAUSE ANALYSIS ARE
-                DIFFERENT THINGS. Root Cause Analysis counts out-of-service
+                DIFFERENT THINGS. Failure Severity and Device Reliability counts out-of-service
                 episodes from the availability feed; this counts ServiceNow
                 tickets raised against the CI. For HBG00011 that is 70 against
                 104 -- two true numbers measuring two different events. Printing
@@ -734,7 +734,7 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
                   + "that has never needed attention."}
                 note={"Tickets are counted from ServiceNow via the CMDB configuration item, "
                   + "not from the availability feed. The out-of-service episode count on the "
-                  + "Root Cause Analysis panel measures a different event and will not match."}
+                  + "Failure Severity and Device Reliability panel measures a different event and will not match."}
               >
                 <KV k="Tickets on this CI" v={snh && snh.incident_count != null ? nfmt(snh.incident_count) : null} />
                 <KV k="Most recent ticket" v={snh && snh.latest_incident} />
@@ -831,7 +831,7 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
               )}
               <KV k="Signals firing" v={xps.signal_count} />
               <KV k="Failure Pattern & Cascade Identification subsystem" v={xps.ps2_subsystem} />
-              <KV k="Root Cause Analysis subsystem" v={xps.ps3_subsystem} />
+              <KV k="Failure Severity and Device Reliability subsystem" v={xps.ps3_subsystem} />
               <KV k="Verdict" v={xps.subsystem_verdict} />
               <KV k="Propagation speed" v={xps.propagation_speed} />
               <KV k="Cascades under 15 min" v={xps.pct_cascades_under_15min === undefined || xps.pct_cascades_under_15min === null ? null : pct(xps.pct_cascades_under_15min, 0)} />
@@ -839,7 +839,7 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
           </Grid>
 
           {/* COMPONENT LEVEL. This table used to be Remaining Useful Life
-              only. It now joins the Root Cause Analysis attribution per
+              only. It now joins the Failure Severity and Device Reliability attribution per
               serial to the survival estimate per serial, one row per serial,
               so every column the old table had is still here plus the
               incident side. See V4DeviceW for the grain argument. */}

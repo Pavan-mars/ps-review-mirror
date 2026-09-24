@@ -85,7 +85,7 @@ export function DeviceWCards({ agg, d360, loc }) {
       </WCard>
 
       <WCard tag="WHAT" headline={agree}
-             foot="Agreement counts Root Cause Analysis, Anomaly, Remaining Life and ServiceNow. Failure Prediction is shown but not counted: its label has not passed its gate.">
+             foot="Agreement counts Failure Severity and Device Reliability, Anomaly, Remaining Life and ServiceNow. Failure Prediction is shown but not counted: its label has not passed its gate.">
         <Line k="Failure probability, 3 days (latest scored day)" v={what.ps1_prob !== null ? `${pct(what.ps1_prob, 1)}${has(what.ps1_tier) ? ` · ${what.ps1_tier}` : ''}` : null} tone={warnTier(what.ps1_tier)} />
         <Line k="Severity action band" v={what.ps3_action} tone={/P1|P2/.test(String(what.ps3_action || '')) ? 'warn' : undefined} />
         <Line k="Predicted severity" v={what.ps3_severity} />
@@ -122,7 +122,7 @@ export function DeviceWCards({ agg, d360, loc }) {
             ))}
           </div>
         )}
-        <Line k="Root Cause Analysis subsystem" v={why.subsystem_ps3} />
+        <Line k="Failure Severity and Device Reliability subsystem" v={why.subsystem_ps3} />
         <Line k="Cascade subsystem" v={why.subsystem_ps2} />
         <Line k="Corroboration" v={has(why.subsystem_verdict) ? String(why.subsystem_verdict).replace(/_/g, ' ') : null} />
         {!drivers.length && !why.components.length && !has(why.subsystem_ps3) && !has(why.subsystem_ps2) && (
@@ -153,7 +153,7 @@ export function ComponentWTable({ rows, device }) {
   return (
     <Panel
       title="Components on this device: where, when, what, why"
-      hint={`One row per serial-numbered part on ${device || 'this device'}. Where: this device. When: latest attributed incident and part age. What: incident load from Root Cause Analysis and remaining life from the survival run, joined on the serial. Why: the basis column. Attribution is observed from incident history, not a confirmed root cause; a serial with several attributed components lists them all rather than repeating its remaining life per component.`}
+      hint={`One row per serial-numbered part on ${device || 'this device'}. Where: this device. When: latest attributed incident and part age. What: incident load from Failure Severity and Device Reliability and remaining life from the survival run, joined on the serial. Why: the basis column. Attribution is observed from incident history, not a confirmed root cause; a serial with several attributed components lists them all rather than repeating its remaining life per component.`}
     >
       <DataTable rows={rows} columns={columns} height={Math.min(320, 52 + rows.length * 38)} pageSize={50} searchable={false} exportName={`components_w_${device || 'device'}`} />
     </Panel>

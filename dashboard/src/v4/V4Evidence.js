@@ -26,7 +26,7 @@
 export const METHOD = {
   ps1: 'Failure Prediction',
   ps2: 'Failure Pattern & Cascade Identification',
-  ps3: 'Root Cause Analysis',
+  ps3: 'Failure Severity and Device Reliability',
   ps4: 'Anomaly & Outlier Analysis',
   ps5: 'Remaining Useful Life & SLA Breach',
 };

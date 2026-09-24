@@ -1,3 +1,15 @@
+> **STALE — DO NOT TRUST THIS FILE. Snapshot 2026-07-17; nothing regenerates it.**
+>
+> On 24-Sep-2026 this file was read as current and it was wrong: it lists
+> `silver.incident_history` with 68 columns including a `ci_serial_number` / `ci_install_date` /
+> `cmdb_model_*` block. Those columns **do not exist** in the live table — the DDL
+> (`sql/silver/15_incident_history__create.sql`) selects none of them. This file documents
+> **S15 v1**, the CSV-based build that was superseded.
+>
+> `notebooks/catalog/generate_data_catalog.py` does **not** produce this file. It produces
+> `chicago_catalog_{bronze,silver,gold}.md` into `mars_dev.audit.catalog_docs`. Use those, or read
+> the DDL under `sql/silver/` and `sql/gold/`, which is authoritative for schema.
+
 # Chicago Silver Schemas (snapshot 2026-07-17)
 
 Columns for the silver **feature/label/reference** tables captured in this snapshot.

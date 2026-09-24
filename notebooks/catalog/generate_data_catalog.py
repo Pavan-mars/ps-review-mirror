@@ -8,7 +8,10 @@
 # MAGIC 4. **Validations** - per-table (grain, key-nulls, freshness) + **cross-layer reconciliation**
 # MAGIC
 # MAGIC Persists to `mars_dev.audit.catalog_columns / catalog_facts / catalog_validation` and writes
-# MAGIC markdown + CSV to `/dbfs/FileStore/chicago_catalog/` (download -> commit into `docs/`).
+# MAGIC markdown + CSV to the UC table `mars_dev.audit.catalog_docs`. This workspace disables the
+# MAGIC public DBFS root and the /dbfs FUSE mount, so there is NOTHING to download from
+# MAGIC /FileStore -- retrieve with:
+# MAGIC `SELECT content FROM mars_dev.audit.catalog_docs WHERE doc_name='chicago_catalog_silver.md'`
 # MAGIC **This is the refresh engine for the Chicago data-catalog knowledge-base skill.**
 # MAGIC
 # MAGIC Run: attach to the shared cluster, **Run All**. Exact counts on the billion-row bronze facts
@@ -360,7 +363,10 @@ print("\n".join(L))
 # MAGIC ## Refresh SOP (knowledge-base skill)
 # MAGIC 1. Run this notebook (Run All) after any silver/gold rebuild.
 # MAGIC 2. It refreshes `audit.catalog_columns / catalog_facts / catalog_validation` (query anytime).
-# MAGIC 3. Download `/FileStore/chicago_catalog/*` and commit into `docs/` (paths printed in Part E).
+# MAGIC 3. Retrieve from `mars_dev.audit.catalog_docs` (NOT /FileStore -- the FUSE mount is
+# MAGIC    disabled here) and commit into `docs/data_dictionary/`. Doc names:
+# MAGIC    chicago_catalog_{bronze,silver,gold}.md, chicago_samples_{...}.md,
+# MAGIC    chicago_catalog_facts.csv, chicago_validation_scorecard.md
 # MAGIC 4. Re-package the `chicago-data-catalog` skill from the refreshed docs.
 # MAGIC
 # MAGIC **Live queries:**

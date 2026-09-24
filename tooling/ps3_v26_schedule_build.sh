@@ -95,10 +95,23 @@ SCHEDULE_EXPR="cron(15 7 * * ? *)"
 TZ_ID="America/Chicago"
 
 # The loader is an EventBridge RULE, and put-rule takes NO timezone parameter
-# -- its cron is always UTC. 13:45 UTC is after 07:15 America/Chicago plus the
-# runtime cap in both DST regimes (CDT 12:15, CST 13:15 start). Do not "fix"
-# this to look like the producer's local time; they are different clocks.
-LOADER_CRON="cron(45 13 * * ? *)"
+# -- its cron is always UTC. Do not "fix" this to look like the producer's
+# local time; they are different clocks.
+#
+# CORRECTED 24-Sep. The first version claimed 13:45 UTC cleared "the runtime
+# cap in both DST regimes". It did not: MAX_RUNTIME_SEC is 10800 = 180 minutes.
+#   CDT  producer starts 12:15 UTC, cap expires 15:15 -> 13:45 is  90 min early
+#   CST  producer starts 13:15 UTC, cap expires 16:15 -> 13:45 is 150 min early,
+#        i.e. only THIRTY minutes after the job starts
+# Thirty minutes has to cover provisioning an ml.m5.4xlarge, pulling a ~2 GB
+# image and the ~10-minute notebook. On overrun the loader takes 'the first
+# COMPLETE run', which is YESTERDAY's, and reports a clean commit -- exactly the
+# silent staleness this file's four disabled-by-default reasons exist to stop.
+# 16:30 UTC clears 13:15 + 180 min in both regimes.
+#
+# The real fix is to chain the loader off the producer's COMPLETION rather than
+# off a clock; this repo already has the gold-complete EventBridge pattern.
+LOADER_CRON="cron(30 16 * * ? *)"
 
 # The as-of date the run will claim. THE single line that must change every
 # time upstream moves, and the reason this is not yet daily operation.
@@ -113,6 +126,7 @@ AS_OF_DATE=2026-08-29
 # 10800 stays a generous guess until step 3 of the enable order supplies one.
 MAX_RUNTIME_SEC=10800
 
+Q='"'   # a literal double quote, for building JSON inside double-quoted strings
 ACCT=$(aws sts get-caller-identity --query Account --output text)
 BUCKET=cubic-mars-pm-s3-datalake-dev-artifacts-170202974600
 IMAGE="$ACCT.dkr.ecr.$REGION.amazonaws.com/cubic-mars-ps3-processing:$IMAGE_TAG"
@@ -126,17 +140,44 @@ aws ecr describe-images --repository-name cubic-mars-ps3-processing \
 echo ">> [2/6] the notebook must be staged where a scheduled run will read it"
 echo "   A scheduled run reads a FIXED prefix. run_processing_job.py uploads"
 echo "   per job name, so the schedule needs its own stable copy:"
-aws s3 ls "s3://$BUCKET/chicago/ps3/processing_code/scheduled/" || {
-  echo "   NOT STAGED. Publish it before enabling:"
+_KEY=chicago/ps3/processing_code/scheduled/PS3_V26_PRODUCTION.ipynb
+# The ENTRYPOINT hardcodes .../input/notebook/PS3_V26_PRODUCTION.ipynb and the
+# input is an S3Prefix, so exactly ONE object with exactly that basename must sit
+# directly under the prefix, unnested. A non-empty prefix is not enough, and the
+# prefix without a trailing slash also matches siblings like scheduled-backup/.
+if aws s3api head-object --bucket "$BUCKET" --key "$_KEY" >/dev/null 2>&1; then
+  echo "   staged: s3://$BUCKET/$_KEY"
+  # AND THE STAGED COPY CAN SILENTLY BEAT THE JOB. Cell 2 builds
+  # PS3_STUDIO_INTENT from PS3_STUDIO_RUN and does os.environ[k] = v -- a HARD
+  # assignment, running BEFORE the setdefault block -- so a copy with that dict
+  # filled in overrides the schedule's Environment while the job still reports
+  # Completed. The committed file has all five values blank; a Studio working
+  # copy usually does not, and that is the copy nearest to hand when staging.
+  aws s3 cp "s3://$BUCKET/$_KEY" - 2>/dev/null > /tmp/_ps3nb.json &&
+  python3 - /tmp/_ps3nb.json <<'PYCHK'
+import json, re, sys
+src = "".join(json.load(open(sys.argv[1]))["cells"][2]["source"])
+vals = re.findall(r'"(PS3_[A-Z_]+)":\s*"([^"]*)"', src)
+bad = [k for k, v in vals if v.strip()]
+if bad:
+    print("   STOP: the staged notebook hard-sets " + ", ".join(bad))
+    print("   It will override the schedule Environment. Stage the committed copy.")
+else:
+    print("   PS3_STUDIO_RUN all blank -- the job Environment wins, as intended.")
+PYCHK
+  rm -f /tmp/_ps3nb.json
+else
+  echo "   NOT STAGED at the exact key the ENTRYPOINT reads. Publish first:"
   echo "     aws s3 cp notebooks/ps3_root_cause_analysis/PS3_V26_PRODUCTION.ipynb \\"
   echo "       s3://$BUCKET/chicago/ps3/processing_code/scheduled/"
   echo "   (continuing -- created disabled either way)"
-}
+fi
 
 echo ">> [3/6] role the scheduler assumes to call SageMaker"
 if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
   aws iam create-role --role-name "$ROLE_NAME" \
-    --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"scheduler.amazonaws.com"},"Action":"sts:AssumeRole"}]}' \
+    # Scoped with aws:SourceArn/SourceAccount to close the confused-deputy path.
+    --assume-role-policy-document "{${Q}Version${Q}:${Q}2012-10-17${Q},${Q}Statement${Q}:[{${Q}Effect${Q}:${Q}Allow${Q},${Q}Principal${Q}:{${Q}Service${Q}:${Q}scheduler.amazonaws.com${Q}},${Q}Action${Q}:${Q}sts:AssumeRole${Q},${Q}Condition${Q}:{${Q}StringEquals${Q}:{${Q}aws:SourceAccount${Q}:${Q}$ACCT${Q}},${Q}ArnLike${Q}:{${Q}aws:SourceArn${Q}:${Q}arn:aws:scheduler:$REGION:$ACCT:schedule/default/$SCHED${Q}}}}]}" \
     --description "EventBridge Scheduler -> CreateProcessingJob for the PS3 V26 notebook" >/dev/null
   echo "   created $ROLE_NAME"
 else
@@ -160,7 +201,34 @@ TARGET_JSON="{
     \"Arn\":\"arn:aws:scheduler:::aws-sdk:sagemaker:createProcessingJob\",
     \"RoleArn\":\"arn:aws:iam::$ACCT:role/$ROLE_NAME\",
     \"Input\":\"{\\\"ProcessingJobName\\\":\\\"cubic-mars-ps3-v26-<aws.scheduler.execution-id>\\\",\\\"RoleArn\\\":\\\"arn:aws:iam::$ACCT:role/$EXEC_ROLE\\\",\\\"AppSpecification\\\":{\\\"ImageUri\\\":\\\"$IMAGE\\\"},\\\"ProcessingResources\\\":{\\\"ClusterConfig\\\":{\\\"InstanceCount\\\":1,\\\"InstanceType\\\":\\\"ml.m5.4xlarge\\\",\\\"VolumeSizeInGB\\\":100}},\\\"ProcessingInputs\\\":[{\\\"InputName\\\":\\\"notebook\\\",\\\"S3Input\\\":{\\\"S3Uri\\\":\\\"s3://$BUCKET/chicago/ps3/processing_code/scheduled\\\",\\\"LocalPath\\\":\\\"/opt/ml/processing/input/notebook\\\",\\\"S3DataType\\\":\\\"S3Prefix\\\",\\\"S3InputMode\\\":\\\"File\\\"}}],\\\"ProcessingOutputConfig\\\":{\\\"Outputs\\\":[{\\\"OutputName\\\":\\\"executed-notebook\\\",\\\"S3Output\\\":{\\\"S3Uri\\\":\\\"s3://$BUCKET/chicago/ps3/processing_runs/scheduled-<aws.scheduler.execution-id>\\\",\\\"LocalPath\\\":\\\"/opt/ml/processing/output\\\",\\\"S3UploadMode\\\":\\\"EndOfJob\\\"}}]},\\\"Environment\\\":{\\\"PS3_DATA_AS_OF_DATE\\\":\\\"$AS_OF_DATE\\\",\\\"PS3_RUN_MODE\\\":\\\"PRODUCTION\\\",\\\"AWS_DEFAULT_REGION\\\":\\\"$REGION\\\",\\\"AWS_REGION\\\":\\\"$REGION\\\"},\\\"StoppingCondition\\\":{\\\"MaxRuntimeInSeconds\\\":$MAX_RUNTIME_SEC}}\"
+    ,\"RetryPolicy\":{\"MaximumRetryAttempts\":0,\"MaximumEventAgeInSeconds\":300}
   }"
+
+# Scheduler's DEFAULT is 185 attempts over 24 hours, and both readings of that
+# are bad. If <aws.scheduler.execution-id> is stable across retries, all 185
+# re-submit the same reserved job name and fail ResourceInUseException,
+# invisibly. If it is regenerated per attempt, that is up to 185
+# ml.m5.4xlarge jobs in a day. Zero retries: a missed run stays a visible one.
+
+# UpdateSchedule and PutRule are FULL REPLACES. Hardcoding DISABLED on the
+# update path would mean the lifecycle this file documents -- enable, feed
+# moves, change AS_OF_DATE, re-run -- silently switches both back off with no
+# message. A NEW schedule is still created DISABLED; an existing one keeps the
+# state someone set by hand.
+PREV_SCHED_STATE=$(aws scheduler get-schedule --name "$SCHED" --region "$REGION" \
+                     --query State --output text 2>/dev/null || echo DISABLED)
+echo "   existing schedule state: $PREV_SCHED_STATE (a NEW schedule is created DISABLED)"
+
+# EventBridge Scheduler validates role assumability at create time, and IAM
+# propagation takes seconds. Without this wait the first run fails
+# ValidationException on create, that error is swallowed by 2>/dev/null, and
+# the update fallback then fails ResourceNotFoundException -- two errors,
+# neither of which explains the other.
+for _ in 1 2 3 4 5 6; do
+  aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1 && break
+  sleep 5
+done
+sleep 10
 
 aws scheduler create-schedule --name "$SCHED" --region "$REGION" \
   --schedule-expression "$SCHEDULE_EXPR" \
@@ -171,7 +239,7 @@ aws scheduler create-schedule --name "$SCHED" --region "$REGION" \
   || aws scheduler update-schedule --name "$SCHED" --region "$REGION" \
        --schedule-expression "$SCHEDULE_EXPR" \
        --schedule-expression-timezone "$TZ_ID" \
-       --state DISABLED \
+       --state "$PREV_SCHED_STATE" \
        --flexible-time-window '{"Mode":"OFF"}' \
        --target "$TARGET_JSON"
 
@@ -183,14 +251,27 @@ echo ">> [5/6] create/update the loader rule, DISABLED"
 # one new run per day and it must be complete to be chosen -- but it is the
 # same mechanism that made a PS2 re-run a one-in-four coin flip on 23-Sep.
 # Pin explicitly whenever invoking by hand.
+PREV_RULE_STATE=$(aws events describe-rule --name "$LOADER_RULE" --region "$REGION" \
+                    --query State --output text 2>/dev/null || echo DISABLED)
+echo "   existing rule state: $PREV_RULE_STATE (a NEW rule is created DISABLED)"
 aws events put-rule --name "$LOADER_RULE" --region "$REGION" \
-  --schedule-expression "$LOADER_CRON" --state DISABLED \
+  --schedule-expression "$LOADER_CRON" --state "$PREV_RULE_STATE" \
   --description "Daily PS3 v25 load. DISABLED until the producer schedule is enabled -- see tooling/ps3_v26_schedule_build.sh" >/dev/null
-aws lambda add-permission --function-name "$LOADER_FN" --region "$REGION" \
+# The old form sent stdout AND stderr to /dev/null and printed "already
+# present" on ANY failure -- including ResourceNotFoundException for a renamed,
+# deleted or wrong-region function. That reports a permission on a Lambda that
+# is not there, and it only surfaces the day someone enables the rule.
+aws lambda get-function --function-name "$LOADER_FN" --region "$REGION" >/dev/null 2>&1 \
+  || { echo "   STOP: lambda $LOADER_FN not found in $REGION"; exit 1; }
+_perm=$(aws lambda add-permission --function-name "$LOADER_FN" --region "$REGION" \
   --statement-id "${LOADER_RULE}-invoke" --action lambda:InvokeFunction \
   --principal events.amazonaws.com \
-  --source-arn "arn:aws:events:$REGION:$ACCT:rule/$LOADER_RULE" >/dev/null 2>&1 \
-  && echo "   invoke permission added" || echo "   invoke permission already present"
+  --source-arn "arn:aws:events:$REGION:$ACCT:rule/$LOADER_RULE" 2>&1) \
+  && echo "   invoke permission added" \
+  || case "$_perm" in
+       *ResourceConflictException*) echo "   invoke permission already present" ;;
+       *) echo "   FAILED: $_perm"; exit 1 ;;
+     esac
 # Input is the literal {} -- trigger shape 2 in the loader's own header,
 # "EventBridge schedule / {} -> newest complete run". JSON form, not shorthand:
 # the shorthand parser splits on commas and does not handle {} as a value.

@@ -86,7 +86,7 @@ SOURCES = [
     ("silver", "tap_event_daily",                 "transit_day"),
     ("silver", "use_revenue_daily",               "transit_day"),
     ("silver", "metric_daily",                    "transit_day"),
-    ("silver", "device_uptime_intervals",         "transit_day"),
+    ("silver", "device_uptime_intervals",         "eod_date"),   # NOT transit_day
     ("silver", "maintenance_ledger",              "ledger_date"),
     ("silver", "device_incident_features_daily",  "transit_day"),
     ("silver", "usage_lifecycle_daily",           "transit_day"),

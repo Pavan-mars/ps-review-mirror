@@ -30,22 +30,31 @@ def _day(col):
 
 
 def measure(layer, tbl):
+    # Touch .columns INSIDE the try. Under Spark Connect spark.table() is lazy: a missing
+    # table raises only when its schema is first resolved, which would otherwise happen
+    # outside the handler and abort the whole run on the first absent alternative.
     try:
         df = spark.table(f"{CAT}.{layer}.{tbl}")
+        cols = df.columns
     except Exception:
         return None                                   # table absent -- skipped, not an error
-    lc = {c.casefold(): c for c in df.columns}
-    col = next((lc[c.casefold()] for c in DATE_CANDIDATES if c.casefold() in lc), None)
-    if col is None:
-        return {"col": None, "max": None, "fut": 0, "rows": df.count(), "parsed": 0}
-    d = _day(col)
-    r = df.agg(F.count(F.lit(1)).alias("rows"),
-               F.count(d).alias("parsed"),
-               # future-dated keys exist in this estate; never let one set the max
-               F.max(F.when(d <= F.current_date(), d)).alias("max"),
-               F.sum(F.when(d > F.current_date(), 1).otherwise(0)).alias("fut")).collect()[0]
-    return {"col": col, "max": r["max"], "fut": r["fut"] or 0,
-            "rows": r["rows"], "parsed": r["parsed"]}
+    # Anything else that goes wrong is reported against THIS table and the run continues.
+    try:
+        lc = {c.casefold(): c for c in cols}
+        col = next((lc[c.casefold()] for c in DATE_CANDIDATES if c.casefold() in lc), None)
+        if col is None:
+            return {"col": None, "max": None, "fut": 0, "rows": df.count(), "parsed": 0}
+        d = _day(col)
+        r = df.agg(F.count(F.lit(1)).alias("rows"),
+                   F.count(d).alias("parsed"),
+                   # future-dated keys exist in this estate; never let one set the max
+                   F.max(F.when(d <= F.current_date(), d)).alias("max"),
+                   F.sum(F.when(d > F.current_date(), 1).otherwise(0)).alias("fut")).collect()[0]
+        return {"col": col, "max": r["max"], "fut": r["fut"] or 0,
+                "rows": r["rows"], "parsed": r["parsed"]}
+    except Exception as exc:
+        return {"col": None, "max": None, "fut": 0, "rows": 0, "parsed": 0,
+                "err": f"{type(exc).__name__}: {str(exc).splitlines()[0][:90]}"}
 
 
 print("=" * 104)
@@ -61,7 +70,9 @@ for chain, members in CHAINS:
             print(f"   {layer:6s} {tbl:32s} (absent)")
             continue
         note = ""
-        if m["col"] is None:
+        if m.get("err"):
+            note = "ERR " + m["err"]
+        elif m["col"] is None:
             note = "no recognised date column"
         elif m["rows"] and not m["parsed"]:
             note = f"DATES UNPARSEABLE in {m['col']} -- check the format"

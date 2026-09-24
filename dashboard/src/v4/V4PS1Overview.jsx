@@ -467,6 +467,42 @@ function Inner({ city }) {
       .slice(0, 10);
   }, [F.drivers.rows, scope.device_type, types]);
 
+  // WHAT THIS PANEL CANNOT SHOW, measured from the rows rather than assumed.
+  //                                                            24-Sep-2026
+  // anyNegative: on 24-Sep every stored SHAP value was positive -- mean_abs
+  // and mean_signed were equal on all nine rows. The view is not at fault; it
+  // computes AVG(ABS(val)) and AVG(val) separately and also publishes
+  // n_pushes_toward_failure and n_pushes_away. The producer simply writes only
+  // the three features that pushed risk UP, so the centre line this chart was
+  // designed around has nothing to its left and will not until that changes.
+  //
+  // perFleetMax: the base table holds shap_feat1/2/3, so three per fleet is a
+  // ceiling, not a coincidence. "Strongest drivers" reads as a full ranking
+  // and is not one.
+  //
+  // recency: days_since_fail is documented as encoding the label -- its lift
+  // measured flat at 2.98x, which is 1/base-rate, the signature of a feature
+  // carrying nothing beyond the outcome it predicts. It is the mechanism
+  // behind VALIDATOR's implausible 0.997. Naming it on screen is the point:
+  // it is the largest bar on the panel, and a reader who does not know that
+  // would read it as the model working unusually well.
+  const driversMeta = useMemo(() => {
+    const t = scope.device_type || (types.length === 1 ? types[0] : null);
+    const rows = (F.drivers.rows || [])
+      .filter((r) => !t || String(r.device_type).toUpperCase() === String(t).toUpperCase());
+    const byFleet = rows.reduce((a, r) => {
+      const k = String(r.device_type || '?'); a[k] = (a[k] || 0) + 1; return a;
+    }, {});
+    return {
+      rows: rows.length,
+      anyNegative: rows.some((r) => Number(r.mean_signed_shap) < 0),
+      perFleetMax: Object.keys(byFleet).length ? Math.max(...Object.values(byFleet)) : 0,
+      recency: [...new Set(rows
+        .filter((r) => /days_since.*fail|since_last_fail/i.test(String(r.feature_name || '')))
+        .map((r) => String(r.feature_name)))],
+    };
+  }, [F.drivers.rows, scope.device_type, types]);
+
   // The risk-tier ladder. If the model ranks meaningfully, the observed
   // failure rate falls monotonically from CRITICAL to LOW. GATE runs
   // 95.8 / 82.1 / 33.9 / 21.1 -- a clean ladder, and far more convincing
@@ -841,13 +877,39 @@ function Inner({ city }) {
                 colour key -- so a driver pushing risk DOWN looks like a small
                 version of one pushing it up. Signed bars put the two on
                 opposite sides of a centre line, where they belong. */}
-            <Panel title="Strongest drivers" hint="Distance from the centre line is how much a measurement moves the prediction. Right pushes towards failure, left away from it.">
+            <Panel title="Strongest drivers"
+                   hint="Distance from the centre line is how much a measurement moves the prediction. Right pushes towards failure, left away from it. Only three features are stored per prediction, so this is the top three that moved it, not a ranking of everything the model reads.">
               <Feed feed={F.drivers} onRetry={() => refetch('drivers')} height={200} empty="No driver rows published for this fleet in the current run.">
                 <KeyInfluencers data={drivers.map((d) => ({ ...d, value: d.signed !== undefined ? d.signed : d.value }))}
                                 nameKey="name" valueKey="value"
                                 height={Math.max(220, drivers.length * 26)}
                                 fmt={_fmt6} />
               </Feed>
+              {driversMeta.recency.length > 0 && (
+                <Note>
+                  <strong>{driversMeta.recency.join(', ')} measures how long since the device last
+                  failed.</strong> On VALIDATOR that feature is documented as encoding the label
+                  itself - its lift measured flat at 2.98x, which is one over the base rate, the
+                  signature of a measurement carrying nothing beyond the outcome it is predicting.
+                  It is shown rather than hidden because removing it would disguise what the model
+                  leans on. It is not evidence the model works.
+                </Note>
+              )}
+              {driversMeta.rows > 0 && !driversMeta.anyNegative && (
+                <Note>
+                  Every driver here pushes risk up. The run stores only the three features that
+                  increased each prediction, so nothing appears left of the centre line - that is
+                  the producer, not the fleet. Until it stores the features that push risk down
+                  too, read these as "what raised the score", not as the full picture.
+                </Note>
+              )}
+              {driversMeta.perFleetMax > 0 && driversMeta.perFleetMax <= 3 && (
+                <Note>
+                  Three per fleet is the ceiling: the published run carries three SHAP slots per
+                  prediction. A feature absent here has not been ruled out, only outranked on the
+                  days in this run.
+                </Note>
+              )}
             </Panel>
 
             {/* ON DEMAND. /ps1/xw-state-mix takes ~13.5s -- by far the slowest

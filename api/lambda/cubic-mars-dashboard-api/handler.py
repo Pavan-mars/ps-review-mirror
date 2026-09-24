@@ -2176,6 +2176,38 @@ def _ps3_v25_route(path, params, city):
             declared = []
             data.append({"table_name": "_run_status_read_error", "rows": str(e)[:160]})
 
+        # 24-Sep-2026. The severity provenance and the vintage audit pair live
+        # on ps3_v25_device_episode_fact, not on ps3_v25_run_status, so they
+        # need their own read. sql/66 added the columns; before that the loader
+        # had been dropping all three silently for want of anywhere to put them.
+        #
+        # GROUPED, not LIMIT 1. severity_definition is NOT constant across the
+        # run: it reads servicenow_linked_incident_severity on a linked row and
+        # the duration-band text on a native one. Taking the first row would
+        # report whichever happened to sort first as though it were the whole
+        # story. The grouping is also the more useful answer -- it shows the
+        # linked-versus-native split, which is the question anyone asks first
+        # when told a severity was measured rather than reported.
+        #
+        # observed_source_max_date and asof_lead_days ARE constant per run (they
+        # describe the run, not the episode), so MAX over the group is just a
+        # way to carry them out of the same scan.
+        try:
+            prov = rows(
+                'SELECT "severity_status", "severity_definition", '
+                'MAX("observed_source_max_date") AS observed_source_max_date, '
+                'MAX("asof_lead_days") AS asof_lead_days, '
+                'COUNT(*) AS episodes '
+                "FROM ps3_v25_device_episode_fact WHERE city_id=:c "
+                "AND computed_date=(SELECT MAX(computed_date) "
+                "FROM ps3_v25_device_episode_fact WHERE city_id=:c) "
+                "GROUP BY 1, 2 ORDER BY 5 DESC", c=city)
+        except Exception as e:
+            prov = []
+            data.append({"table_name": "_episode_fact_provenance_error",
+                         "rows": str(e)[:160]})
+        vintage = prov[0] if prov else {}
+
         head = declared[0] if declared else {}
         dates = sorted({str(r["computed_date"]) for r in data if r.get("computed_date")})
         loaded = [r for r in data if r.get("table_name", "").startswith("ps3_v25_")]
@@ -2192,6 +2224,22 @@ def _ps3_v25_route(path, params, city):
             "data_as_of_date": head.get("data_as_of_date"),
             "computed_at_utc": head.get("computed_at_utc"),
             "is_current_operational_score": head.get("is_current_operational_score"),
+            # What the declared vintage was measured against, rather than only
+            # asserted as. asof_lead_days is data_as_of_date minus the newest
+            # episode actually read; zero means the claim matches the data. The
+            # run raises above PS3_ASOF_MAX_LEAD_DAYS rather than publishing, so
+            # a value here is always within that bound -- it is served so a
+            # reader can confirm that from the data instead of trusting the gate.
+            "observed_source_max_date": vintage.get("observed_source_max_date"),
+            "asof_lead_days": vintage.get("asof_lead_days"),
+            # One row per (tier, definition): how many episodes carry each, and
+            # what that tier meant on this run. A tab showing CRITICAL can now
+            # say what CRITICAL was.
+            "severity_tiers": [
+                {"severity_status": r.get("severity_status"),
+                 "severity_definition": r.get("severity_definition"),
+                 "episodes": r.get("episodes")}
+                for r in prov],
             "notebook_tables_published": head.get("tables_published"),
             "notebook_tables_total": head.get("tables_total"),
             "notebook_run_is_coherent": head.get("run_is_coherent"),

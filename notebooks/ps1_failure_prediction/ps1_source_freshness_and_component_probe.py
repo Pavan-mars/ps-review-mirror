@@ -97,11 +97,11 @@ SOURCES = [
     ("silver", "hw_config_current",               "LAST_REPORTED_DTM"),
     # Read by ps1_features.py but absent from the GATE v3.3 list above. Without these
     # the probe answers "is the GATE notebook fed" rather than "is PS1 fed".
-    ("silver", "device_mttr",                     "transit_day"),
+    ("silver", "device_mttr",                     "failure_date"),
     ("silver", "dim_device",                      None),
     ("silver", "read_tap_daily",                  "transit_day"),
     ("silver", "read_tap_device_daily",           "transit_day"),
-    ("silver", "warnings_daily",                  "transit_day"),
+    ("silver", "warnings_daily",                  "event_date"),
     ("silver", "kpi_daily",                       "transit_day"),
 ]
 

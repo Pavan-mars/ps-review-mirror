@@ -56,9 +56,18 @@
 #         about the future. The VALUE is clean; the MISSINGNESS is not. Section 4
 #         measures how large that bias could be before anyone builds a feature on it.
 #
-# WHERE TO RUN
-#   Any PS1 notebook kernel after Spark is up, or a plain Databricks Python cell.
-#   Read-only. No writes.
+# WHERE TO RUN  --  DATABRICKS, NOT THE SAGEMAKER PS1 NOTEBOOKS.
+#   Sections 2-4 read Unity Catalog (mars_dev.silver.*). The SageMaker PS1
+#   notebooks run a LOCAL Spark over the S3 parquet exports and have no UC
+#   catalog at all, so spark.table() cannot resolve there. Section 1 needs both,
+#   since comparing UC against the export is the whole point of it.
+#
+#   In a Databricks Python cell spark already exists -- no PS1 cells, no env
+#   vars, no checkpoint gates. Read-only throughout; nothing is written.
+#
+#   Cost: sections 2-4 touch device_event_enriched (~190M rows). Each is written
+#   as ONE aggregation pass rather than a series of .count() calls, which is the
+#   difference between minutes and most of an hour.
 # =============================================================================
 from pyspark.sql import functions as F
 
@@ -135,22 +144,26 @@ print("=" * 104)
 dee = spark.table(f"{CATALOG}.silver.device_event_enriched")
 hw = spark.table(f"{CATALOG}.silver.hw_config_current")
 
-for label, df, col, extra in (
-        ("device_event_enriched", dee, "COMPONENT_SERIAL_NBR", "mars_device_category"),
-        ("hw_config_current", hw, "COMPONENT_SERIAL_NBR", "mars_device_category")):
-    n = df.count()
-    nn = df.where(F.col(col).isNotNull()).count()
-    nd = df.select(col).where(F.col(col).isNotNull()).distinct().count()
-    ndev = df.select("DEVICE_ID").distinct().count()
-    print(f"  {label:24s} rows {n:>12,}  non-null {nn:>12,} ({nn/n if n else 0:6.1%})"
+# one aggregation pass per table, not four .count() scans
+for label, df in (("device_event_enriched", dee), ("hw_config_current", hw)):
+    r = df.agg(
+        F.count(F.lit(1)).alias("n"),
+        F.count(F.col("COMPONENT_SERIAL_NBR")).alias("nn"),
+        F.countDistinct(F.col("COMPONENT_SERIAL_NBR")).alias("nd"),
+        F.countDistinct(F.col("DEVICE_ID")).alias("ndev"),
+    ).collect()[0]
+    n, nn, nd, ndev = r["n"], r["nn"], r["nd"], r["ndev"]
+    per = nd / ndev if ndev else 0
+    print(f"  {label:24s} rows {n:>12,}  non-null {nn:>12,} ({nn / n if n else 0:6.1%})"
           f"  distinct serials {nd:>8,}  devices {ndev:>7,}")
-    print(f"  {'':24s} -> {nd/ndev if ndev else 0:.2f} distinct serials per device"
-          f"   ({'looks like an INSTANCE serial' if (ndev and nd/ndev > 0.8) else 'looks like a PART/MODEL number -- a join on it will FAN OUT'})")
+    print(f"  {'':24s} -> {per:.2f} distinct serials per device   "
+          f"({'looks like an INSTANCE serial' if per > 0.8 else 'looks like a PART/MODEL number -- a join on it will FAN OUT'})")
 
-print("\n  Also: distinct COMPONENT_TYPE_NAME in the event stream, for contrast")
+print("\n  For contrast, distinct COMPONENT_TYPE_NAME in the event stream:")
 print(f"    {dee.select('COMPONENT_TYPE_NAME').where(F.col('COMPONENT_TYPE_NAME').isNotNull()).distinct().count():,} distinct types")
 
 # ---------------------------------------------------------------------------
+# Sections 3 and 4 read the SAME join. Build it once, aggregate once.
 print("\n" + "=" * 104)
 print("3. DO EVENT SERIALS JOIN TO hw_config_current? (the untried feature)")
 print("=" * 104)
@@ -164,20 +177,37 @@ hwj = (hw.where(F.col("COMPONENT_SERIAL_NBR").isNotNull())
                  F.col("COMPONENT_SERIAL_NBR").alias("hs"),
                  F.to_date(F.col("REPORTED_CHANGED_DTM")).alias("installed")))
 
-# join on DEVICE + SERIAL -- the tight key. A device-only join is what PS3 does and
-# it is why PS3 has to guess.
-j = ev.join(hwj, (F.col("d") == F.col("hd")) & (F.col("s") == F.col("hs")), "left")
-tot = ev.count()
-matched = j.where(F.col("hs").isNotNull()).count()
-print(f"  events with a serial      : {tot:,}")
-print(f"  joined on (device,serial) : {matched:,}  ({matched/tot if tot else 0:.1%})")
-print(f"  fan-out factor            : {j.count()/tot if tot else 0:.3f}  (1.000 = clean, >1 = the serial is not unique per device)")
+# join on DEVICE + SERIAL -- the tight key. A device-only join is what PS3 does,
+# and it is exactly why PS3 has to GUESS which component an incident belongs to.
+j = (ev.join(hwj, (F.col("d") == F.col("hd")) & (F.col("s") == F.col("hs")), "left")
+       .withColumn("age_at_event",
+                   F.when(F.col("installed").isNotNull(),
+                          F.datediff(F.col("ev_day"), F.col("installed")))))
+
+# ONE pass yields sections 3 and 4, per fleet and in total.
+agg = (j.groupBy("cat").agg(
+    F.count(F.lit(1)).alias("joined_rows"),
+    F.count(F.col("hs")).alias("matched"),
+    F.count(F.col("age_at_event")).alias("aged"),
+    F.sum(F.when(F.col("age_at_event") < 0, 1).otherwise(0)).alias("neg"),
+).collect())
+
+ev_rows = sum(r["joined_rows"] for r in agg)
+matched = sum(r["matched"] for r in agg)
+aged = sum(r["aged"] for r in agg)
+neg = sum(r["neg"] for r in agg)
+ev_tot = ev.count()   # pre-join count, so fan-out is visible rather than assumed
+
+print(f"  events carrying a serial  : {ev_tot:,}")
+print(f"  rows after the left join  : {ev_rows:,}")
+print(f"  joined on (device,serial) : {matched:,}  ({matched / ev_rows if ev_rows else 0:.1%} of rows)")
+print(f"  fan-out factor            : {ev_rows / ev_tot if ev_tot else 0:.3f}"
+      f"   (1.000 = clean; >1 = the serial is NOT unique per device)")
 
 print("\n  per fleet:")
-for cat in ("GATE", "TVM", "VALIDATOR"):
-    sub = j.where(F.col("cat") == cat)
-    st = sub.count(); sm = sub.where(F.col("hs").isNotNull()).count()
-    print(f"    {cat:10s} {st:>12,} events, {sm:>12,} joined ({sm/st if st else 0:6.1%})")
+for r in sorted(agg, key=lambda x: -(x["joined_rows"] or 0)):
+    st, sm = r["joined_rows"], r["matched"]
+    print(f"    {str(r['cat']):12s} {st:>12,} rows, {sm:>12,} joined ({sm / st if st else 0:6.1%})")
 
 # ---------------------------------------------------------------------------
 print("\n" + "=" * 104)
@@ -187,14 +217,10 @@ print("  hw_config_current holds only components STILL INSTALLED. An event whose
 print("  component was later swapped cannot join, so 'has an age' silently encodes")
 print("  'this component survived to today'. If replacement correlates with failure,")
 print("  that is future information. Measure it before building on it.\n")
-aged = (j.where(F.col("installed").isNotNull())
-         .withColumn("age_at_event", F.datediff(F.col("ev_day"), F.col("installed"))))
-neg = aged.where(F.col("age_at_event") < 0).count()
-pos = aged.where(F.col("age_at_event") >= 0).count()
-print(f"  events with a computable age : {pos + neg:,}")
-print(f"    age >= 0 (usable)          : {pos:,}")
+print(f"  events with a computable age : {aged:,}")
+print(f"    age >= 0 (usable)          : {aged - neg:,}")
 print(f"    age <  0 (component installed AFTER the event -- MUST be excluded): {neg:,}"
-      f"  ({neg/(pos+neg) if (pos+neg) else 0:.1%})")
+      f"  ({neg / aged if aged else 0:.1%})")
 print("\n  A high negative share means the current snapshot is badly mismatched to history")
 print("  and a serial-level age is only safe on a recent window. A low share means the")
 print("  components in the event stream are largely the ones still installed, and the")

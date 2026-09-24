@@ -31,7 +31,23 @@
 # Push to a NEW repository, cubic-mars-ps3-processing. Do NOT reuse
 # cubic-pdm/mars-ps3 - that is the endpoint-serving image, which carries a
 # /ping + /invocations contract this batch image does not have.
-FROM python:3.11-slim
+# THE SUITE IS PINNED, AND THE REGISTRY IS NOT DOCKER HUB.             24-Sep-2026
+# `python:3.11-slim` is a FLOATING tag. On 2026-09-19 it moved to Debian 13
+# trixie (3.11-slim and 3.11-slim-trixie now share digest sha256:da047cb8...,
+# while 3.11-slim-bookworm is sha256:a36c24f9...). trixie has NO openjdk-17 --
+# the package exists in bullseye, bookworm and sid only; trixie ships openjdk-21.
+# So the apt layer below stopped resolving, and this image cannot be built from
+# the floating tag any more.
+#
+# Do NOT 'fix' that by moving to openjdk-21: JAVA_HOME below would dangle, the
+# notebook's own ps3v21_get_spark uses os.environ.setdefault and so CANNOT
+# overwrite a set-but-wrong JAVA_HOME, and Spark 3.5.1 is supported on Java
+# 8/11/17 -- Java 21 support arrives in Spark 4.
+#
+# public.ecr.aws is the official Docker Hub mirror: same image, but pulled from
+# ECR Public rather than anonymously from Docker Hub, where CodeBuild shares an
+# egress IP and can be rate-limited.
+FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
@@ -45,6 +61,12 @@ ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
+# papermill is invoked with --kernel python3 (see ENTRYPOINT). pip does drop
+# ipykernel's kernelspec into sys.prefix/share/jupyter/kernels, but whether it
+# is FOUND depends on jupyter's data-path search. Register it explicitly so the
+# image does not rely on that, and so gate 4 tests a stated fact.
+RUN python -m ipykernel install --sys-prefix --name python3 --display-name "Python 3"
+
 ENV SPARK_HOME=/usr/local/lib/python3.11/site-packages/pyspark
 ARG HADOOP_AWS=3.3.4
 ARG AWS_SDK_BUNDLE=1.12.262
@@ -54,6 +76,8 @@ RUN set -eux; \
       "$M/org/apache/hadoop/hadoop-aws/${HADOOP_AWS}/hadoop-aws-${HADOOP_AWS}.jar"; \
     curl -fsSL -o "$SPARK_HOME/jars/aws-java-sdk-bundle-${AWS_SDK_BUNDLE}.jar" \
       "$M/com/amazonaws/aws-java-sdk-bundle/${AWS_SDK_BUNDLE}/aws-java-sdk-bundle-${AWS_SDK_BUNDLE}.jar"; \
+    test -s "$SPARK_HOME/jars/hadoop-aws-${HADOOP_AWS}.jar"; \
+    test -s "$SPARK_HOME/jars/aws-java-sdk-bundle-${AWS_SDK_BUNDLE}.jar"; \
     ls -l "$SPARK_HOME/jars/" | grep -E 'hadoop-aws|aws-java-sdk'
 
 # Empty => the notebook skips its Ivy resolve and uses the baked jars above.

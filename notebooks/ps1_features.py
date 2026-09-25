@@ -107,6 +107,26 @@ def _enable_kpi_features() -> bool:
     return os.environ.get("PS1_ENABLE_KPI_FEATURES", "false").strip().lower() == "true"
 
 
+def _enable_tvm_event_features() -> bool:
+    """Prior-window counts of TVM precursor event families. Default OFF.
+
+    From the 25-Sep TVM precursor scan (episode start within 7 days, in-service days):
+    CSC bin near full 1.25x, CSC transport jam 1.23x, bill retract 1.21x, bill error 1.19x,
+    SCT mag feed/capacity 1.17x ... against a ceiling of ~1.36x at TVM's 73.5% in-service
+    base rate. The subsystem counts already carry part of this; these add event-level detail.
+    """
+    return os.environ.get("PS1_ENABLE_TVM_EVENT_FEATURES", "false").strip().lower() == "true"
+
+
+def _enable_recency_trend_features() -> bool:
+    """Days since each warning family last fired, and its 7-day vs 30-day rate. Default OFF.
+
+    Applies to the DOPP, TVM-event and warnings_daily families only -- never to failure
+    counts, whose recency is the sessionisation gap itself. Strictly prior days; capped at 90.
+    """
+    return os.environ.get("PS1_ENABLE_RECENCY_TREND_FEATURES", "false").strip().lower() == "true"
+
+
 def _enable_tvm_sale_features() -> bool:
     """Prior-window TVM sale volume, error and cash/card mix from silver.tvm_sale_daily.
 
@@ -700,6 +720,43 @@ if _enable_tvm_sale_features():
             FLEET_CONFIG["TVM"].all_candidate_features.append(_c)
     print(f"[features] TVM sale features enabled: +{len(TVM_SALE_FEATURE_COLS)} prior-window "
           f"candidate features (TVM only)")
+
+
+# -- device_event_enriched: TVM precursor event families (TVM only) ------------
+TVM_EVENT_FAMILIES = {
+    "tvmev_csc_bin":     ([211, 212], ("Set", "Set and Clear")),        # CSC bin near full / full
+    "tvmev_csc_jam":     ([205], ("Set", "Set and Clear")),             # CSC transport jam
+    "tvmev_bhu_retract": ([411], ("Set", "Set and Clear")),             # bill unit retract at exit
+    "tvmev_bill_error":  ([402, 403], ("Set", "Set and Clear")),        # bill error, bill unit comm error
+    "tvmev_sct_mag":     ([224, 225, 229], ("Set", "Set and Clear")),   # SCT mag capacity / feed error
+    "tvmev_scrst_stack": ([226, 227], ("Set", "Set and Clear")),        # SCRST stacker capacity
+    "tvmev_keypad_ui":   ([701, 802], ("Set", "Set and Clear")),        # soft key stuck, keypad comm error
+    "tvmev_alarm_mod":   ([1401, 1404], ("Set", "Set and Clear")),      # alarm module comm error / battery low
+    "tvmev_reboot":      ([184], ("Set", "Set and Clear")),             # commanded reboot
+    "tvmev_coin_vault":  ([521], ("Set", "Set and Clear")),             # coin vault open / close
+}
+TVM_EVENT_BASE_COLS = list(TVM_EVENT_FAMILIES)
+TVM_EVENT_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in TVM_EVENT_BASE_COLS for w in (7, 30)]
+if _enable_tvm_event_features():
+    for _c in TVM_EVENT_FEATURE_COLS:
+        if _c not in FLEET_CONFIG["TVM"].all_candidate_features:
+            FLEET_CONFIG["TVM"].all_candidate_features.append(_c)
+    print(f"[features] TVM event families enabled: +{len(TVM_EVENT_FEATURE_COLS)} prior-window "
+          f"candidate features (TVM only)")
+
+# -- recency and trend over the warning families -------------------------------
+RECENCY_BASE_COLS = DOPP_BASE_COLS + TVM_EVENT_BASE_COLS + WARNING_BASE_COLS
+RECENCY_CAP_DAYS = 90.0
+if _enable_recency_trend_features():
+    _n_rt = 0
+    for _cfg in FLEET_CONFIG.values():
+        for _c in RECENCY_BASE_COLS:
+            for _f in (f"rec_{_c}_days", f"trend_{_c}_7v30"):
+                if _f not in _cfg.all_candidate_features:
+                    _cfg.all_candidate_features.append(_f)
+                    _n_rt += 1
+    print(f"[features] recency + trend enabled over {len(RECENCY_BASE_COLS)} warning families "
+          f"(only families present in a fleet's data become features)")
 
 
 # -- features that encode the sessionisation gap ----------------------------
@@ -1887,6 +1944,39 @@ def add_auxiliary(
             df_dopp = None
             print(f"WARNING: DOPP rollup skipped ({exc})")
 
+    # -- device_event_enriched -> device-day TVM precursor event families ---------
+    df_tvmev = None
+    if _enable_tvm_event_features() and cfg.device_cat == "TVM":
+        try:
+            _tv_raw = spark.read.parquet(f"{s3_silver}/device_event_enriched/")
+            _tv_lc = {c.casefold(): c for c in _tv_raw.columns}
+            _t_dev, _t_day = _tv_lc.get("device_id"), _tv_lc.get("transit_day")
+            _t_cat = _tv_lc.get("mars_device_category")
+            _t_id, _t_state = _tv_lc.get("event_type_id"), _tv_lc.get("event_state_type_name")
+            if not (_t_dev and _t_day and _t_id and _t_state):
+                raise ValueError("device_event_enriched lacks DEVICE_ID / transit_day / "
+                                 "EVENT_TYPE_ID / EVENT_STATE_TYPE_NAME")
+            _tcodes = sorted({c for ids, _ in TVM_EVENT_FAMILIES.values() for c in ids})
+            _tv = _tv_raw
+            if _t_cat:
+                _tv = _tv.where(F.col(_t_cat) == cfg.device_cat)
+            _tv = (_tv.where(F.col(_t_id).cast("int").isin(*_tcodes))
+                   .where(F.to_date(F.col(_t_day)) >= F.to_date(F.lit(start_day)))
+                   .where(F.to_date(F.col(_t_day)) <= end_day_expr))
+            _tv_aggs = [
+                F.sum(F.when(F.col(_t_id).cast("int").isin(*ids) & F.col(_t_state).isin(*states), 1)
+                       .otherwise(0)).alias(name)
+                for name, (ids, states) in TVM_EVENT_FAMILIES.items()
+            ]
+            df_tvmev = _tv.groupBy(
+                F.col(_t_dev).cast("string").alias("DEVICE_ID"),
+                F.to_date(F.col(_t_day)).alias("transit_day"),
+            ).agg(*_tv_aggs)
+            print(f"silver.device_event_enriched: TVM event rollup, {len(_tv_aggs)} precursor families")
+        except Exception as exc:
+            df_tvmev = None
+            print(f"WARNING: TVM event rollup skipped ({exc})")
+
     # -- silver.tvm_sale_daily -> device-day sale volume, errors, cash/card --------
     df_sale = None
     if _enable_tvm_sale_features() and cfg.device_cat == "TVM":
@@ -2054,13 +2144,14 @@ def add_auxiliary(
             print(f"WARNING: silver.device_uptime_intervals skipped ({exc})")
 
     global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ, _PS1_DF_KPI
-    global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE
+    global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE, _PS1_DF_TVMEV
     global _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY
     _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
     _PS1_DF_KPI = df_kpi
     _PS1_DF_STATION, _PS1_DF_UPTIME = df_station, df_uptime
     _PS1_DF_DOPP = df_dopp
     _PS1_DF_SALE = df_sale
+    _PS1_DF_TVMEV = df_tvmev
     _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY = _stn_max_day, _upt_max_day
 
 
@@ -2493,6 +2584,7 @@ def join_and_materialise(
     df_uptime = globals().get("_PS1_DF_UPTIME")
     df_dopp = globals().get("_PS1_DF_DOPP")
     df_sale = globals().get("_PS1_DF_SALE")
+    df_tvmev = globals().get("_PS1_DF_TVMEV")
     df_mttr = aux['df_mttr']
     df_usage_ext = aux['df_usage_ext']
     df_read_tap = aux['df_read_tap']
@@ -2685,6 +2777,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_sc, F.coalesce(F.col(_sc), F.lit(0.0)))
             print("Joined tvm_sale_daily rollup on DEVICE_ID + transit_day (prior windows only)")
 
+        if df_tvmev is not None:
+            df_joined = df_joined.join(df_tvmev, on=["DEVICE_ID", "transit_day"], how="left")
+            for _tc in TVM_EVENT_BASE_COLS:
+                if _tc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_tc, F.coalesce(F.col(_tc), F.lit(0.0)))
+            print("Joined TVM event-family rollup on DEVICE_ID + transit_day (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -2749,6 +2848,11 @@ def join_and_materialise(
                 c for c in TVM_SALE_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_tvmev is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in TVM_EVENT_BASE_COLS if c in df_joined.columns
+            ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -2760,6 +2864,28 @@ def join_and_materialise(
                     .withColumn(f"{_pcol}_prior_sum_7d", F.sum(F.col(_pcol).cast("double")).over(_w7))
                     .withColumn(f"{_pcol}_prior_sum_30d", F.sum(F.col(_pcol).cast("double")).over(_w30))
                 )
+        if _enable_recency_trend_features():
+            # Days since the family last fired: the most recent day STRICTLY before D with a
+            # non-zero count (rangeBetween ends at -1 second). Never-fired and >90 days are 90.
+            _w_hist = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                       .rangeBetween(Window.unboundedPreceding, -1))
+            _n_rt = 0
+            for _rc in RECENCY_BASE_COLS:
+                if _rc not in df_joined.columns or f"{_rc}_prior_sum_7d" not in df_joined.columns:
+                    continue
+                _last = F.max(F.when(F.col(_rc) > 0, F.col("_day_epoch"))).over(_w_hist)
+                df_joined = (
+                    df_joined
+                    .withColumn(f"rec_{_rc}_days",
+                                F.coalesce(F.least(F.lit(RECENCY_CAP_DAYS),
+                                                   (F.col("_day_epoch") - _last) / 86_400.0),
+                                           F.lit(RECENCY_CAP_DAYS)))
+                    .withColumn(f"trend_{_rc}_7v30",
+                                F.log1p(F.coalesce(F.col(f"{_rc}_prior_sum_7d"), F.lit(0.0)) / 7.0)
+                                - F.log1p(F.coalesce(F.col(f"{_rc}_prior_sum_30d"), F.lit(0.0)) / 30.0))
+                )
+                _n_rt += 1
+            print(f"recency + trend materialized for {_n_rt} warning families (strictly prior days)")
         # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
         # when the window saw no sales (imputed downstream like any other gap).
         if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:
@@ -3053,6 +3179,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_sc, F.coalesce(F.col(_sc), F.lit(0.0)))
             print("Joined tvm_sale_daily rollup on DEVICE_ID + transit_day (prior windows only)")
 
+        if df_tvmev is not None:
+            df_joined = df_joined.join(df_tvmev, on=["DEVICE_ID", "transit_day"], how="left")
+            for _tc in TVM_EVENT_BASE_COLS:
+                if _tc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_tc, F.coalesce(F.col(_tc), F.lit(0.0)))
+            print("Joined TVM event-family rollup on DEVICE_ID + transit_day (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3118,6 +3251,11 @@ def join_and_materialise(
                 c for c in TVM_SALE_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_tvmev is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in TVM_EVENT_BASE_COLS if c in df_joined.columns
+            ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -3129,6 +3267,28 @@ def join_and_materialise(
                     .withColumn(f"{_pcol}_prior_sum_7d", F.sum(F.col(_pcol).cast("double")).over(_w7))
                     .withColumn(f"{_pcol}_prior_sum_30d", F.sum(F.col(_pcol).cast("double")).over(_w30))
                 )
+        if _enable_recency_trend_features():
+            # Days since the family last fired: the most recent day STRICTLY before D with a
+            # non-zero count (rangeBetween ends at -1 second). Never-fired and >90 days are 90.
+            _w_hist = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                       .rangeBetween(Window.unboundedPreceding, -1))
+            _n_rt = 0
+            for _rc in RECENCY_BASE_COLS:
+                if _rc not in df_joined.columns or f"{_rc}_prior_sum_7d" not in df_joined.columns:
+                    continue
+                _last = F.max(F.when(F.col(_rc) > 0, F.col("_day_epoch"))).over(_w_hist)
+                df_joined = (
+                    df_joined
+                    .withColumn(f"rec_{_rc}_days",
+                                F.coalesce(F.least(F.lit(RECENCY_CAP_DAYS),
+                                                   (F.col("_day_epoch") - _last) / 86_400.0),
+                                           F.lit(RECENCY_CAP_DAYS)))
+                    .withColumn(f"trend_{_rc}_7v30",
+                                F.log1p(F.coalesce(F.col(f"{_rc}_prior_sum_7d"), F.lit(0.0)) / 7.0)
+                                - F.log1p(F.coalesce(F.col(f"{_rc}_prior_sum_30d"), F.lit(0.0)) / 30.0))
+                )
+                _n_rt += 1
+            print(f"recency + trend materialized for {_n_rt} warning families (strictly prior days)")
         # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
         # when the window saw no sales (imputed downstream like any other gap).
         if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:
@@ -3422,6 +3582,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_sc, F.coalesce(F.col(_sc), F.lit(0.0)))
             print("Joined tvm_sale_daily rollup on DEVICE_ID + transit_day (prior windows only)")
 
+        if df_tvmev is not None:
+            df_joined = df_joined.join(df_tvmev, on=["DEVICE_ID", "transit_day"], how="left")
+            for _tc in TVM_EVENT_BASE_COLS:
+                if _tc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_tc, F.coalesce(F.col(_tc), F.lit(0.0)))
+            print("Joined TVM event-family rollup on DEVICE_ID + transit_day (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3487,6 +3654,11 @@ def join_and_materialise(
                 c for c in TVM_SALE_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_tvmev is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in TVM_EVENT_BASE_COLS if c in df_joined.columns
+            ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -3498,6 +3670,28 @@ def join_and_materialise(
                     .withColumn(f"{_pcol}_prior_sum_7d", F.sum(F.col(_pcol).cast("double")).over(_w7))
                     .withColumn(f"{_pcol}_prior_sum_30d", F.sum(F.col(_pcol).cast("double")).over(_w30))
                 )
+        if _enable_recency_trend_features():
+            # Days since the family last fired: the most recent day STRICTLY before D with a
+            # non-zero count (rangeBetween ends at -1 second). Never-fired and >90 days are 90.
+            _w_hist = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                       .rangeBetween(Window.unboundedPreceding, -1))
+            _n_rt = 0
+            for _rc in RECENCY_BASE_COLS:
+                if _rc not in df_joined.columns or f"{_rc}_prior_sum_7d" not in df_joined.columns:
+                    continue
+                _last = F.max(F.when(F.col(_rc) > 0, F.col("_day_epoch"))).over(_w_hist)
+                df_joined = (
+                    df_joined
+                    .withColumn(f"rec_{_rc}_days",
+                                F.coalesce(F.least(F.lit(RECENCY_CAP_DAYS),
+                                                   (F.col("_day_epoch") - _last) / 86_400.0),
+                                           F.lit(RECENCY_CAP_DAYS)))
+                    .withColumn(f"trend_{_rc}_7v30",
+                                F.log1p(F.coalesce(F.col(f"{_rc}_prior_sum_7d"), F.lit(0.0)) / 7.0)
+                                - F.log1p(F.coalesce(F.col(f"{_rc}_prior_sum_30d"), F.lit(0.0)) / 30.0))
+                )
+                _n_rt += 1
+            print(f"recency + trend materialized for {_n_rt} warning families (strictly prior days)")
         # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
         # when the window saw no sales (imputed downstream like any other gap).
         if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:

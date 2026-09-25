@@ -427,6 +427,9 @@ def main():
                     help="drop dev rows before this date (e.g. 2024-09-01); test is unchanged")
     ap.add_argument("--recency-halflife", type=float, default=0.0,
                     help="weight dev rows by 0.5 ** (age_days / N), age from the last dev day; 0 = off")
+    ap.add_argument("--test-start", default="",
+                    help="score only test rows on/after this date (e.g. 2026-03-01 skips TVM's "
+                         "label-degenerate Jan/Feb 2026); training and CV are unchanged")
     ap.add_argument("--warmup-end", default="2023-08-01",
                     help="drop training rows before this date (LEFT-CENSORED warm-up); '' keeps them")
     ap.add_argument("--tune-frac", type=float, default=1.0, help="device sample used for tuning only")
@@ -462,6 +465,10 @@ def main():
         dev = dev[dev["event_date"] >= pd.Timestamp(a.warmup_end)]
         log(f"warm-up rows before {a.warmup_end} dropped from training: {n0 - len(dev):,}")
     test = df[df["split"] == "test"]
+    if a.test_start:
+        n0 = len(test)
+        test = test[test["event_date"] >= pd.Timestamp(a.test_start)]
+        log(f"test-start {a.test_start}: scoring {len(test):,} of {n0:,} test rows")
     if a.train_start:
         n0 = len(dev)
         dev = dev[dev["event_date"] >= pd.Timestamp(a.train_start)]
@@ -556,6 +563,9 @@ def main():
         print("  " + ln)
     print(f"\nQUOTE: {chosen}  test AUC {res[chosen]['auc']:.4f}  (chosen on CV, not on test)")
     _lo, _hi = block_bootstrap_auc(yt, test_scores[chosen], test["event_date"].to_numpy())
+    _mon = res[chosen].get("monthly") or {}
+    if _mon:
+        print("  monthly test AUC: " + "  ".join(f"{m} {v:.3f}" for m, v in sorted(_mon.items())))
     _tr_auc = roc_auc_score(yd, train_scores[chosen])
     _cv = float(np.mean(cv[chosen]))
     print(f"  95% CI (day-block bootstrap, 200 resamples): {_lo:.4f} - {_hi:.4f}")

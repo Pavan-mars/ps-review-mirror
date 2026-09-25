@@ -181,6 +181,18 @@ def _label_observed_edge() -> bool:
     return os.environ.get("PS1_LABEL_OBSERVED_EDGE", "false").strip().lower() == "true"
 
 
+def _label_match_device_id() -> bool:
+    """Match OOS events to current devices on DEVICE_ID, not DEVICE_KEY.
+
+    DEVICE_KEY is an SCD2 surrogate and events carry the key that was current when they
+    happened, so a key-matched label keeps only events logged since the device's last
+    re-key. Measured 25-Sep, share of KPI OOS Sets on a non-current key: GATE 2.95%,
+    TVM 5.18%, VALIDATOR 74.03% -- VALIDATOR's label saw about a quarter of its failures,
+    while its DEVICE_ID-grouped features saw them all. Default OFF; changes the label.
+    """
+    return os.environ.get("PS1_LABEL_MATCH_DEVICE_ID", "false").strip().lower() == "true"
+
+
 def _exclude_active_episode() -> bool:
     """Score only in-service devices: drop device-days inside an episode already open.
 
@@ -1078,6 +1090,8 @@ def read_spine(
         print(f"[label] session gap days : {_gap}" + ("  (0 = count every event-day)" if not _gap else ""))
         _edge = _label_observed_edge()
         _active = _exclude_active_episode()
+        _by_id = _label_match_device_id()
+        print(f"[label] device match     : {'DEVICE_ID -- events under old device keys kept' if _by_id else 'DEVICE_KEY -- current keys only'}")
         _mask = _label_mask_unobserved()
         print(f"[label] active episodes  : {'EXCLUDED -- only in-service device-days are scored' if _active else 'kept'}")
         print(f"[label] interior mask    : {'ON -- rows whose lookahead crosses an unobserved day are dropped' if _mask else 'off'}")
@@ -1092,7 +1106,7 @@ def read_spine(
                       "has nothing to modify and will report zeros. That is NOT a clean "
                       "feed -- it is a guard that never fired.")
         if (_defn != PS1_EVENT_DEFINITION_DEFAULT or horizon_days != 3 or _relief or _gap
-                or _guard or _edge or _active or _mask):
+                or _guard or _edge or _active or _mask or _by_id):
             print(f"[label] !! NON-DEFAULT LABEL. {TARGET_COL} holds a "
                   f"{_defn}/{horizon_days}-day label, NOT the published 3-day one. "
                   "Do not publish this run to Aurora or the dashboard.")
@@ -1121,12 +1135,23 @@ def read_spine(
         dee_state = _silver_col(dee_raw, "EVENT_STATE_TYPE_NAME", dee_map)
         dee_hw_oos = _silver_col(dee_raw, "is_hardware_oos_event", dee_map)
         dee_cat = _silver_col(dee_raw, "mars_device_category", dee_map)
-        current_devices = (
-            dim_raw
-            .where(F.col(is_current_col) == True)
-            .select(F.col(dk_col).alias("DEVICE_KEY"))
-            .distinct()
-        )
+        if _by_id:
+            _dim_dev = _silver_col(dim_raw, "DEVICE_ID", dim_map)
+            current_devices = (
+                dim_raw
+                .where(F.col(is_current_col) == True)
+                .select(F.col(_dim_dev).cast("string").alias("DEVICE_ID"))
+                .distinct()
+            )
+            _cur_match = (F.col(f"dee.{dee_dev}").cast("string") == F.col("d_cur.DEVICE_ID"))
+        else:
+            current_devices = (
+                dim_raw
+                .where(F.col(is_current_col) == True)
+                .select(F.col(dk_col).alias("DEVICE_KEY"))
+                .distinct()
+            )
+            _cur_match = (F.col(f"dee.{dee_dk}") == F.col("d_cur.DEVICE_KEY"))
         bounds = frame.agg(
             F.min("transit_day").alias("_min_day"),
             F.max("transit_day").alias("_max_day"),
@@ -1144,7 +1169,7 @@ def read_spine(
             dee_raw.alias("dee")
             .join(
                 F.broadcast(current_devices).alias("d_cur"),
-                F.col(f"dee.{dee_dk}") == F.col("d_cur.DEVICE_KEY"),
+                _cur_match,
             )
             .where(F.col(f"dee.{dee_hw_oos}") == True)
             .where(F.col(f"dee.{dee_state}") == "Set")

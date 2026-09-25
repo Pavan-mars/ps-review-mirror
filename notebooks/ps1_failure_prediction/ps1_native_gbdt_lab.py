@@ -305,6 +305,113 @@ def operating_points(y_cal, s_cal, y_test, s_test, targets=(0.8, 0.7, 0.6, 0.5))
     return rows
 
 
+def diagnostics(dev, test, feats, Xd, yd, Xt, folds, threads, seed=0, n=50_000):
+    """Methodology checks. Trees assume neither normality nor independent features, so
+    collinearity and skew are REPORTED, not fixed; duplicates, leakage and drift are the
+    ones that can invalidate a number."""
+    import lightgbm as lgb
+    from scipy.stats import kurtosis, skew
+
+    rng = np.random.default_rng(seed)
+    out = {}
+    key = [c for c in ("DEVICE_ID", "event_date") if c in dev.columns]
+    if len(key) == 2:
+        out["grain_dups_dev"] = int(dev.duplicated(subset=key).sum())
+        out["grain_dups_test"] = int(test.duplicated(subset=key).sum())
+    else:
+        out["grain_dups_dev"] = out["grain_dups_test"] = -1  # key columns not in the frame
+
+    S = Xd[rng.choice(len(Xd), min(n, len(Xd)), replace=False)].astype(np.float64)
+    miss = np.isnan(S).mean(axis=0)
+    med = np.nanmedian(np.where(np.isnan(S).all(axis=0), 0.0, S), axis=0)
+    Sf = np.where(np.isnan(S), med, S)
+    top_share = np.array([np.unique(Sf[:, j], return_counts=True)[1].max() / len(Sf) for j in range(Sf.shape[1])])
+    out["missing_gt_50pct"] = [feats[j] for j in np.where(miss > 0.5)[0]]
+    out["near_constant"] = [feats[j] for j in np.where(top_share > 0.99)[0]]
+
+    # duplicate columns, Spearman correlation, VIF (diagonal of the inverse correlation matrix)
+    live = [j for j in range(Sf.shape[1]) if Sf[:, j].std() > 0]
+    R = np.column_stack([rankdata(Sf[:, j]) for j in live])
+    C = np.corrcoef(R, rowvar=False)
+    dup, hi = [], []
+    for a_ in range(len(live)):
+        for b_ in range(a_ + 1, len(live)):
+            r = C[a_, b_]
+            if abs(r) > 0.999 and np.array_equal(Sf[:, live[a_]], Sf[:, live[b_]]):
+                dup.append((feats[live[a_]], feats[live[b_]]))
+            elif abs(r) >= 0.95:
+                hi.append((round(float(r), 3), feats[live[a_]], feats[live[b_]]))
+    out["duplicate_columns"] = dup
+    out["corr_ge_0_95"] = sorted(hi, key=lambda t: -abs(t[0]))
+    P = np.corrcoef(Sf[:, live], rowvar=False)
+    vif = np.diag(np.linalg.pinv(P))
+    out["vif_gt_10"] = sorted(((round(float(v), 1), feats[live[i]]) for i, v in enumerate(vif) if v > 10),
+                              reverse=True)
+
+    sk = np.array([skew(Sf[:, j]) for j in live])
+    ku = np.array([kurtosis(Sf[:, j]) for j in live])
+    out["skew_gt_2"] = int((np.abs(sk) > 2).sum())
+    out["kurtosis_gt_7"] = int((ku > 7).sum())
+    out["n_live"] = len(live)
+
+    # population stability, dev deciles
+    T = Xt[rng.choice(len(Xt), min(n, len(Xt)), replace=False)].astype(np.float64)
+    psi = []
+    for j in range(len(feats)):
+        d, t = S[:, j], T[:, j]
+        d, t = d[~np.isnan(d)], t[~np.isnan(t)]
+        if len(d) < 100 or len(t) < 100 or d.std() == 0:
+            continue
+        edges = np.unique(np.quantile(d, np.linspace(0, 1, 11)))
+        if len(edges) < 3:
+            continue
+        pd_ = np.histogram(np.clip(d, edges[0], edges[-1]), edges)[0] / len(d) + 1e-4
+        pt_ = np.histogram(np.clip(t, edges[0], edges[-1]), edges)[0] / len(t) + 1e-4
+        psi.append((round(float(np.sum((pt_ - pd_) * np.log(pt_ / pd_))), 3), feats[j]))
+    out["psi_gt_0_25"] = sorted([x for x in psi if x[0] > 0.25], reverse=True)
+
+    # shuffled-label control: must land near 0.50
+    yp = rng.permutation(yd)
+    aucs = []
+    for tr, va, _, _ in folds:
+        m = lgb.LGBMClassifier(n_estimators=150, learning_rate=0.1, num_leaves=31, n_jobs=threads,
+                               verbose=-1, random_state=seed)
+        m.fit(Xd[tr], yp[tr])
+        aucs.append(roc_auc_score(yp[va], m.predict_proba(Xd[va])[:, 1]))
+    out["shuffled_label_cv_auc"] = round(float(np.mean(aucs)), 4)
+
+    print("\nDIAGNOSTICS")
+    print(f"  grain duplicates (DEVICE_ID, date): dev {out['grain_dups_dev']}, test {out['grain_dups_test']}"
+          + ("   (key columns absent)" if out['grain_dups_dev'] < 0
+             else "   <-- INSPECT" if out['grain_dups_dev'] or out['grain_dups_test'] else "   OK"))
+    print(f"  duplicate feature columns: {len(dup)}" + (f"  {dup[:5]}" if dup else "   OK"))
+    print(f"  |Spearman| >= 0.95 pairs: {len(hi)}" + (f"  e.g. {out['corr_ge_0_95'][:5]}" if hi else ""))
+    print(f"  VIF > 10: {len(out['vif_gt_10'])} of {len(live)} live features"
+          + (f"  top {out['vif_gt_10'][:5]}" if out['vif_gt_10'] else "")
+          + "  (trees are unbiased under collinearity; it spreads importance)")
+    print(f"  near-constant (>99% one value): {len(out['near_constant'])}  missing >50%: {len(out['missing_gt_50pct'])}")
+    print(f"  |skew| > 2: {out['skew_gt_2']} / kurtosis > 7: {out['kurtosis_gt_7']} of {len(live)} "
+          "(no normality assumption in tree models; relevant to linear baselines only)")
+    print(f"  PSI dev->test > 0.25: {len(out['psi_gt_0_25'])}" + (f"  top {out['psi_gt_0_25'][:6]}" if out['psi_gt_0_25'] else ""))
+    print(f"  shuffled-label CV AUC: {out['shuffled_label_cv_auc']:.4f}  "
+          + ("OK (expect ~0.50)" if out['shuffled_label_cv_auc'] < 0.55 else "<-- ALARM: pipeline leakage"))
+    return out
+
+
+def block_bootstrap_auc(y, s, days, n_boot=200, seed=0):
+    """95% interval for AUC, resampling whole DAYS so within-day correlation is respected."""
+    rng = np.random.default_rng(seed)
+    ud = np.unique(days)
+    idx_by_day = {d: np.where(days == d)[0] for d in ud}
+    vals = []
+    for _ in range(n_boot):
+        pick = rng.choice(ud, len(ud), replace=True)
+        ii = np.concatenate([idx_by_day[d] for d in pick])
+        if 0 < y[ii].sum() < len(ii):
+            vals.append(roc_auc_score(y[ii], s[ii]))
+    return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
+
+
 # --------------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
@@ -330,6 +437,8 @@ def main():
                     help="add dev_prior_pos_rate: the device's own label rate over closed windows only")
     ap.add_argument("--horizon", type=int, default=7, help="label horizon, for the device-prior lag")
     ap.add_argument("--no-scan", action="store_true", help="skip the leak and drift checks")
+    ap.add_argument("--no-diag", action="store_true",
+                    help="skip the methodology diagnostics (duplicates, collinearity, PSI, shuffled-label)")
     a = ap.parse_args()
     t0 = time.time()
 
@@ -383,6 +492,10 @@ def main():
         log(f"  fold: train {len(tr):,} rows | {a.embargo_days}d embargo | validate {s}..{e} "
             f"{len(va):,} rows ({yd[va].mean():.2%} positive)")
 
+    diag = {}
+    if not a.no_diag:
+        diag = diagnostics(dev, test, feats, Xd, yd, Xt, folds, a.threads)
+
     tune_folds = folds
     if a.tune_frac < 1.0 and "DEVICE_ID" in dev.columns:
         keep = (pd.util.hash_pandas_object(dev["DEVICE_ID"], index=False) % 1000
@@ -409,17 +522,19 @@ def main():
     chosen = max(cv, key=lambda n: np.mean(cv[n]))
 
     # ---- final fits on the whole dev period, scored once on test -----------
-    test_scores = {}
+    test_scores, train_scores = {}, {}
     for name in models:
         n_est = int(np.mean(iters[name]) * 1.1) + 1
         log(f"final {name}: {n_est} rounds on {len(dev):,} rows")
         m, _ = FIT[name](best[name], Xd, yd, None, None, a.threads, n_estimators=n_est, wtr=Wd)
         test_scores[name] = proba(m, Xt)
+        train_scores[name] = proba(m, Xd)
         if name == "lgb":
             imp = pd.Series(m.booster_.feature_importance("gain"), index=feats).sort_values(ascending=False)
             top_imp = imp.head(15)
     if len(models) > 1:
         test_scores["ensemble"] = rank_mean([test_scores[n] for n in models])
+        train_scores["ensemble"] = rank_mean([train_scores[n] for n in models])
 
     lines, res = [], {}
     for n, s in test_scores.items():
@@ -440,6 +555,13 @@ def main():
     for ln in lines:
         print("  " + ln)
     print(f"\nQUOTE: {chosen}  test AUC {res[chosen]['auc']:.4f}  (chosen on CV, not on test)")
+    _lo, _hi = block_bootstrap_auc(yt, test_scores[chosen], test["event_date"].to_numpy())
+    _tr_auc = roc_auc_score(yd, train_scores[chosen])
+    _cv = float(np.mean(cv[chosen]))
+    print(f"  95% CI (day-block bootstrap, 200 resamples): {_lo:.4f} - {_hi:.4f}")
+    print(f"  overfit check: train AUC {_tr_auc:.4f} vs CV {_cv:.4f} vs test {res[chosen]['auc']:.4f}"
+          + ("   <-- large train-CV gap" if _tr_auc - _cv > 0.08 else "   OK"))
+    diag.update({"test_auc_ci95": [_lo, _hi], "train_auc": _tr_auc})
 
     va_last = folds[-1][1]
     s_cal = (rank_mean([oofs[n][-1] for n in models]) if chosen == "ensemble" else oofs[chosen][-1])
@@ -462,7 +584,7 @@ def main():
     with open(os.path.join(out, "summary.json"), "w") as fh:
         json.dump({"fleet": a.fleet, "args": vars(a), "cv": cv, "chosen": chosen, "withheld": dropped, "best_params": best,
                    "test": {k: {"auc": v["auc"], "ap": v["ap"], "monthly": v["monthly"]} for k, v in res.items()},
-                   "operating_points": ops},
+                   "operating_points": ops, "diagnostics": diag},
                   fh, indent=1, default=float)
     pd.DataFrame({"event_date": test["event_date"].to_numpy(), "y": yt, **test_scores}).to_parquet(
         os.path.join(out, "test_scores.parquet"), index=False)

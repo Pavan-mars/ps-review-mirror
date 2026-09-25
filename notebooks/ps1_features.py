@@ -287,6 +287,71 @@ def _enable_long_window_features() -> bool:
     return os.environ.get("PS1_ENABLE_LONG_WINDOW_FEATURES", "false").strip().lower() == "true"
 
 
+def _enable_sn_repair_features() -> bool:
+    """ServiceNow repair time: tickets RESOLVED per device-day and their minutes to resolve.
+    Default OFF.
+
+    Keyed by the resolution date, so a ticket only becomes visible the day after it was
+    resolved; the prior windows (ending D-1) never see a repair still in progress. Slow or
+    repeated repairs are a sign the device keeps coming back. GATE/TVM read
+    silver.incident_history; VALIDATOR reads silver.incident_task_ci_link and only when
+    PS1_ENABLE_VALIDATOR_TICKET_FEATURES is also on (incident_history has no validators).
+    """
+    return _ps1_env_flag("PS1_ENABLE_SN_REPAIR_FEATURES")
+
+
+def _enable_validator_ticket_features() -> bool:
+    """VALIDATOR ticket source: silver.incident_task_ci_link instead of incident_history.
+    Default OFF.
+
+    incident_history carries no VALIDATOR rows, so the incident prior family is constant
+    zero on that fleet. incident_task_ci_link reaches ~823 validators through the bus
+    number on the task CI, keyed by DEVICE_ID. With this on, VALIDATOR's incp_opened (and
+    the SN repair family, when enabled) come from that table; GATE/TVM are unchanged.
+    """
+    return _ps1_env_flag("PS1_ENABLE_VALIDATOR_TICKET_FEATURES")
+
+
+def _enable_chargability_features() -> bool:
+    """CTA chargability tickets (silver servicenow_cta_chargability export). Default OFF.
+
+    Resolution class (reset / replace / no fault found), request class (vandal/customer,
+    planned) and repair minutes per device-day, keyed by the day the ticket CLOSED so the
+    prior windows only see closed tickets. A reset that did not hold, or a string of
+    no-fault-found visits, is repair history the OOS events do not carry.
+    """
+    return _ps1_env_flag("PS1_ENABLE_CHARGABILITY_FEATURES")
+
+
+def _enable_calendar_features() -> bool:
+    """Day of week and weekend flag of day D. Default OFF.
+
+    Calendar facts are known in advance, so they are day-D values, not prior windows.
+    Service load and field-crew staffing differ by weekday, which shifts both when faults
+    surface and when they are logged.
+    """
+    return _ps1_env_flag("PS1_ENABLE_CALENDAR_FEATURES")
+
+
+def _exclude_nondevice_outages() -> bool:
+    """LABEL flag: drop failure days covered by a vandal/customer or planned chargability
+    ticket on the same device. Default OFF; changes the label.
+
+    An outage caused by vandalism, customer misuse or planned work is real downtime but not
+    a device failure, and nothing in the device's own history can predict it. Applied after
+    the relief exclusion and before sessionisation, so a removed day neither starts nor
+    extends an episode. Needs the servicenow_cta_chargability export; if it is missing,
+    nothing is excluded and the run says so.
+    """
+    return _ps1_env_flag("PS1_EXCLUDE_NONDEVICE_OUTAGES")
+
+
+def _norm_device_id(col):
+    """DEVICE_ID as upper-case trimmed text. Some sources carry it as a float ("1704.0");
+    Spark returns a silent zero-row match on that rather than raising."""
+    return F.upper(F.trim(F.regexp_replace(col.cast("string"), r"\.0+$", "")))
+
+
 def _label_min_oos_minutes() -> float:
     """Count an OOS Set as a failure only if it lasted at least N minutes. 0 = off.
 
@@ -894,20 +959,50 @@ INCLAST_FEATURE_COLS = ["inclast_priority", "inclast_cat_code"]
 STNBUSY_BASE_COLS = ["stnbusy_taps"]
 STNBUSY_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in STNBUSY_BASE_COLS for w in (7, 30)]
 SILENT_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in SILENT_BASE_COLS for w in (7, 30)]
-for _on, _cols, _label in ((_enable_station_dopp_features(), STATION_DOPP_FEATURE_COLS, "station DOPP health"),
+# ServiceNow repair time, keyed by RESOLUTION date. The mean is derived from the 30-day
+# prior sums after the windows exist; NULL when no ticket resolved in the window.
+SNREP_BASE_COLS = ["snrep_resolved_cnt", "snrep_resolve_min_sum", "snrep_resolve_min_max"]
+SNREP_FEATURE_COLS = ([f"{c}_prior_sum_{w}d" for c in SNREP_BASE_COLS for w in (7, 30)]
+                      + ["snrep_mean_resolve_min_30d"])
+# VALIDATOR has no incident_history rows; it gets SN repair only through incident_task_ci_link.
+SNREP_FLEETS = ("GATE", "TVM") + (("VALIDATOR",) if _enable_validator_ticket_features() else ())
+# CTA chargability tickets, keyed by the day the ticket CLOSED.
+CHG_BASE_COLS = ["chg_closed_cnt", "chg_reset_cnt", "chg_replace_cnt", "chg_nff_cnt",
+                 "chg_vandal_cnt", "chg_planned_cnt", "chg_repair_min_sum", "chg_component_types"]
+CHG_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in CHG_BASE_COLS for w in (7, 30)]
+# Day-D calendar facts, known in advance -- not windows, and not same-day leakage.
+CAL_FEATURE_COLS = ["cal_dow", "cal_is_weekend"]
+# (on, columns, label[, kind, fleets]) -- kind defaults to prior-window, fleets to all.
+for _on, _cols, _label, *_opt in ((_enable_station_dopp_features(), STATION_DOPP_FEATURE_COLS, "station DOPP health"),
                              (_enable_incident_prior_features(), INCP_FEATURE_COLS, "incident history"),
                              (_enable_long_window_features(), LONG_WINDOW_FEATURE_COLS, "90-day DOPP windows"),
                              (_enable_silent_day_features(), SILENT_FEATURE_COLS, "silent days"),
                              (_enable_repair_features(), REPAIR_FEATURE_COLS, "repair durability"),
                              (_enable_maint_ledger_features(), MLED_FEATURE_COLS, "maintenance ledger"),
                              (_enable_last_ticket_features(), INCLAST_FEATURE_COLS, "last ticket"),
-                             (_enable_station_busy_features(), STNBUSY_FEATURE_COLS, "station busyness")):
+                             (_enable_station_busy_features(), STNBUSY_FEATURE_COLS, "station busyness"),
+                             (_enable_sn_repair_features(), SNREP_FEATURE_COLS,
+                              f"SN repair time ({'/'.join(SNREP_FLEETS)})", "prior-window", SNREP_FLEETS),
+                             (_enable_chargability_features(), CHG_FEATURE_COLS, "chargability tickets"),
+                             (_enable_calendar_features(), CAL_FEATURE_COLS, "calendar", "day-D calendar")):
+    _kind = _opt[0] if _opt else "prior-window"
+    _fleets = _opt[1] if len(_opt) > 1 else tuple(FLEET_CONFIG)
     if _on:
-        for _cfg in FLEET_CONFIG.values():
+        for _fk in _fleets:
+            _cfg = FLEET_CONFIG[_fk]
             for _c in _cols:
                 if _c not in _cfg.all_candidate_features:
                     _cfg.all_candidate_features.append(_c)
-        print(f"[features] {_label} enabled: +{len(_cols)} prior-window candidate features")
+        print(f"[features] {_label} enabled: +{len(_cols)} {_kind} candidate features")
+if _enable_validator_ticket_features():
+    if _enable_incident_prior_features() or _enable_sn_repair_features():
+        _vt_fams = [n for n, on in (("incident history", _enable_incident_prior_features()),
+                                    ("SN repair", _enable_sn_repair_features())) if on]
+        print("[features] VALIDATOR tickets enabled: " + " and ".join(_vt_fams)
+              + " read silver.incident_task_ci_link on DEVICE_ID")
+    else:
+        print("[features] VALIDATOR tickets enabled but idle: needs PS1_ENABLE_INCIDENT_PRIOR_FEATURES "
+              "or PS1_ENABLE_SN_REPAIR_FEATURES")
 
 # -- recency and trend over the warning families -------------------------------
 RECENCY_BASE_COLS = (DOPP_BASE_COLS + TVM_EVENT_BASE_COLS + WARNING_BASE_COLS
@@ -1322,6 +1417,9 @@ def read_spine(
         print(f"[label] event definition : {_defn}")
         print(f"[label] horizon          : {horizon_days} day(s)")
         print(f"[label] exclude relieved : {_relief}")
+        _nondev = _exclude_nondevice_outages()
+        if _nondev:
+            print("[label] non-device excl : ON -- vandal/customer and planned chargability outages dropped")
         print(f"[label] session gap days : {_gap}" + ("  (0 = count every event-day)" if not _gap else ""))
         _edge = _label_observed_edge()
         _active = _exclude_active_episode()
@@ -1345,7 +1443,7 @@ def read_spine(
                       "has nothing to modify and will report zeros. That is NOT a clean "
                       "feed -- it is a guard that never fired.")
         if (_defn != PS1_EVENT_DEFINITION_DEFAULT or horizon_days != 3 or _relief or _gap
-                or _guard or _edge or _active or _mask or _by_id or _min_oos > 0):
+                or _guard or _edge or _active or _mask or _by_id or _min_oos > 0 or _nondev):
             print(f"[label] !! NON-DEFAULT LABEL. {TARGET_COL} holds a "
                   f"{_defn}/{horizon_days}-day label, NOT the published 3-day one. "
                   "Do not publish this run to Aurora or the dashboard.")
@@ -1455,9 +1553,55 @@ def read_spine(
             _after = failure_days.count()
             print(f"[label] relief excluded  : {_before - _after:,} of {_before:,} failure days")
 
-        # Every failure day, before sessionisation keeps only the starts -- the active-
-        # episode exclusion needs the days an episode stays open, not just where it began.
+        # Outages a chargability ticket attributes to vandalism/customer misuse or planned
+        # work: real downtime, but no device history predicts them. Same device, day inside
+        # [to_date(start_dtm), to_date(end_dtm)]; an open ticket covers its start day only.
+        # Built fully before failure_days is replaced, so a failure midway leaves it intact.
+        # The active-episode filter still needs every OOS day, excluded or not: a device down
+        # for vandalism is not in service, it just did not fail on its own.
         _all_fail_days = failure_days.select("DEVICE_ID", "failure_date")
+        if _nondev:
+            try:
+                _cg_raw = spark.read.parquet(f"{s3_silver}/servicenow_cta_chargability/")
+                _cg = _silver_col_map(_cg_raw)
+                _g_dev, _g_s = _cg.get("device_id"), _cg.get("start_dtm")
+                _g_e, _g_req = _cg.get("end_dtm"), _cg.get("req_class")
+                if not (_g_dev and _g_s and _g_req):
+                    raise ValueError(f"lacks device_id / start_dtm / req_class: {_cg_raw.columns[:25]}")
+                _nd_s = F.to_date(F.col(_g_s))
+                _nd_e = F.coalesce(F.to_date(F.col(_g_e)), _nd_s) if _g_e else _nd_s
+                _nd = (
+                    _cg_raw
+                    .where(F.lower(F.trim(F.col(_g_req).cast("string")))
+                           .isin("vandal_customer", "planned"))
+                    .where(F.col(_g_dev).isNotNull() & F.col(_g_s).isNotNull())
+                    .select(_norm_device_id(F.col(_g_dev)).alias("_nd_dev"),
+                            _nd_s.alias("_nd_start"),
+                            # capped at 30 days: END_DTM carries 1,000+ day outliers
+                            F.least(F.greatest(_nd_e, _nd_s), F.date_add(_nd_s, 30)).alias("_nd_end"))
+                    .distinct()
+                )
+                _fd_in = failure_days.persist(StorageLevel.MEMORY_AND_DISK)
+                _nd_before = _fd_in.count()
+                _fd_out = (
+                    _fd_in.alias("fd")
+                    .join(_nd.alias("nd"),
+                          (_norm_device_id(F.col("fd.DEVICE_ID")) == F.col("nd._nd_dev"))
+                          & (F.col("fd.failure_date") >= F.col("nd._nd_start"))
+                          & (F.col("fd.failure_date") <= F.col("nd._nd_end")),
+                          "left_anti")
+                    .persist(StorageLevel.MEMORY_AND_DISK)
+                )
+                _nd_after = _fd_out.count()
+                failure_days = _fd_out
+                print(f"[label] non-device excl : {_nd_before - _nd_after:,} of {_nd_before:,} failure days "
+                      f"(chargability req_class vandal_customer/planned)")
+            except Exception as exc:
+                print(f"[label] !! non-device exclusion requested but servicenow_cta_chargability "
+                      f"is unavailable ({exc}); nothing excluded")
+
+        # Every failure day (captured above, before the non-device exclusion) -- the active-
+        # episode exclusion needs the days an episode stays open, not just where it began.
         _unobs_days = None
         if _gap > 0:
             failure_days = failure_days.persist(StorageLevel.MEMORY_AND_DISK)
@@ -2309,7 +2453,38 @@ def add_auxiliary(
     # rolling columns, so the opening dates are read from incident_history directly. Only the
     # opening date is used: priority, major and chargeable are latest-version values.
     df_incp = None
-    if _enable_incident_prior_features():
+    _vt_tickets = cfg.device_cat == "VALIDATOR" and _enable_validator_ticket_features()
+    if _enable_incident_prior_features() and _vt_tickets:
+        # incident_history has no validators; incident_task_ci_link reaches them through the
+        # bus number on the task CI. One incident can link the same CI more than once, so
+        # tickets are counted once per device. Keyed by DEVICE_ID -- the _incp_dev column
+        # tells CELL 8 to join on DEVICE_ID instead of DEVICE_KEY.
+        try:
+            _vl_raw = spark.read.parquet(f"{s3_silver}/incident_task_ci_link/")
+            _vl = {c.casefold(): c for c in _vl_raw.columns}
+            _v_dev = _vl.get("device_id")
+            _v_day = _vl.get("incident_date") or _vl.get("opened_at")
+            _v_id = _vl.get("incident_sys_id") or _vl.get("incident_number")
+            if not (_v_dev and _v_day):
+                raise ValueError(f"incident_task_ci_link lacks DEVICE_ID / incident_date: {_vl_raw.columns[:25]}")
+            # A row with no incident id counts as its own ticket.
+            _v_tk = F.col(_v_id).cast("string") if _v_id else F.lit(None).cast("string")
+            df_incp = (
+                _vl_raw.where(F.col(_v_dev).isNotNull())
+                .select(_norm_device_id(F.col(_v_dev)).alias("_incp_dev"),
+                        F.to_date(F.col(_v_day)).alias("transit_day"),
+                        F.coalesce(_v_tk, F.monotonically_increasing_id().cast("string")).alias("_tk"))
+                .where(F.col("transit_day") >= F.to_date(F.lit(start_day)))
+                .where(F.col("transit_day") <= end_day_expr)
+                .groupBy("_incp_dev", "transit_day")
+                .agg(F.countDistinct("_tk").cast("double").alias("incp_opened"))
+            )
+            print("silver.incident_task_ci_link: VALIDATOR tickets opened per device-day "
+                  "(opening date only, DEVICE_ID key)")
+        except Exception as exc:
+            df_incp = None
+            print(f"WARNING: VALIDATOR ticket rollup skipped ({exc})")
+    elif _enable_incident_prior_features():
         try:
             _ip_raw = spark.read.parquet(f"{s3_silver}/incident_history/")
             _ip = {c.casefold(): c for c in _ip_raw.columns}
@@ -2328,6 +2503,117 @@ def add_auxiliary(
         except Exception as exc:
             df_incp = None
             print(f"WARNING: incident history rollup skipped ({exc})")
+
+    # -- ServiceNow repair time, keyed by the day the ticket was RESOLVED --------------
+    # Only fields fixed at resolution: the resolution timestamp and minutes to resolve.
+    # GATE/TVM: incident_history on DEVICE_KEY. VALIDATOR: incident_task_ci_link on
+    # DEVICE_ID, and only with PS1_ENABLE_VALIDATOR_TICKET_FEATURES. The key column name
+    # (_snrep_dk / _snrep_dev) tells CELL 8 which spine column to join on.
+    df_snrep = None
+    if _enable_sn_repair_features() and (cfg.device_cat != "VALIDATOR" or _vt_tickets):
+        try:
+            _sr_src = "incident_task_ci_link" if _vt_tickets else "incident_history"
+            _sr_raw = spark.read.parquet(f"{s3_silver}/{_sr_src}/")
+            _sr = {c.casefold(): c for c in _sr_raw.columns}
+            _s_key = _sr.get("device_id") if _vt_tickets else _sr.get("device_key")
+            _s_res = _sr.get("resolved_dtm") or _sr.get("resolved_at")
+            _s_open = _sr.get("opened_dtm") or _sr.get("opened_at")
+            _s_min = _sr.get("time_to_resolve_minutes")
+            _s_id = (_sr.get("incident_sys_id") or _sr.get("incident_number")
+                     or _sr.get("sys_id") or _sr.get("number"))
+            if not (_s_key and _s_res and (_s_min or _s_open)):
+                raise ValueError(f"{_sr_src} lacks the key / resolution time / minutes to resolve: "
+                                 f"{_sr_raw.columns[:25]}")
+            # Fall back to resolved - opened when the minutes column is absent.
+            _s_mins = (F.col(_s_min).cast("double") if _s_min
+                       else (F.col(_s_res).cast("timestamp").cast("long")
+                             - F.col(_s_open).cast("timestamp").cast("long")) / 60.0)
+            _s_kname = "_snrep_dev" if _vt_tickets else "_snrep_dk"
+            _s_kexpr = (_norm_device_id(F.col(_s_key)) if _vt_tickets
+                        else F.regexp_replace(F.col(_s_key).cast("string"), r"\.0+$", ""))
+            _s_tk = F.coalesce(F.col(_s_id).cast("string") if _s_id else F.lit(None).cast("string"),
+                               F.monotonically_increasing_id().cast("string"))
+            # Negative minutes are clock errors; a NULL cannot be averaged. Both are dropped
+            # so the derived mean divides like by like.
+            df_snrep = (
+                _sr_raw.where(F.col(_s_key).isNotNull() & F.col(_s_res).isNotNull())
+                .select(_s_kexpr.alias(_s_kname),
+                        F.to_date(F.col(_s_res)).alias("transit_day"),
+                        _s_mins.alias("_mins"),
+                        _s_tk.alias("_tk"))
+                .where(F.col("_mins").isNotNull() & (F.col("_mins") >= 0))
+                .where(F.col("transit_day") >= F.to_date(F.lit(start_day)))
+                .where(F.col("transit_day") <= end_day_expr)
+                .dropDuplicates([_s_kname, "_tk"])
+                .groupBy(_s_kname, "transit_day")
+                .agg(F.count(F.lit(1)).cast("double").alias("snrep_resolved_cnt"),
+                     F.sum("_mins").alias("snrep_resolve_min_sum"),
+                     F.max("_mins").alias("snrep_resolve_min_max"))
+            )
+            print(f"silver.{_sr_src}: tickets resolved per device-day (resolution date, "
+                  f"{'DEVICE_ID' if _vt_tickets else 'DEVICE_KEY'} key)")
+        except Exception as exc:
+            df_snrep = None
+            print(f"WARNING: SN repair-time rollup skipped ({exc})")
+
+    # -- servicenow_cta_chargability -> closed tickets per device-day -------------------
+    # Keyed by to_date(end_dtm): a ticket is visible only after it closes. A ticket can
+    # span several rows (one per component), so flags and minutes are taken once per
+    # ticket (event_id) before the device-day sum; components are counted distinct.
+    df_chg = None
+    if _enable_chargability_features():
+        try:
+            _cg_raw = spark.read.parquet(f"{s3_silver}/servicenow_cta_chargability/")
+            _cg = {c.casefold(): c for c in _cg_raw.columns}
+            _g_dev, _g_end = _cg.get("device_id"), _cg.get("end_dtm")
+            if not (_g_dev and _g_end):
+                raise ValueError(f"servicenow_cta_chargability lacks device_id / end_dtm: "
+                                 f"{_cg_raw.columns[:25]}")
+            _g_res, _g_req = _cg.get("res_class"), _cg.get("req_class")
+            _g_comp, _g_rep, _g_id = _cg.get("component"), _cg.get("repair_min"), _cg.get("event_id")
+
+            def _cls(col, val):
+                if not col:
+                    return F.lit(0.0)
+                return F.when(F.lower(F.trim(F.col(col).cast("string"))) == val, 1.0).otherwise(0.0)
+
+            _g_tk = F.coalesce(F.col(_g_id).cast("string") if _g_id else F.lit(None).cast("string"),
+                               F.monotonically_increasing_id().cast("string"))
+            _tickets = (
+                _cg_raw.where(F.col(_g_dev).isNotNull() & F.col(_g_end).isNotNull())
+                .withColumn("_chg_dev", _norm_device_id(F.col(_g_dev)))
+                .withColumn("transit_day", F.to_date(F.col(_g_end)))
+                .withColumn("_tk", _g_tk)
+                .where(F.col("transit_day") >= F.to_date(F.lit(start_day)))
+                .where(F.col("transit_day") <= end_day_expr)
+                .groupBy("_chg_dev", "transit_day", "_tk")
+                .agg(F.max(_cls(_g_res, "reset")).alias("_reset"),
+                     F.max(_cls(_g_res, "replace")).alias("_replace"),
+                     F.max(_cls(_g_res, "nff")).alias("_nff"),
+                     F.max(_cls(_g_req, "vandal_customer")).alias("_vandal"),
+                     F.max(_cls(_g_req, "planned")).alias("_planned"),
+                     (F.max(F.col(_g_rep).cast("double")) if _g_rep
+                      else F.lit(None).cast("double")).alias("_rep"),
+                     *([F.collect_set(F.upper(F.trim(F.col(_g_comp).cast("string")))).alias("_comps")]
+                       if _g_comp else []))
+            )
+            df_chg = (
+                _tickets.groupBy("_chg_dev", "transit_day")
+                .agg(F.count(F.lit(1)).cast("double").alias("chg_closed_cnt"),
+                     F.sum("_reset").alias("chg_reset_cnt"),
+                     F.sum("_replace").alias("chg_replace_cnt"),
+                     F.sum("_nff").alias("chg_nff_cnt"),
+                     F.sum("_vandal").alias("chg_vandal_cnt"),
+                     F.sum("_planned").alias("chg_planned_cnt"),
+                     F.sum("_rep").alias("chg_repair_min_sum"),
+                     (F.size(F.array_distinct(F.flatten(F.collect_list("_comps")))).cast("double")
+                      if _g_comp else F.lit(0.0)).alias("chg_component_types"))
+            )
+            print("servicenow_cta_chargability: closed tickets per device-day (close date, "
+                  "DEVICE_ID key)")
+        except Exception as exc:
+            df_chg = None
+            print(f"WARNING: chargability rollup skipped ({exc})")
 
     # -- device_event_enriched -> outages keyed by the day they cleared -----------
     df_cdur = None
@@ -2572,6 +2858,7 @@ def add_auxiliary(
     global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ, _PS1_DF_KPI
     global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE, _PS1_DF_TVMEV, _PS1_DF_CDUR, _PS1_DF_INCP, _PS1_DF_EVALL
     global _PS1_DF_REP, _PS1_DF_MLED, _PS1_DF_INCLAST
+    global _PS1_DF_SNREP, _PS1_DF_CHG
     global _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY
     _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
     _PS1_DF_KPI = df_kpi
@@ -2583,6 +2870,7 @@ def add_auxiliary(
     _PS1_DF_INCP = df_incp
     _PS1_DF_EVALL = df_evall
     _PS1_DF_REP, _PS1_DF_MLED, _PS1_DF_INCLAST = df_rep, df_mled, df_inclast
+    _PS1_DF_SNREP, _PS1_DF_CHG = df_snrep, df_chg
     _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY = _stn_max_day, _upt_max_day
 
 
@@ -3026,6 +3314,8 @@ def join_and_materialise(
     df_rep = globals().get("_PS1_DF_REP")
     df_mled = globals().get("_PS1_DF_MLED")
     df_inclast = globals().get("_PS1_DF_INCLAST")
+    df_snrep = globals().get("_PS1_DF_SNREP")
+    df_chg = globals().get("_PS1_DF_CHG")
     df_mttr = aux['df_mttr']
     df_usage_ext = aux['df_usage_ext']
     df_read_tap = aux['df_read_tap']
@@ -3232,7 +3522,20 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_cc, F.coalesce(F.col(_cc), F.lit(0.0)))
             print("Joined cleared-outage rollup on DEVICE_ID + clear date (prior windows only)")
 
-        if df_incp is not None and "DEVICE_KEY" in df_joined.columns:
+        if df_incp is not None and "_incp_dev" in df_incp.columns:
+            # VALIDATOR tickets from incident_task_ci_link: keyed by DEVICE_ID, not DEVICE_KEY.
+            df_joined = (
+                df_joined
+                .withColumn("_incp_dev", _norm_device_id(F.col("DEVICE_ID")))
+                .join(df_incp, on=["_incp_dev", "transit_day"], how="left")
+                .drop("_incp_dev")
+            )
+            for _ic in INCP_BASE_COLS:
+                if _ic in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ic, F.coalesce(F.col(_ic), F.lit(0.0)))
+            print("Joined VALIDATOR tickets (incident_task_ci_link) on DEVICE_ID + transit_day "
+                  "(prior windows only)")
+        elif df_incp is not None and "DEVICE_KEY" in df_joined.columns:
             df_joined = (
                 df_joined
                 .withColumn("_incp_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
@@ -3243,6 +3546,43 @@ def join_and_materialise(
                 if _ic in df_joined.columns:
                     df_joined = df_joined.withColumn(_ic, F.coalesce(F.col(_ic), F.lit(0.0)))
             print("Joined incident history on DEVICE_KEY + transit_day (prior windows only)")
+
+        # SN repair time: keyed by RESOLUTION date, so prior windows see only resolved tickets.
+        if df_snrep is not None:
+            if "_snrep_dev" in df_snrep.columns:
+                df_joined = (
+                    df_joined
+                    .withColumn("_snrep_dev", _norm_device_id(F.col("DEVICE_ID")))
+                    .join(df_snrep, on=["_snrep_dev", "transit_day"], how="left")
+                    .drop("_snrep_dev")
+                )
+                print("Joined SN repair time on DEVICE_ID + resolution date (prior windows only)")
+            elif "DEVICE_KEY" in df_joined.columns:
+                df_joined = (
+                    df_joined
+                    .withColumn("_snrep_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
+                    .join(df_snrep, on=["_snrep_dk", "transit_day"], how="left")
+                    .drop("_snrep_dk")
+                )
+                print("Joined SN repair time on DEVICE_KEY + resolution date (prior windows only)")
+            else:
+                print("WARNING: DEVICE_KEY missing on spine -- skipped SN repair-time join")
+            for _rc in SNREP_BASE_COLS:
+                if _rc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_rc, F.coalesce(F.col(_rc), F.lit(0.0)))
+
+        # Chargability tickets: keyed by CLOSE date on DEVICE_ID, one row per device-day.
+        if df_chg is not None:
+            df_joined = (
+                df_joined
+                .withColumn("_chg_dev", _norm_device_id(F.col("DEVICE_ID")))
+                .join(df_chg, on=["_chg_dev", "transit_day"], how="left")
+                .drop("_chg_dev")
+            )
+            for _gc in CHG_BASE_COLS:
+                if _gc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_gc, F.coalesce(F.col(_gc), F.lit(0.0)))
+            print("Joined chargability tickets on DEVICE_ID + close date (prior windows only)")
 
         if (_enable_station_dopp_features() and df_dopp is not None
                 and "FACILITY_ID" in df_joined.columns):
@@ -3371,6 +3711,16 @@ def join_and_materialise(
                 c for c in INCP_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_snrep is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in SNREP_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_chg is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in CHG_BASE_COLS if c in df_joined.columns
+            ]
+
         _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
             c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
         ]
@@ -3429,6 +3779,20 @@ def join_and_materialise(
                 "incp_opened_days_since",
                 F.coalesce(F.least(F.lit(90.0), (F.col("_day_epoch") - _i_last) / 86_400.0), F.lit(90.0)))
             print("incident recency materialized (days since the last ticket, strictly prior, cap 90)")
+        if "snrep_resolved_cnt_prior_sum_30d" in df_joined.columns:
+            # From the 30-day prior SUMS; NULL when nothing resolved in the window.
+            _sr_n = F.col("snrep_resolved_cnt_prior_sum_30d")
+            df_joined = df_joined.withColumn(
+                "snrep_mean_resolve_min_30d",
+                F.when(_sr_n > 0, F.col("snrep_resolve_min_sum_prior_sum_30d") / _sr_n))
+            print("SN repair mean minutes materialized (30-day prior window)")
+        if _enable_calendar_features():
+            # Calendar facts of day D itself -- known in advance, not windows.
+            _dow = F.dayofweek(F.col("transit_day"))
+            df_joined = (df_joined
+                         .withColumn("cal_dow", _dow.cast("double"))
+                         .withColumn("cal_is_weekend", F.when(_dow.isin(1, 7), 1.0).otherwise(0.0)))
+            print("calendar features materialized (day of week, weekend)")
         try:
             _w_ff = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
                      .rangeBetween(Window.unboundedPreceding, -1))
@@ -3765,7 +4129,20 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_cc, F.coalesce(F.col(_cc), F.lit(0.0)))
             print("Joined cleared-outage rollup on DEVICE_ID + clear date (prior windows only)")
 
-        if df_incp is not None and "DEVICE_KEY" in df_joined.columns:
+        if df_incp is not None and "_incp_dev" in df_incp.columns:
+            # VALIDATOR tickets from incident_task_ci_link: keyed by DEVICE_ID, not DEVICE_KEY.
+            df_joined = (
+                df_joined
+                .withColumn("_incp_dev", _norm_device_id(F.col("DEVICE_ID")))
+                .join(df_incp, on=["_incp_dev", "transit_day"], how="left")
+                .drop("_incp_dev")
+            )
+            for _ic in INCP_BASE_COLS:
+                if _ic in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ic, F.coalesce(F.col(_ic), F.lit(0.0)))
+            print("Joined VALIDATOR tickets (incident_task_ci_link) on DEVICE_ID + transit_day "
+                  "(prior windows only)")
+        elif df_incp is not None and "DEVICE_KEY" in df_joined.columns:
             df_joined = (
                 df_joined
                 .withColumn("_incp_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
@@ -3776,6 +4153,43 @@ def join_and_materialise(
                 if _ic in df_joined.columns:
                     df_joined = df_joined.withColumn(_ic, F.coalesce(F.col(_ic), F.lit(0.0)))
             print("Joined incident history on DEVICE_KEY + transit_day (prior windows only)")
+
+        # SN repair time: keyed by RESOLUTION date, so prior windows see only resolved tickets.
+        if df_snrep is not None:
+            if "_snrep_dev" in df_snrep.columns:
+                df_joined = (
+                    df_joined
+                    .withColumn("_snrep_dev", _norm_device_id(F.col("DEVICE_ID")))
+                    .join(df_snrep, on=["_snrep_dev", "transit_day"], how="left")
+                    .drop("_snrep_dev")
+                )
+                print("Joined SN repair time on DEVICE_ID + resolution date (prior windows only)")
+            elif "DEVICE_KEY" in df_joined.columns:
+                df_joined = (
+                    df_joined
+                    .withColumn("_snrep_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
+                    .join(df_snrep, on=["_snrep_dk", "transit_day"], how="left")
+                    .drop("_snrep_dk")
+                )
+                print("Joined SN repair time on DEVICE_KEY + resolution date (prior windows only)")
+            else:
+                print("WARNING: DEVICE_KEY missing on spine -- skipped SN repair-time join")
+            for _rc in SNREP_BASE_COLS:
+                if _rc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_rc, F.coalesce(F.col(_rc), F.lit(0.0)))
+
+        # Chargability tickets: keyed by CLOSE date on DEVICE_ID, one row per device-day.
+        if df_chg is not None:
+            df_joined = (
+                df_joined
+                .withColumn("_chg_dev", _norm_device_id(F.col("DEVICE_ID")))
+                .join(df_chg, on=["_chg_dev", "transit_day"], how="left")
+                .drop("_chg_dev")
+            )
+            for _gc in CHG_BASE_COLS:
+                if _gc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_gc, F.coalesce(F.col(_gc), F.lit(0.0)))
+            print("Joined chargability tickets on DEVICE_ID + close date (prior windows only)")
 
         if (_enable_station_dopp_features() and df_dopp is not None
                 and "FACILITY_ID" in df_joined.columns):
@@ -3905,6 +4319,16 @@ def join_and_materialise(
                 c for c in INCP_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_snrep is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in SNREP_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_chg is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in CHG_BASE_COLS if c in df_joined.columns
+            ]
+
         _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
             c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
         ]
@@ -3963,6 +4387,20 @@ def join_and_materialise(
                 "incp_opened_days_since",
                 F.coalesce(F.least(F.lit(90.0), (F.col("_day_epoch") - _i_last) / 86_400.0), F.lit(90.0)))
             print("incident recency materialized (days since the last ticket, strictly prior, cap 90)")
+        if "snrep_resolved_cnt_prior_sum_30d" in df_joined.columns:
+            # From the 30-day prior SUMS; NULL when nothing resolved in the window.
+            _sr_n = F.col("snrep_resolved_cnt_prior_sum_30d")
+            df_joined = df_joined.withColumn(
+                "snrep_mean_resolve_min_30d",
+                F.when(_sr_n > 0, F.col("snrep_resolve_min_sum_prior_sum_30d") / _sr_n))
+            print("SN repair mean minutes materialized (30-day prior window)")
+        if _enable_calendar_features():
+            # Calendar facts of day D itself -- known in advance, not windows.
+            _dow = F.dayofweek(F.col("transit_day"))
+            df_joined = (df_joined
+                         .withColumn("cal_dow", _dow.cast("double"))
+                         .withColumn("cal_is_weekend", F.when(_dow.isin(1, 7), 1.0).otherwise(0.0)))
+            print("calendar features materialized (day of week, weekend)")
         try:
             _w_ff = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
                      .rangeBetween(Window.unboundedPreceding, -1))
@@ -4299,7 +4737,20 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_cc, F.coalesce(F.col(_cc), F.lit(0.0)))
             print("Joined cleared-outage rollup on DEVICE_ID + clear date (prior windows only)")
 
-        if df_incp is not None and "DEVICE_KEY" in df_joined.columns:
+        if df_incp is not None and "_incp_dev" in df_incp.columns:
+            # VALIDATOR tickets from incident_task_ci_link: keyed by DEVICE_ID, not DEVICE_KEY.
+            df_joined = (
+                df_joined
+                .withColumn("_incp_dev", _norm_device_id(F.col("DEVICE_ID")))
+                .join(df_incp, on=["_incp_dev", "transit_day"], how="left")
+                .drop("_incp_dev")
+            )
+            for _ic in INCP_BASE_COLS:
+                if _ic in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ic, F.coalesce(F.col(_ic), F.lit(0.0)))
+            print("Joined VALIDATOR tickets (incident_task_ci_link) on DEVICE_ID + transit_day "
+                  "(prior windows only)")
+        elif df_incp is not None and "DEVICE_KEY" in df_joined.columns:
             df_joined = (
                 df_joined
                 .withColumn("_incp_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
@@ -4310,6 +4761,43 @@ def join_and_materialise(
                 if _ic in df_joined.columns:
                     df_joined = df_joined.withColumn(_ic, F.coalesce(F.col(_ic), F.lit(0.0)))
             print("Joined incident history on DEVICE_KEY + transit_day (prior windows only)")
+
+        # SN repair time: keyed by RESOLUTION date, so prior windows see only resolved tickets.
+        if df_snrep is not None:
+            if "_snrep_dev" in df_snrep.columns:
+                df_joined = (
+                    df_joined
+                    .withColumn("_snrep_dev", _norm_device_id(F.col("DEVICE_ID")))
+                    .join(df_snrep, on=["_snrep_dev", "transit_day"], how="left")
+                    .drop("_snrep_dev")
+                )
+                print("Joined SN repair time on DEVICE_ID + resolution date (prior windows only)")
+            elif "DEVICE_KEY" in df_joined.columns:
+                df_joined = (
+                    df_joined
+                    .withColumn("_snrep_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
+                    .join(df_snrep, on=["_snrep_dk", "transit_day"], how="left")
+                    .drop("_snrep_dk")
+                )
+                print("Joined SN repair time on DEVICE_KEY + resolution date (prior windows only)")
+            else:
+                print("WARNING: DEVICE_KEY missing on spine -- skipped SN repair-time join")
+            for _rc in SNREP_BASE_COLS:
+                if _rc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_rc, F.coalesce(F.col(_rc), F.lit(0.0)))
+
+        # Chargability tickets: keyed by CLOSE date on DEVICE_ID, one row per device-day.
+        if df_chg is not None:
+            df_joined = (
+                df_joined
+                .withColumn("_chg_dev", _norm_device_id(F.col("DEVICE_ID")))
+                .join(df_chg, on=["_chg_dev", "transit_day"], how="left")
+                .drop("_chg_dev")
+            )
+            for _gc in CHG_BASE_COLS:
+                if _gc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_gc, F.coalesce(F.col(_gc), F.lit(0.0)))
+            print("Joined chargability tickets on DEVICE_ID + close date (prior windows only)")
 
         if (_enable_station_dopp_features() and df_dopp is not None
                 and "FACILITY_ID" in df_joined.columns):
@@ -4439,6 +4927,16 @@ def join_and_materialise(
                 c for c in INCP_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_snrep is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in SNREP_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_chg is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in CHG_BASE_COLS if c in df_joined.columns
+            ]
+
         _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
             c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
         ]
@@ -4497,6 +4995,20 @@ def join_and_materialise(
                 "incp_opened_days_since",
                 F.coalesce(F.least(F.lit(90.0), (F.col("_day_epoch") - _i_last) / 86_400.0), F.lit(90.0)))
             print("incident recency materialized (days since the last ticket, strictly prior, cap 90)")
+        if "snrep_resolved_cnt_prior_sum_30d" in df_joined.columns:
+            # From the 30-day prior SUMS; NULL when nothing resolved in the window.
+            _sr_n = F.col("snrep_resolved_cnt_prior_sum_30d")
+            df_joined = df_joined.withColumn(
+                "snrep_mean_resolve_min_30d",
+                F.when(_sr_n > 0, F.col("snrep_resolve_min_sum_prior_sum_30d") / _sr_n))
+            print("SN repair mean minutes materialized (30-day prior window)")
+        if _enable_calendar_features():
+            # Calendar facts of day D itself -- known in advance, not windows.
+            _dow = F.dayofweek(F.col("transit_day"))
+            df_joined = (df_joined
+                         .withColumn("cal_dow", _dow.cast("double"))
+                         .withColumn("cal_is_weekend", F.when(_dow.isin(1, 7), 1.0).otherwise(0.0)))
+            print("calendar features materialized (day of week, weekend)")
         try:
             _w_ff = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
                      .rangeBetween(Window.unboundedPreceding, -1))

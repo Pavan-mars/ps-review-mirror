@@ -214,6 +214,38 @@ def _label_observed_edge() -> bool:
     return os.environ.get("PS1_LABEL_OBSERVED_EDGE", "false").strip().lower() == "true"
 
 
+def _flag(name):
+    return os.environ.get(name, "false").strip().lower() == "true"
+
+
+def _enable_repair_features() -> bool:
+    """Repair durability. Default OFF.
+
+    rep_last_hold_days / rep_prev_hold_days: failure-free days before the most recent (and
+    the previous) completed episode start -- did the last repair hold? Only completed past
+    intervals, so it does not encode the session gap. cdur_max_prior_30d /
+    cdur_mean_min_prior_30d: longest and mean minutes-to-clear of outages that CLEARED in the
+    prior 30 days (needs the cleared-duration flag). Failures follow the label's definition
+    (fleet KPI flag, PS1_LABEL_MIN_OOS_MINUTES floor).
+    """
+    return _flag("PS1_ENABLE_REPAIR_FEATURES")
+
+
+def _enable_maint_ledger_features() -> bool:
+    """Commanded / maintenance OOS counts from silver.maintenance_ledger, prior windows."""
+    return _flag("PS1_ENABLE_MAINT_LEDGER_FEATURES")
+
+
+def _enable_last_ticket_features() -> bool:
+    """The most recent ticket before D: priority, category (hashed), major, chargeable."""
+    return _flag("PS1_ENABLE_LAST_TICKET_FEATURES")
+
+
+def _enable_station_busy_features() -> bool:
+    """Station busyness: total taps across all devices at the FACILITY_ID, prior windows."""
+    return _flag("PS1_ENABLE_STATION_BUSY_FEATURES")
+
+
 def _enable_silent_day_features() -> bool:
     """Days in the prior window on which the device logged NO event at all. Default OFF.
 
@@ -835,11 +867,22 @@ INCP_FEATURE_COLS = ([f"{c}_prior_sum_{w}d" for c in INCP_BASE_COLS for w in (7,
                      + ["incp_opened_days_since"])
 LONG_WINDOW_FEATURE_COLS = [f"long_{c}_90d" for c in DOPP_BASE_COLS]
 SILENT_BASE_COLS = ["silent_day", "evall_count"]
+REPAIR_FEATURE_COLS = ["rep_last_hold_days", "rep_prev_hold_days",
+                       "cdur_max_prior_30d", "cdur_mean_min_prior_30d"]
+MLED_BASE_COLS = ["mled_cmd_cnt", "mled_maint_cnt"]
+MLED_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in MLED_BASE_COLS for w in (7, 30)]
+INCLAST_FEATURE_COLS = ["inclast_priority", "inclast_major", "inclast_chargeable", "inclast_cat_code"]
+STNBUSY_BASE_COLS = ["stnbusy_taps"]
+STNBUSY_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in STNBUSY_BASE_COLS for w in (7, 30)]
 SILENT_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in SILENT_BASE_COLS for w in (7, 30)]
 for _flag, _cols, _label in ((_enable_station_dopp_features(), STATION_DOPP_FEATURE_COLS, "station DOPP health"),
                              (_enable_incident_prior_features(), INCP_FEATURE_COLS, "incident history"),
                              (_enable_long_window_features(), LONG_WINDOW_FEATURE_COLS, "90-day DOPP windows"),
-                             (_enable_silent_day_features(), SILENT_FEATURE_COLS, "silent days")):
+                             (_enable_silent_day_features(), SILENT_FEATURE_COLS, "silent days"),
+                             (_enable_repair_features(), REPAIR_FEATURE_COLS, "repair durability"),
+                             (_enable_maint_ledger_features(), MLED_FEATURE_COLS, "maintenance ledger"),
+                             (_enable_last_ticket_features(), INCLAST_FEATURE_COLS, "last ticket"),
+                             (_enable_station_busy_features(), STNBUSY_FEATURE_COLS, "station busyness")):
     if _flag:
         for _cfg in FLEET_CONFIG.values():
             for _c in _cols:
@@ -848,7 +891,8 @@ for _flag, _cols, _label in ((_enable_station_dopp_features(), STATION_DOPP_FEAT
         print(f"[features] {_label} enabled: +{len(_cols)} prior-window candidate features")
 
 # -- recency and trend over the warning families -------------------------------
-RECENCY_BASE_COLS = DOPP_BASE_COLS + TVM_EVENT_BASE_COLS + WARNING_BASE_COLS
+RECENCY_BASE_COLS = (DOPP_BASE_COLS + TVM_EVENT_BASE_COLS + WARNING_BASE_COLS
+                     + (MLED_BASE_COLS if _enable_maint_ledger_features() else []))
 RECENCY_CAP_DAYS = 90.0
 if _enable_recency_trend_features():
     _n_rt = 0
@@ -2055,6 +2099,94 @@ def add_auxiliary(
             df_dopp = None
             print(f"WARNING: DOPP rollup skipped ({exc})")
 
+    # -- repair durability: completed episode starts and the hold before each -------
+    df_rep = None
+    if _enable_repair_features():
+        try:
+            _rp_raw = spark.read.parquet(f"{s3_silver}/device_event_enriched/")
+            _rp = {c.casefold(): c for c in _rp_raw.columns}
+            _r_dev, _r_dtm, _r_cat = _rp.get("device_id"), _rp.get("event_dtm"), _rp.get("mars_device_category")
+            _r_hw, _r_st, _r_dur = _rp.get("is_hardware_oos_event"), _rp.get("event_state_type_name"), _rp.get("duration_to_clear_min")
+            _r_kpi = _rp.get(KPI_FLAG_BY_FLEET.get(cfg.device_cat, "").casefold())
+            if not (_r_dev and _r_dtm and _r_hw and _r_st):
+                raise ValueError("device_event_enriched lacks DEVICE_ID / EVENT_DTM / is_hardware_oos_event / state")
+            _rf = _rp_raw
+            if _r_cat:
+                _rf = _rf.where(F.col(_r_cat) == cfg.device_cat)
+            _rf = _rf.where(F.col(_r_hw) == True).where(F.col(_r_st) == "Set")
+            if _r_kpi:
+                _rf = _rf.where(F.col(_r_kpi) == True)
+            _floor = _label_min_oos_minutes()
+            if _floor and _r_dur:
+                _rf = _rf.where(F.col(_r_dur).isNull() | (F.col(_r_dur).cast("double") >= F.lit(_floor)))
+            _fdays = (_rf.select(F.col(_r_dev).cast("string").alias("DEVICE_ID"),
+                                 F.to_date(F.col(_r_dtm)).alias("_d"))
+                      .where(F.col("_d") <= end_day_expr).distinct())
+            _wd = Window.partitionBy("DEVICE_ID").orderBy("_d")
+            _st = (_fdays.withColumn("_gap", F.datediff(F.col("_d"), F.lag("_d").over(_wd)))
+                   .where(F.col("_gap").isNull() | (F.col("_gap") > 3))
+                   .withColumn("rep_hold", (F.col("_gap") - 1).cast("double")))
+            df_rep = (_st.withColumn("rep_hold_prev", F.lag("rep_hold").over(_wd))
+                      .select("DEVICE_ID", F.col("_d").alias("transit_day"), "rep_hold", "rep_hold_prev"))
+            print(f"repair durability: episode starts from KPI OOS >= {_floor:g} min")
+        except Exception as exc:
+            df_rep = None
+            print(f"WARNING: repair-durability rollup skipped ({exc})")
+
+    # -- silver.maintenance_ledger -> commanded / maintenance OOS per device-day -----
+    df_mled = None
+    if _enable_maint_ledger_features():
+        try:
+            _ml_raw = spark.read.parquet(f"{s3_silver}/maintenance_ledger/")
+            _ml = {c.casefold(): c for c in _ml_raw.columns}
+            _m_dev, _m_day, _m_cat = _ml.get("device_id"), _ml.get("ledger_date"), _ml.get("mars_device_category")
+            _m_cmd, _m_mnt = _ml.get("is_commanded_oos"), _ml.get("is_maintenance_oos")
+            if not (_m_dev and _m_day and (_m_cmd or _m_mnt)):
+                raise ValueError(f"maintenance_ledger lacks DEVICE_ID / ledger_date / flags: {_ml_raw.columns[:25]}")
+            _mf = _ml_raw
+            if _m_cat:
+                _mf = _mf.where(F.col(_m_cat) == cfg.device_cat)
+            df_mled = (
+                _mf.where(F.to_date(F.col(_m_day)) >= F.to_date(F.lit(start_day)))
+                .where(F.to_date(F.col(_m_day)) <= end_day_expr)
+                .groupBy(F.col(_m_dev).cast("string").alias("DEVICE_ID"),
+                         F.to_date(F.col(_m_day)).alias("transit_day"))
+                .agg((F.sum(F.col(_m_cmd).cast("int")) if _m_cmd else F.lit(0)).cast("double").alias("mled_cmd_cnt"),
+                     (F.sum(F.col(_m_mnt).cast("int")) if _m_mnt else F.lit(0)).cast("double").alias("mled_maint_cnt"))
+            )
+            print("silver.maintenance_ledger: commanded / maintenance OOS per device-day")
+        except Exception as exc:
+            df_mled = None
+            print(f"WARNING: maintenance-ledger rollup skipped ({exc})")
+
+    # -- silver.incident_history -> the ticket(s) opened per device-day -------------
+    df_inclast = None
+    if _enable_last_ticket_features():
+        try:
+            _ih_raw = spark.read.parquet(f"{s3_silver}/incident_history/")
+            _ih = {c.casefold(): c for c in _ih_raw.columns}
+            _h_dk, _h_day = _ih.get("device_key"), _ih.get("incident_date")
+            _h_pri, _h_cat = _ih.get("priority"), _ih.get("category")
+            _h_maj, _h_chg = _ih.get("is_major_incident"), _ih.get("is_chargeable")
+            if not (_h_dk and _h_day):
+                raise ValueError(f"incident_history lacks DEVICE_KEY / incident_date: {_ih_raw.columns[:25]}")
+            df_inclast = (
+                _ih_raw.where(F.col(_h_dk).isNotNull())
+                .where(F.to_date(F.col(_h_day)) >= F.to_date(F.lit(start_day)))
+                .where(F.to_date(F.col(_h_day)) <= end_day_expr)
+                .groupBy(F.regexp_replace(F.col(_h_dk).cast("string"), r"\.0+$", "").alias("_il_dk"),
+                         F.to_date(F.col(_h_day)).alias("transit_day"))
+                .agg((F.min(F.col(_h_pri).cast("double")) if _h_pri else F.lit(None).cast("double")).alias("_il_pri"),
+                     (F.max(F.col(_h_maj).cast("double")) if _h_maj else F.lit(None).cast("double")).alias("_il_maj"),
+                     (F.max(F.col(_h_chg).cast("double")) if _h_chg else F.lit(None).cast("double")).alias("_il_chg"),
+                     (F.max(F.abs(F.hash(F.upper(F.trim(F.col(_h_cat))))) % 997).cast("double")
+                      if _h_cat else F.lit(None).cast("double")).alias("_il_cat"))
+            )
+            print("silver.incident_history: last-ticket attributes per device-day")
+        except Exception as exc:
+            df_inclast = None
+            print(f"WARNING: last-ticket rollup skipped ({exc})")
+
     # -- device_event_enriched -> every event per device-day (silent-day features) --
     df_evall = None
     if _enable_silent_day_features():
@@ -2137,7 +2269,8 @@ def add_auxiliary(
                          F.col("_clear_day").alias("transit_day"))
                 .agg(F.sum(F.when(_dur < 60, 1).otherwise(0)).alias("cdur_short_cnt"),
                      F.sum(F.when(_dur >= 60, 1).otherwise(0)).alias("cdur_long_cnt"),
-                     F.sum(_dur).alias("cdur_minutes"))
+                     F.sum(_dur).alias("cdur_minutes"),
+                     F.max(_dur).alias("cdur_max_min"))
             )
             print("silver.device_event_enriched: cleared-outage rollup keyed by clear date"
                   + ("" if _c_kpi else " (no KPI flag column -- all hardware OOS)"))
@@ -2346,6 +2479,7 @@ def add_auxiliary(
 
     global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ, _PS1_DF_KPI
     global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE, _PS1_DF_TVMEV, _PS1_DF_CDUR, _PS1_DF_INCP, _PS1_DF_EVALL
+    global _PS1_DF_REP, _PS1_DF_MLED, _PS1_DF_INCLAST
     global _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY
     _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
     _PS1_DF_KPI = df_kpi
@@ -2356,6 +2490,7 @@ def add_auxiliary(
     _PS1_DF_CDUR = df_cdur
     _PS1_DF_INCP = df_incp
     _PS1_DF_EVALL = df_evall
+    _PS1_DF_REP, _PS1_DF_MLED, _PS1_DF_INCLAST = df_rep, df_mled, df_inclast
     _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY = _stn_max_day, _upt_max_day
 
 
@@ -2792,6 +2927,9 @@ def join_and_materialise(
     df_cdur = globals().get("_PS1_DF_CDUR")
     df_incp = globals().get("_PS1_DF_INCP")
     df_evall = globals().get("_PS1_DF_EVALL")
+    df_rep = globals().get("_PS1_DF_REP")
+    df_mled = globals().get("_PS1_DF_MLED")
+    df_inclast = globals().get("_PS1_DF_INCLAST")
     df_mttr = aux['df_mttr']
     df_usage_ext = aux['df_usage_ext']
     df_read_tap = aux['df_read_tap']
@@ -3032,6 +3170,34 @@ def join_and_materialise(
             )
             print("Joined every-event rollup; silent_day = no event logged (prior windows only)")
 
+        try:
+            if df_rep is not None:
+                df_joined = df_joined.join(df_rep, on=["DEVICE_ID", "transit_day"], how="left")
+                print("Joined repair-durability episode starts (forward-filled from prior days)")
+            if df_mled is not None:
+                df_joined = df_joined.join(df_mled, on=["DEVICE_ID", "transit_day"], how="left")
+                for _mc in MLED_BASE_COLS:
+                    df_joined = df_joined.withColumn(_mc, F.coalesce(F.col(_mc), F.lit(0.0)))
+                print("Joined maintenance ledger on DEVICE_ID + transit_day (prior windows only)")
+            if df_inclast is not None and "DEVICE_KEY" in df_joined.columns:
+                df_joined = (
+                    df_joined
+                    .withColumn("_il_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
+                    .join(df_inclast, on=["_il_dk", "transit_day"], how="left")
+                    .drop("_il_dk")
+                )
+                print("Joined last-ticket attributes on DEVICE_KEY + transit_day (forward-filled from prior days)")
+            if (_enable_station_busy_features() and "FACILITY_ID" in df_joined.columns
+                    and "tap_count" in df_joined.columns):
+                _w_busy = Window.partitionBy("FACILITY_ID", "transit_day")
+                df_joined = df_joined.withColumn(
+                    "stnbusy_taps",
+                    F.when(F.col("FACILITY_ID").isNotNull(),
+                           F.sum(F.col("tap_count").cast("double")).over(_w_busy)))
+                print("Station busyness: total taps across the station's devices (prior windows only)")
+        except Exception as exc:
+            print(f"WARNING: repair / maintenance / ticket / busyness joins skipped ({exc})")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3120,6 +3286,10 @@ def join_and_materialise(
                 c for c in SILENT_BASE_COLS if c in df_joined.columns
             ]
 
+        _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+            c for c in MLED_BASE_COLS + STNBUSY_BASE_COLS if c in df_joined.columns
+        ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -3169,6 +3339,30 @@ def join_and_materialise(
                 "incp_opened_days_since",
                 F.coalesce(F.least(F.lit(90.0), (F.col("_day_epoch") - _i_last) / 86_400.0), F.lit(90.0)))
             print("incident recency materialized (days since the last ticket, strictly prior, cap 90)")
+        try:
+            _w_ff = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                     .rangeBetween(Window.unboundedPreceding, -1))
+            if "rep_hold" in df_joined.columns:
+                df_joined = (df_joined
+                             .withColumn("rep_last_hold_days", F.last("rep_hold", ignorenulls=True).over(_w_ff))
+                             .withColumn("rep_prev_hold_days", F.last("rep_hold_prev", ignorenulls=True).over(_w_ff)))
+            if _enable_repair_features() and "cdur_max_min" in df_joined.columns:
+                _w30r = Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch")).rangeBetween(-30 * 86_400, -1)
+                _cnt = (F.coalesce(F.col("cdur_short_cnt_prior_sum_30d"), F.lit(0.0))
+                        + F.coalesce(F.col("cdur_long_cnt_prior_sum_30d"), F.lit(0.0)))
+                df_joined = (df_joined
+                             .withColumn("cdur_max_prior_30d", F.max(F.col("cdur_max_min")).over(_w30r))
+                             .withColumn("cdur_mean_min_prior_30d",
+                                         F.when(_cnt > 0, F.col("cdur_minutes_prior_sum_30d") / _cnt)))
+            if "_il_pri" in df_joined.columns:
+                df_joined = (df_joined
+                             .withColumn("inclast_priority", F.last("_il_pri", ignorenulls=True).over(_w_ff))
+                             .withColumn("inclast_major", F.last("_il_maj", ignorenulls=True).over(_w_ff))
+                             .withColumn("inclast_chargeable", F.last("_il_chg", ignorenulls=True).over(_w_ff))
+                             .withColumn("inclast_cat_code", F.last("_il_cat", ignorenulls=True).over(_w_ff)))
+            print("repair / last-ticket features materialized (strictly prior days)")
+        except Exception as exc:
+            print(f"WARNING: repair / last-ticket features skipped ({exc})")
         # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
         # when the window saw no sales (imputed downstream like any other gap).
         if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:
@@ -3510,6 +3704,34 @@ def join_and_materialise(
             )
             print("Joined every-event rollup; silent_day = no event logged (prior windows only)")
 
+        try:
+            if df_rep is not None:
+                df_joined = df_joined.join(df_rep, on=["DEVICE_ID", "transit_day"], how="left")
+                print("Joined repair-durability episode starts (forward-filled from prior days)")
+            if df_mled is not None:
+                df_joined = df_joined.join(df_mled, on=["DEVICE_ID", "transit_day"], how="left")
+                for _mc in MLED_BASE_COLS:
+                    df_joined = df_joined.withColumn(_mc, F.coalesce(F.col(_mc), F.lit(0.0)))
+                print("Joined maintenance ledger on DEVICE_ID + transit_day (prior windows only)")
+            if df_inclast is not None and "DEVICE_KEY" in df_joined.columns:
+                df_joined = (
+                    df_joined
+                    .withColumn("_il_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
+                    .join(df_inclast, on=["_il_dk", "transit_day"], how="left")
+                    .drop("_il_dk")
+                )
+                print("Joined last-ticket attributes on DEVICE_KEY + transit_day (forward-filled from prior days)")
+            if (_enable_station_busy_features() and "FACILITY_ID" in df_joined.columns
+                    and "tap_count" in df_joined.columns):
+                _w_busy = Window.partitionBy("FACILITY_ID", "transit_day")
+                df_joined = df_joined.withColumn(
+                    "stnbusy_taps",
+                    F.when(F.col("FACILITY_ID").isNotNull(),
+                           F.sum(F.col("tap_count").cast("double")).over(_w_busy)))
+                print("Station busyness: total taps across the station's devices (prior windows only)")
+        except Exception as exc:
+            print(f"WARNING: repair / maintenance / ticket / busyness joins skipped ({exc})")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3599,6 +3821,10 @@ def join_and_materialise(
                 c for c in SILENT_BASE_COLS if c in df_joined.columns
             ]
 
+        _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+            c for c in MLED_BASE_COLS + STNBUSY_BASE_COLS if c in df_joined.columns
+        ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -3648,6 +3874,30 @@ def join_and_materialise(
                 "incp_opened_days_since",
                 F.coalesce(F.least(F.lit(90.0), (F.col("_day_epoch") - _i_last) / 86_400.0), F.lit(90.0)))
             print("incident recency materialized (days since the last ticket, strictly prior, cap 90)")
+        try:
+            _w_ff = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                     .rangeBetween(Window.unboundedPreceding, -1))
+            if "rep_hold" in df_joined.columns:
+                df_joined = (df_joined
+                             .withColumn("rep_last_hold_days", F.last("rep_hold", ignorenulls=True).over(_w_ff))
+                             .withColumn("rep_prev_hold_days", F.last("rep_hold_prev", ignorenulls=True).over(_w_ff)))
+            if _enable_repair_features() and "cdur_max_min" in df_joined.columns:
+                _w30r = Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch")).rangeBetween(-30 * 86_400, -1)
+                _cnt = (F.coalesce(F.col("cdur_short_cnt_prior_sum_30d"), F.lit(0.0))
+                        + F.coalesce(F.col("cdur_long_cnt_prior_sum_30d"), F.lit(0.0)))
+                df_joined = (df_joined
+                             .withColumn("cdur_max_prior_30d", F.max(F.col("cdur_max_min")).over(_w30r))
+                             .withColumn("cdur_mean_min_prior_30d",
+                                         F.when(_cnt > 0, F.col("cdur_minutes_prior_sum_30d") / _cnt)))
+            if "_il_pri" in df_joined.columns:
+                df_joined = (df_joined
+                             .withColumn("inclast_priority", F.last("_il_pri", ignorenulls=True).over(_w_ff))
+                             .withColumn("inclast_major", F.last("_il_maj", ignorenulls=True).over(_w_ff))
+                             .withColumn("inclast_chargeable", F.last("_il_chg", ignorenulls=True).over(_w_ff))
+                             .withColumn("inclast_cat_code", F.last("_il_cat", ignorenulls=True).over(_w_ff)))
+            print("repair / last-ticket features materialized (strictly prior days)")
+        except Exception as exc:
+            print(f"WARNING: repair / last-ticket features skipped ({exc})")
         # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
         # when the window saw no sales (imputed downstream like any other gap).
         if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:
@@ -3989,6 +4239,34 @@ def join_and_materialise(
             )
             print("Joined every-event rollup; silent_day = no event logged (prior windows only)")
 
+        try:
+            if df_rep is not None:
+                df_joined = df_joined.join(df_rep, on=["DEVICE_ID", "transit_day"], how="left")
+                print("Joined repair-durability episode starts (forward-filled from prior days)")
+            if df_mled is not None:
+                df_joined = df_joined.join(df_mled, on=["DEVICE_ID", "transit_day"], how="left")
+                for _mc in MLED_BASE_COLS:
+                    df_joined = df_joined.withColumn(_mc, F.coalesce(F.col(_mc), F.lit(0.0)))
+                print("Joined maintenance ledger on DEVICE_ID + transit_day (prior windows only)")
+            if df_inclast is not None and "DEVICE_KEY" in df_joined.columns:
+                df_joined = (
+                    df_joined
+                    .withColumn("_il_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
+                    .join(df_inclast, on=["_il_dk", "transit_day"], how="left")
+                    .drop("_il_dk")
+                )
+                print("Joined last-ticket attributes on DEVICE_KEY + transit_day (forward-filled from prior days)")
+            if (_enable_station_busy_features() and "FACILITY_ID" in df_joined.columns
+                    and "tap_count" in df_joined.columns):
+                _w_busy = Window.partitionBy("FACILITY_ID", "transit_day")
+                df_joined = df_joined.withColumn(
+                    "stnbusy_taps",
+                    F.when(F.col("FACILITY_ID").isNotNull(),
+                           F.sum(F.col("tap_count").cast("double")).over(_w_busy)))
+                print("Station busyness: total taps across the station's devices (prior windows only)")
+        except Exception as exc:
+            print(f"WARNING: repair / maintenance / ticket / busyness joins skipped ({exc})")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -4078,6 +4356,10 @@ def join_and_materialise(
                 c for c in SILENT_BASE_COLS if c in df_joined.columns
             ]
 
+        _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+            c for c in MLED_BASE_COLS + STNBUSY_BASE_COLS if c in df_joined.columns
+        ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -4127,6 +4409,30 @@ def join_and_materialise(
                 "incp_opened_days_since",
                 F.coalesce(F.least(F.lit(90.0), (F.col("_day_epoch") - _i_last) / 86_400.0), F.lit(90.0)))
             print("incident recency materialized (days since the last ticket, strictly prior, cap 90)")
+        try:
+            _w_ff = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                     .rangeBetween(Window.unboundedPreceding, -1))
+            if "rep_hold" in df_joined.columns:
+                df_joined = (df_joined
+                             .withColumn("rep_last_hold_days", F.last("rep_hold", ignorenulls=True).over(_w_ff))
+                             .withColumn("rep_prev_hold_days", F.last("rep_hold_prev", ignorenulls=True).over(_w_ff)))
+            if _enable_repair_features() and "cdur_max_min" in df_joined.columns:
+                _w30r = Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch")).rangeBetween(-30 * 86_400, -1)
+                _cnt = (F.coalesce(F.col("cdur_short_cnt_prior_sum_30d"), F.lit(0.0))
+                        + F.coalesce(F.col("cdur_long_cnt_prior_sum_30d"), F.lit(0.0)))
+                df_joined = (df_joined
+                             .withColumn("cdur_max_prior_30d", F.max(F.col("cdur_max_min")).over(_w30r))
+                             .withColumn("cdur_mean_min_prior_30d",
+                                         F.when(_cnt > 0, F.col("cdur_minutes_prior_sum_30d") / _cnt)))
+            if "_il_pri" in df_joined.columns:
+                df_joined = (df_joined
+                             .withColumn("inclast_priority", F.last("_il_pri", ignorenulls=True).over(_w_ff))
+                             .withColumn("inclast_major", F.last("_il_maj", ignorenulls=True).over(_w_ff))
+                             .withColumn("inclast_chargeable", F.last("_il_chg", ignorenulls=True).over(_w_ff))
+                             .withColumn("inclast_cat_code", F.last("_il_cat", ignorenulls=True).over(_w_ff)))
+            print("repair / last-ticket features materialized (strictly prior days)")
+        except Exception as exc:
+            print(f"WARNING: repair / last-ticket features skipped ({exc})")
         # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
         # when the window saw no sales (imputed downstream like any other gap).
         if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:

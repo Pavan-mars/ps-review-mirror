@@ -214,6 +214,23 @@ def _label_observed_edge() -> bool:
     return os.environ.get("PS1_LABEL_OBSERVED_EDGE", "false").strip().lower() == "true"
 
 
+def _label_min_oos_minutes() -> float:
+    """Count an OOS Set as a failure only if it lasted at least N minutes. 0 = off.
+
+    Measured 25-Sep: TVM's KPI OOS device-days are dominated by five codes -- 222 roll-stock
+    transport OOS, 221 CSC transport OOS, 113 No init, 534 No coins, 410 No bills -- each on
+    ~60% of TVM-days, set 2-3 times a day, median time to clear 0-0.8 minutes. They are
+    toggles and consumable states, not failures, and they are why TVM sat inside an
+    "episode" on ~97% of days. Availability is counted in downtime minutes, so a
+    zero-minute toggle costs the KPI nothing; a duration floor matches what the KPI
+    penalises. A Set with no recorded clear (still open) is kept.
+    """
+    try:
+        return max(0.0, float(os.environ.get("PS1_LABEL_MIN_OOS_MINUTES", "0").strip() or 0))
+    except ValueError:
+        raise ValueError("PS1_LABEL_MIN_OOS_MINUTES must be a number of minutes")
+
+
 def _label_match_device_id() -> bool:
     """Match OOS events to current devices on DEVICE_ID, not DEVICE_KEY.
 
@@ -1172,6 +1189,8 @@ def read_spine(
         _edge = _label_observed_edge()
         _active = _exclude_active_episode()
         _by_id = _label_match_device_id()
+        _min_oos = _label_min_oos_minutes()
+        print(f"[label] min OOS minutes  : {f'{_min_oos:g} -- Sets clearing sooner are toggles, not failures' if _min_oos else 'off'}")
         print(f"[label] device match     : {'DEVICE_ID -- events under old device keys kept' if _by_id else 'DEVICE_KEY -- current keys only'}")
         _mask = _label_mask_unobserved()
         print(f"[label] active episodes  : {'EXCLUDED -- only in-service device-days are scored' if _active else 'kept'}")
@@ -1187,7 +1206,7 @@ def read_spine(
                       "has nothing to modify and will report zeros. That is NOT a clean "
                       "feed -- it is a guard that never fired.")
         if (_defn != PS1_EVENT_DEFINITION_DEFAULT or horizon_days != 3 or _relief or _gap
-                or _guard or _edge or _active or _mask or _by_id):
+                or _guard or _edge or _active or _mask or _by_id or _min_oos > 0):
             print(f"[label] !! NON-DEFAULT LABEL. {TARGET_COL} holds a "
                   f"{_defn}/{horizon_days}-day label, NOT the published 3-day one. "
                   "Do not publish this run to Aurora or the dashboard.")
@@ -1256,6 +1275,10 @@ def read_spine(
             .where(F.col(f"dee.{dee_state}") == "Set")
             .where(F.col(f"dee.{dee_cat}") == device_category)
             .transform(_apply_event_definition)
+            .transform(lambda fd: fd if not _min_oos else fd.where(
+                F.col(f"dee.{_silver_col(dee_raw, 'duration_to_clear_min', dee_map)}").isNull()
+                | (F.col(f"dee.{_silver_col(dee_raw, 'duration_to_clear_min', dee_map)}").cast("double")
+                   >= F.lit(_min_oos))))
             .where(
                 F.to_date(F.col(f"dee.{dee_dtm}")) >= F.lit(_read_start)
             )

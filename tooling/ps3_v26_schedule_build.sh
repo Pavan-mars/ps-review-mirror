@@ -126,7 +126,6 @@ AS_OF_DATE=2026-08-29
 # 10800 stays a generous guess until step 3 of the enable order supplies one.
 MAX_RUNTIME_SEC=10800
 
-Q='"'   # a literal double quote, for building JSON inside double-quoted strings
 ACCT=$(aws sts get-caller-identity --query Account --output text)
 BUCKET=cubic-mars-pm-s3-datalake-dev-artifacts-170202974600
 IMAGE="$ACCT.dkr.ecr.$REGION.amazonaws.com/cubic-mars-ps3-processing:$IMAGE_TAG"
@@ -175,9 +174,12 @@ fi
 
 echo ">> [3/6] role the scheduler assumes to call SageMaker"
 if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+  # Trust scoped with aws:SourceArn/SourceAccount to close the confused-deputy
+  # path. NOTE: this comment sits ABOVE the command -- a comment line between a
+  # trailing backslash and the next argument splices onto the command line and
+  # silently truncates it ("the following arguments are required").
   aws iam create-role --role-name "$ROLE_NAME" \
-    # Scoped with aws:SourceArn/SourceAccount to close the confused-deputy path.
-    --assume-role-policy-document "{${Q}Version${Q}:${Q}2012-10-17${Q},${Q}Statement${Q}:[{${Q}Effect${Q}:${Q}Allow${Q},${Q}Principal${Q}:{${Q}Service${Q}:${Q}scheduler.amazonaws.com${Q}},${Q}Action${Q}:${Q}sts:AssumeRole${Q},${Q}Condition${Q}:{${Q}StringEquals${Q}:{${Q}aws:SourceAccount${Q}:${Q}$ACCT${Q}},${Q}ArnLike${Q}:{${Q}aws:SourceArn${Q}:${Q}arn:aws:scheduler:$REGION:$ACCT:schedule/default/$SCHED${Q}}}}]}" \
+    --assume-role-policy-document "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"scheduler.amazonaws.com\"},\"Action\":\"sts:AssumeRole\",\"Condition\":{\"StringEquals\":{\"aws:SourceAccount\":\"$ACCT\"},\"ArnLike\":{\"aws:SourceArn\":\"arn:aws:scheduler:$REGION:$ACCT:schedule/default/$SCHED\"}}}]}" \
     --description "EventBridge Scheduler -> CreateProcessingJob for the PS3 V26 notebook" >/dev/null
   echo "   created $ROLE_NAME"
 else

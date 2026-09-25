@@ -40,7 +40,7 @@ warnings.filterwarnings("ignore", message="X does not have valid feature names")
 DROP_PRESETS = {
     "honest": ["usage_failure_count_30d", "usage_daily_failure_count", "usage_cumulative_failure_count",
                "usage_cumulative_outage_min", "availability_pct_7d", "chain_length",
-               "met_comms_*", "evq_dur_*"],
+               "met_comms_*", "evq_dur_*", "facility_peer_hw_oos_7d"],
 }
 
 

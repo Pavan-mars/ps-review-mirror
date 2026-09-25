@@ -214,6 +214,36 @@ def _label_observed_edge() -> bool:
     return os.environ.get("PS1_LABEL_OBSERVED_EDGE", "false").strip().lower() == "true"
 
 
+def _enable_station_dopp_features() -> bool:
+    """Prior-window DOPP warnings on the OTHER devices at the same station (FACILITY_ID).
+
+    GATE failures are 98% DOPP, and DOPP trouble -- comms errors, fare lists behind -- is a
+    network / back-office matter that can hit every gate at a station together. The peer
+    value excludes the device itself; only prior-window sums reach the model. Default OFF.
+    """
+    return os.environ.get("PS1_ENABLE_STATION_DOPP_FEATURES", "false").strip().lower() == "true"
+
+
+def _enable_incident_prior_features() -> bool:
+    """Incidents opened in prior windows (silver.device_incident_features_daily). Default OFF.
+
+    The gold incident_* features are populated only on days an incident opened (a COALESCE
+    zero-fills every other day), so they carry almost nothing. Screened 25-Sep on GATE: a
+    ticket opened in the prior 30 days goes with LOWER next-week risk (0.71x, 74% share).
+    Prior sums over days strictly before D, plus days since the last ticket (cap 90).
+    """
+    return os.environ.get("PS1_ENABLE_INCIDENT_PRIOR_FEATURES", "false").strip().lower() == "true"
+
+
+def _enable_long_window_features() -> bool:
+    """90-day prior sums of the DOPP warning families. Default OFF.
+
+    dopp_list_behind_prior_sum_30d is GATE's top feature; list staleness builds over weeks,
+    so a 90-day window may carry more than the 30-day one. Strictly prior days.
+    """
+    return os.environ.get("PS1_ENABLE_LONG_WINDOW_FEATURES", "false").strip().lower() == "true"
+
+
 def _label_min_oos_minutes() -> float:
     """Count an OOS Set as a failure only if it lasted at least N minutes. 0 = off.
 
@@ -785,6 +815,24 @@ if _enable_cleared_duration_features():
     print(f"[features] cleared-outage durations enabled: +{len(CDUR_FEATURE_COLS)} prior-window "
           f"candidate features (keyed by clear date)")
 
+# -- station DOPP health, incident history, long DOPP windows (25-Sep) -----------
+STATION_DOPP_SOURCE_COLS = ["dopp_comms_err", "dopp_list_behind", "dopp_list_far", "dopp_app_db"]
+STATION_DOPP_BASE_COLS = [f"stn_{c}" for c in STATION_DOPP_SOURCE_COLS]
+STATION_DOPP_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in STATION_DOPP_BASE_COLS for w in (7, 30)]
+INCP_BASE_COLS = ["incp_opened", "incp_chargeable"]
+INCP_FEATURE_COLS = ([f"{c}_prior_sum_{w}d" for c in INCP_BASE_COLS for w in (7, 30)]
+                     + ["incp_opened_days_since"])
+LONG_WINDOW_FEATURE_COLS = [f"long_{c}_90d" for c in DOPP_BASE_COLS]
+for _flag, _cols, _label in ((_enable_station_dopp_features(), STATION_DOPP_FEATURE_COLS, "station DOPP health"),
+                             (_enable_incident_prior_features(), INCP_FEATURE_COLS, "incident history"),
+                             (_enable_long_window_features(), LONG_WINDOW_FEATURE_COLS, "90-day DOPP windows")):
+    if _flag:
+        for _cfg in FLEET_CONFIG.values():
+            for _c in _cols:
+                if _c not in _cfg.all_candidate_features:
+                    _cfg.all_candidate_features.append(_c)
+        print(f"[features] {_label} enabled: +{len(_cols)} prior-window candidate features")
+
 # -- recency and trend over the warning families -------------------------------
 RECENCY_BASE_COLS = DOPP_BASE_COLS + TVM_EVENT_BASE_COLS + WARNING_BASE_COLS
 RECENCY_CAP_DAYS = 90.0
@@ -881,7 +929,9 @@ if _exclude_gap_features():
 #   evq_dur_*   durations of D-1 Sets that may clear after D
 # Mirrors ps1_native_gbdt_lab.py --drop-preset honest, so the two report the same figure.
 SAME_DAY_FEATURES = ["usage_failure_count_30d", "usage_cumulative_failure_count",
-                     "usage_cumulative_outage_min", "availability_pct_7d", "chain_length"]
+                     "usage_cumulative_outage_min", "availability_pct_7d", "chain_length",
+                     # facility mean of 7-day windows that END TODAY and include the device
+                     "facility_peer_hw_oos_7d"]
 SAME_DAY_PREFIXES = ("met_comms_", "evq_dur_")
 
 
@@ -1141,7 +1191,7 @@ def read_spine(
     REQUIRED_PS1_FEATURES = cfg.required_ps1_features
 
     PS1_PASS_THROUGH = [JOIN_KEY_DEVICE]
-    if _enable_station_features():
+    if _enable_station_features() or _enable_station_dopp_features():
         # The spine projection is built from PS1_REQUESTED and has never carried
         # FACILITY_ID. That is also why facility_peer_hw_oos_7d has reported "absent"
         # in every run to date -- its `if "FACILITY_ID" in df_joined.columns` guard has
@@ -1991,6 +2041,31 @@ def add_auxiliary(
             df_dopp = None
             print(f"WARNING: DOPP rollup skipped ({exc})")
 
+    # -- silver.device_incident_features_daily -> device-day tickets opened ---------
+    df_incp = None
+    if _enable_incident_prior_features():
+        try:
+            _ip_raw = spark.read.parquet(f"{s3_silver}/device_incident_features_daily/")
+            _ip = {c.casefold(): c for c in _ip_raw.columns}
+            _i_dk, _i_day = _ip.get("device_key"), _ip.get("transit_day")
+            _i_n, _i_chg = _ip.get("inc_count_day"), _ip.get("chargeable_count_day")
+            if not (_i_dk and _i_day and _i_n):
+                raise ValueError(f"device_incident_features_daily lacks DEVICE_KEY / transit_day / "
+                                 f"inc_count_day; columns: {_ip_raw.columns[:20]}")
+            df_incp = (
+                _ip_raw
+                .where(F.to_date(F.col(_i_day)) >= F.to_date(F.lit(start_day)))
+                .where(F.to_date(F.col(_i_day)) <= end_day_expr)
+                .groupBy(F.regexp_replace(F.col(_i_dk).cast("string"), r"\.0+$", "").alias("_incp_dk"),
+                         F.to_date(F.col(_i_day)).alias("transit_day"))
+                .agg(F.sum(F.col(_i_n).cast("double")).alias("incp_opened"),
+                     (F.sum(F.col(_i_chg).cast("double")) if _i_chg else F.lit(0.0)).alias("incp_chargeable"))
+            )
+            print("silver.device_incident_features_daily: rolled up to device-day tickets opened")
+        except Exception as exc:
+            df_incp = None
+            print(f"WARNING: incident history rollup skipped ({exc})")
+
     # -- device_event_enriched -> outages keyed by the day they cleared -----------
     df_cdur = None
     if _enable_cleared_duration_features():
@@ -2231,7 +2306,7 @@ def add_auxiliary(
             print(f"WARNING: silver.device_uptime_intervals skipped ({exc})")
 
     global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ, _PS1_DF_KPI
-    global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE, _PS1_DF_TVMEV, _PS1_DF_CDUR
+    global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE, _PS1_DF_TVMEV, _PS1_DF_CDUR, _PS1_DF_INCP
     global _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY
     _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
     _PS1_DF_KPI = df_kpi
@@ -2240,6 +2315,7 @@ def add_auxiliary(
     _PS1_DF_SALE = df_sale
     _PS1_DF_TVMEV = df_tvmev
     _PS1_DF_CDUR = df_cdur
+    _PS1_DF_INCP = df_incp
     _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY = _stn_max_day, _upt_max_day
 
 
@@ -2674,6 +2750,7 @@ def join_and_materialise(
     df_sale = globals().get("_PS1_DF_SALE")
     df_tvmev = globals().get("_PS1_DF_TVMEV")
     df_cdur = globals().get("_PS1_DF_CDUR")
+    df_incp = globals().get("_PS1_DF_INCP")
     df_mttr = aux['df_mttr']
     df_usage_ext = aux['df_usage_ext']
     df_read_tap = aux['df_read_tap']
@@ -2880,6 +2957,31 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_cc, F.coalesce(F.col(_cc), F.lit(0.0)))
             print("Joined cleared-outage rollup on DEVICE_ID + clear date (prior windows only)")
 
+        if df_incp is not None and "DEVICE_KEY" in df_joined.columns:
+            df_joined = (
+                df_joined
+                .withColumn("_incp_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
+                .join(df_incp, on=["_incp_dk", "transit_day"], how="left")
+                .drop("_incp_dk")
+            )
+            for _ic in INCP_BASE_COLS:
+                if _ic in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ic, F.coalesce(F.col(_ic), F.lit(0.0)))
+            print("Joined incident history on DEVICE_KEY + transit_day (prior windows only)")
+
+        if (_enable_station_dopp_features() and df_dopp is not None
+                and "FACILITY_ID" in df_joined.columns):
+            # Mean over the OTHER devices at the station that day; NULL facility gets NULL.
+            _w_fac_day = Window.partitionBy("FACILITY_ID", "transit_day")
+            _n_fac = F.count(F.lit(1)).over(_w_fac_day)
+            for _sc in STATION_DOPP_SOURCE_COLS:
+                if _sc in df_joined.columns:
+                    df_joined = df_joined.withColumn(
+                        f"stn_{_sc}",
+                        F.when(F.col("FACILITY_ID").isNotNull() & (_n_fac > 1),
+                               (F.sum(F.col(_sc)).over(_w_fac_day) - F.col(_sc)) / (_n_fac - 1)))
+            print("Station DOPP health: peer means over the other devices at each station")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -2954,6 +3056,15 @@ def join_and_materialise(
                 c for c in CDUR_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_incp is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in INCP_BASE_COLS if c in df_joined.columns
+            ]
+
+        _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+            c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
+        ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -2987,6 +3098,22 @@ def join_and_materialise(
                 )
                 _n_rt += 1
             print(f"recency + trend materialized for {_n_rt} warning families (strictly prior days)")
+        if _enable_long_window_features():
+            _w90 = Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch")).rangeBetween(-90 * 86_400, -1)
+            _n_lw = 0
+            for _lc in DOPP_BASE_COLS:
+                if _lc in df_joined.columns:
+                    df_joined = df_joined.withColumn(f"long_{_lc}_90d", F.sum(F.col(_lc).cast("double")).over(_w90))
+                    _n_lw += 1
+            print(f"90-day DOPP windows materialized for {_n_lw} families (strictly prior days)")
+        if "incp_opened" in df_joined.columns:
+            _w_ihist = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                        .rangeBetween(Window.unboundedPreceding, -1))
+            _i_last = F.max(F.when(F.col("incp_opened") > 0, F.col("_day_epoch"))).over(_w_ihist)
+            df_joined = df_joined.withColumn(
+                "incp_opened_days_since",
+                F.coalesce(F.least(F.lit(90.0), (F.col("_day_epoch") - _i_last) / 86_400.0), F.lit(90.0)))
+            print("incident recency materialized (days since the last ticket, strictly prior, cap 90)")
         # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
         # when the window saw no sales (imputed downstream like any other gap).
         if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:
@@ -3294,6 +3421,31 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_cc, F.coalesce(F.col(_cc), F.lit(0.0)))
             print("Joined cleared-outage rollup on DEVICE_ID + clear date (prior windows only)")
 
+        if df_incp is not None and "DEVICE_KEY" in df_joined.columns:
+            df_joined = (
+                df_joined
+                .withColumn("_incp_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
+                .join(df_incp, on=["_incp_dk", "transit_day"], how="left")
+                .drop("_incp_dk")
+            )
+            for _ic in INCP_BASE_COLS:
+                if _ic in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ic, F.coalesce(F.col(_ic), F.lit(0.0)))
+            print("Joined incident history on DEVICE_KEY + transit_day (prior windows only)")
+
+        if (_enable_station_dopp_features() and df_dopp is not None
+                and "FACILITY_ID" in df_joined.columns):
+            # Mean over the OTHER devices at the station that day; NULL facility gets NULL.
+            _w_fac_day = Window.partitionBy("FACILITY_ID", "transit_day")
+            _n_fac = F.count(F.lit(1)).over(_w_fac_day)
+            for _sc in STATION_DOPP_SOURCE_COLS:
+                if _sc in df_joined.columns:
+                    df_joined = df_joined.withColumn(
+                        f"stn_{_sc}",
+                        F.when(F.col("FACILITY_ID").isNotNull() & (_n_fac > 1),
+                               (F.sum(F.col(_sc)).over(_w_fac_day) - F.col(_sc)) / (_n_fac - 1)))
+            print("Station DOPP health: peer means over the other devices at each station")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3369,6 +3521,15 @@ def join_and_materialise(
                 c for c in CDUR_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_incp is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in INCP_BASE_COLS if c in df_joined.columns
+            ]
+
+        _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+            c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
+        ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -3402,6 +3563,22 @@ def join_and_materialise(
                 )
                 _n_rt += 1
             print(f"recency + trend materialized for {_n_rt} warning families (strictly prior days)")
+        if _enable_long_window_features():
+            _w90 = Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch")).rangeBetween(-90 * 86_400, -1)
+            _n_lw = 0
+            for _lc in DOPP_BASE_COLS:
+                if _lc in df_joined.columns:
+                    df_joined = df_joined.withColumn(f"long_{_lc}_90d", F.sum(F.col(_lc).cast("double")).over(_w90))
+                    _n_lw += 1
+            print(f"90-day DOPP windows materialized for {_n_lw} families (strictly prior days)")
+        if "incp_opened" in df_joined.columns:
+            _w_ihist = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                        .rangeBetween(Window.unboundedPreceding, -1))
+            _i_last = F.max(F.when(F.col("incp_opened") > 0, F.col("_day_epoch"))).over(_w_ihist)
+            df_joined = df_joined.withColumn(
+                "incp_opened_days_since",
+                F.coalesce(F.least(F.lit(90.0), (F.col("_day_epoch") - _i_last) / 86_400.0), F.lit(90.0)))
+            print("incident recency materialized (days since the last ticket, strictly prior, cap 90)")
         # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
         # when the window saw no sales (imputed downstream like any other gap).
         if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:
@@ -3709,6 +3886,31 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_cc, F.coalesce(F.col(_cc), F.lit(0.0)))
             print("Joined cleared-outage rollup on DEVICE_ID + clear date (prior windows only)")
 
+        if df_incp is not None and "DEVICE_KEY" in df_joined.columns:
+            df_joined = (
+                df_joined
+                .withColumn("_incp_dk", F.regexp_replace(F.col("DEVICE_KEY").cast("string"), r"\.0+$", ""))
+                .join(df_incp, on=["_incp_dk", "transit_day"], how="left")
+                .drop("_incp_dk")
+            )
+            for _ic in INCP_BASE_COLS:
+                if _ic in df_joined.columns:
+                    df_joined = df_joined.withColumn(_ic, F.coalesce(F.col(_ic), F.lit(0.0)))
+            print("Joined incident history on DEVICE_KEY + transit_day (prior windows only)")
+
+        if (_enable_station_dopp_features() and df_dopp is not None
+                and "FACILITY_ID" in df_joined.columns):
+            # Mean over the OTHER devices at the station that day; NULL facility gets NULL.
+            _w_fac_day = Window.partitionBy("FACILITY_ID", "transit_day")
+            _n_fac = F.count(F.lit(1)).over(_w_fac_day)
+            for _sc in STATION_DOPP_SOURCE_COLS:
+                if _sc in df_joined.columns:
+                    df_joined = df_joined.withColumn(
+                        f"stn_{_sc}",
+                        F.when(F.col("FACILITY_ID").isNotNull() & (_n_fac > 1),
+                               (F.sum(F.col(_sc)).over(_w_fac_day) - F.col(_sc)) / (_n_fac - 1)))
+            print("Station DOPP health: peer means over the other devices at each station")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3784,6 +3986,15 @@ def join_and_materialise(
                 c for c in CDUR_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_incp is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in INCP_BASE_COLS if c in df_joined.columns
+            ]
+
+        _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+            c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
+        ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -3817,6 +4028,22 @@ def join_and_materialise(
                 )
                 _n_rt += 1
             print(f"recency + trend materialized for {_n_rt} warning families (strictly prior days)")
+        if _enable_long_window_features():
+            _w90 = Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch")).rangeBetween(-90 * 86_400, -1)
+            _n_lw = 0
+            for _lc in DOPP_BASE_COLS:
+                if _lc in df_joined.columns:
+                    df_joined = df_joined.withColumn(f"long_{_lc}_90d", F.sum(F.col(_lc).cast("double")).over(_w90))
+                    _n_lw += 1
+            print(f"90-day DOPP windows materialized for {_n_lw} families (strictly prior days)")
+        if "incp_opened" in df_joined.columns:
+            _w_ihist = (Window.partitionBy("DEVICE_ID").orderBy(F.col("_day_epoch"))
+                        .rangeBetween(Window.unboundedPreceding, -1))
+            _i_last = F.max(F.when(F.col("incp_opened") > 0, F.col("_day_epoch"))).over(_w_ihist)
+            df_joined = df_joined.withColumn(
+                "incp_opened_days_since",
+                F.coalesce(F.least(F.lit(90.0), (F.col("_day_epoch") - _i_last) / 86_400.0), F.lit(90.0)))
+            print("incident recency materialized (days since the last ticket, strictly prior, cap 90)")
         # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
         # when the window saw no sales (imputed downstream like any other gap).
         if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:

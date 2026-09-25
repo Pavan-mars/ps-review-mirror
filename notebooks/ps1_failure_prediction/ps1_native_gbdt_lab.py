@@ -188,26 +188,42 @@ def fit_cat(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None):
     return m, int(m.get_best_iteration() + 1)
 
 
-def space(trial, name):
+# --reg strong: bounds that replace the default search range, (low, high); None keeps the
+# default side. Narrows toward shallower, better-regularised trees -- the train-CV gap in the
+# overfit check is the reason. ss = bagging_fraction, cs = feature_fraction, rl = lambda_l2.
+REG_STRONG = {
+    "lgb": {"leaves": (None, 63), "mcs": (200, None), "cs": (None, 0.7), "ss": (None, 0.8), "rl": (1, None)},
+    "xgb": {"depth": (None, 6), "mcw": (20, None), "ss": (None, 0.8), "cs": (None, 0.7), "rl": (1, None)},
+    "cat": {"depth": (None, 6), "l2": (5, None)},
+}
+
+
+def space(trial, name, reg="none"):
+    clamp = REG_STRONG.get(name, {}) if reg == "strong" else {}
+
+    def b(key, lo, hi):
+        c_lo, c_hi = clamp.get(key, (None, None))
+        return (lo if c_lo is None else max(lo, c_lo)), (hi if c_hi is None else min(hi, c_hi))
+
     if name == "lgb":
         return {"lr": trial.suggest_float("lr", 0.02, 0.1, log=True),
-                "leaves": trial.suggest_int("leaves", 15, 255, log=True),
-                "mcs": trial.suggest_int("mcs", 20, 2000, log=True),
-                "ss": trial.suggest_float("ss", 0.5, 1.0),
-                "cs": trial.suggest_float("cs", 0.3, 1.0),
+                "leaves": trial.suggest_int("leaves", *b("leaves", 15, 255), log=True),
+                "mcs": trial.suggest_int("mcs", *b("mcs", 20, 2000), log=True),
+                "ss": trial.suggest_float("ss", *b("ss", 0.5, 1.0)),
+                "cs": trial.suggest_float("cs", *b("cs", 0.3, 1.0)),
                 "ra": trial.suggest_float("ra", 1e-3, 10, log=True),
-                "rl": trial.suggest_float("rl", 1e-3, 10, log=True)}
+                "rl": trial.suggest_float("rl", *b("rl", 1e-3, 10), log=True)}
     if name == "xgb":
         return {"lr": trial.suggest_float("lr", 0.02, 0.1, log=True),
-                "depth": trial.suggest_int("depth", 3, 10),
-                "mcw": trial.suggest_float("mcw", 1, 200, log=True),
-                "ss": trial.suggest_float("ss", 0.5, 1.0),
-                "cs": trial.suggest_float("cs", 0.3, 1.0),
+                "depth": trial.suggest_int("depth", *b("depth", 3, 10)),
+                "mcw": trial.suggest_float("mcw", *b("mcw", 1, 200), log=True),
+                "ss": trial.suggest_float("ss", *b("ss", 0.5, 1.0)),
+                "cs": trial.suggest_float("cs", *b("cs", 0.3, 1.0)),
                 "ra": trial.suggest_float("ra", 1e-3, 10, log=True),
-                "rl": trial.suggest_float("rl", 1e-3, 10, log=True)}
+                "rl": trial.suggest_float("rl", *b("rl", 1e-3, 10), log=True)}
     return {"lr": trial.suggest_float("lr", 0.03, 0.15, log=True),
-            "depth": trial.suggest_int("depth", 4, 8),
-            "l2": trial.suggest_float("l2", 1, 30, log=True)}
+            "depth": trial.suggest_int("depth", *b("depth", 4, 8)),
+            "l2": trial.suggest_float("l2", *b("l2", 1, 30), log=True)}
 
 
 FIT = {"lgb": fit_lgb, "xgb": fit_xgb, "cat": fit_cat}
@@ -217,13 +233,13 @@ def proba(m, X):
     return m.predict_proba(X)[:, 1]
 
 
-def tune(name, X, y, folds, trials, threads, budget_min, W=None):
+def tune(name, X, y, folds, trials, threads, budget_min, W=None, reg="none"):
     import optuna
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     def objective(trial):
-        p, aucs = space(trial, name), []
+        p, aucs = space(trial, name, reg), []
         for k, (tr, va, _, _) in enumerate(folds):
             m, _ = FIT[name](p, X[tr], y[tr], X[va], y[va], threads,
                              wtr=None if W is None else W[tr])
@@ -303,6 +319,68 @@ def operating_points(y_cal, s_cal, y_test, s_test, targets=(0.8, 0.7, 0.6, 0.5))
         rows.append({"target_recall": r, "flag_share": frac, "recall": rec, "precision": prec,
                      "accuracy": acc, "fpr": fpr, "f1": f1})
     return rows
+
+
+DAILY_BUDGETS = (0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30)
+BUDGET_GRID = tuple(round(0.005 * i, 3) for i in range(1, 201))  # 0.5% .. 100%, 0.5% steps (F1 can peak high)
+CONSTRAINTS = (("precision >= 0.90", "precision", 0.90), ("precision >= 0.80", "precision", 0.80),
+               ("FPR <= 0.10", "fpr", 0.10), ("max F1", "f1", None))
+
+
+def daily_rank(s, days):
+    """Within-day rank share of each row's score: 1/n_day for the day's highest. Ties go
+    by row order (method='first'), so a budget q flags floor(q * n_day) devices every day
+    instead of dropping or admitting a whole tied block at the cut."""
+    return (pd.Series(np.asarray(s)).groupby(pd.Series(np.asarray(days)))
+            .rank(ascending=False, method="first", pct=True).to_numpy())
+
+
+def budget_metrics(y, r, budgets):
+    """Confusion-matrix metrics when each day's top q share is flagged, for each q. The
+    flagged sets are nested in q, so one sort by within-day rank serves every budget."""
+    o = np.argsort(r, kind="stable")
+    rs, cy = r[o], np.concatenate([[0], np.cumsum(y[o])])
+    n, P = len(y), int(y.sum())
+    N = n - P
+    rows = []
+    for q in budgets:
+        k = int(np.searchsorted(rs, q + 1e-9, side="right"))  # r = rank/n_day; guard float ties at q
+        tp = int(cy[k])
+        fp = k - tp
+        prec, rec = (tp / k if k else None), (tp / P if P else 0.0)  # nothing flagged: undefined
+        acc, fpr = (tp + (N - fp)) / n, (fp / N if N else 0.0)
+        f1 = 2 * prec * rec / (prec + rec) if prec and prec + rec else 0.0
+        rows.append({"budget": float(q), "flag_share": k / n, "recall": rec, "precision": prec,
+                     "accuracy": acc, "fpr": fpr, "f1": f1})
+    return rows
+
+
+def constrained_ops(y_cal, s_cal, days_cal, y_test, s_test, days_test):
+    """Recall-optimised operating points picked WITHOUT test: on the last CV fold, the largest
+    daily budget that still meets each contract clause (or the F1-maximising one), then that
+    same budget flagged on test. A larger budget can only add flags, so the largest feasible
+    budget is the most recall that clause allows."""
+    cal = budget_metrics(y_cal, daily_rank(s_cal, days_cal), BUDGET_GRID)
+    r_test = daily_rank(s_test, days_test)
+    out = []
+    for label, key, bound in CONSTRAINTS:
+        if bound is None:
+            best_f1 = max(c["f1"] for c in cal)
+            ok = [c for c in cal if c["f1"] == best_f1 and best_f1 > 0]  # ties: the larger budget
+        elif key == "fpr":
+            ok = [c for c in cal if c["fpr"] <= bound and c["flag_share"] > 0]
+        else:
+            ok = [c for c in cal if c[key] is not None and c[key] >= bound]
+        if not ok:
+            out.append({"constraint": label, "reachable": False, "budget": None})
+            continue
+        # budgets that flag the same rows on the fold are one choice (floor(q * n_day) per day);
+        # take the smallest of them so a day-size shift on test cannot add flags the fold never saw
+        pick = next(c for c in cal if c["flag_share"] == ok[-1]["flag_share"])
+        out.append({"constraint": label, "reachable": True, "budget": pick["budget"],
+                    "fold": {k: pick[k] for k in ("flag_share", "recall", "precision", "accuracy", "fpr", "f1")},
+                    "test": budget_metrics(y_test, r_test, [pick["budget"]])[0]})
+    return out
 
 
 def diagnostics(dev, test, feats, Xd, yd, Xt, folds, threads, seed=0, n=50_000):
@@ -442,6 +520,8 @@ def main():
     ap.add_argument("--no-scan", action="store_true", help="skip the leak and drift checks")
     ap.add_argument("--no-diag", action="store_true",
                     help="skip the methodology diagnostics (duplicates, collinearity, PSI, shuffled-label)")
+    ap.add_argument("--reg", default="none", choices=["none", "strong"],
+                    help="strong narrows the Optuna ranges toward regularised trees (REG_STRONG)")
     a = ap.parse_args()
     t0 = time.time()
 
@@ -513,9 +593,16 @@ def main():
     trials = dict(kv.split("=") for kv in a.trials.split(","))
     models = [m.strip() for m in a.models.split(",") if m.strip()]
     best, oofs, iters = {}, {}, {}
+    if a.reg == "strong":
+        def _bound(k, lo, hi):
+            return f"{k}>={lo}" if hi is None else f"{k}<={hi}" if lo is None else f"{k} {lo}..{hi}"
+        log("regularised search (--reg strong): " + "; ".join(
+            f"{m} " + " ".join(_bound(k, lo, hi) for k, (lo, hi) in REG_STRONG[m].items())
+            for m in models if m in REG_STRONG))
     for name in models:
         log(f"tuning {name} ...")
-        best[name] = tune(name, Xd, yd, tune_folds, int(trials.get(name, 10)), a.threads, a.budget_min, W=Wd)
+        best[name] = tune(name, Xd, yd, tune_folds, int(trials.get(name, 10)), a.threads, a.budget_min, W=Wd,
+                          reg=a.reg)
         oofs[name], iters[name] = oof(name, best[name], Xd, yd, folds, a.threads, W=Wd)
 
     # ---- choose on CV only --------------------------------------------------
@@ -584,6 +671,36 @@ def main():
               + ("   <- operating point" if r["target_recall"] == 0.5 else ""))
     print(f"  accuracy if nothing is flagged: {1 - yt.mean():.3f}   contract: precision >= 0.90, "
           f"recall >= 0.80, F1 >= 0.80, FPR <= 0.10, accuracy >= 0.90 (0.85)")
+
+    days_t = test["event_date"].to_numpy()
+    budgets = budget_metrics(yt, daily_rank(test_scores[chosen], days_t), DAILY_BUDGETS)
+    for r in budgets:
+        r["meets_fpr_acc"] = bool(r["fpr"] <= 0.10 and r["accuracy"] >= 0.85)
+    print(f"\nDAILY BUDGET -- {chosen} on test; each day, flag the top q% of that day's devices by score")
+    print("  a daily dispatch budget is a policy choice, not tuned on test; the rows describe each choice")
+    print("  budget   flagged   recall  precision  accuracy    FPR      F1")
+    def _prec(r):  # nothing flagged: precision is undefined, not zero
+        return f"{r['precision']:>9.3f}" if r["precision"] is not None else f"{'-':>9s}"
+
+    for r in budgets:
+        print(f"  {r['budget']:>6.0%}   {r['flag_share']:>7.1%}   {r['recall']:>6.3f}  {_prec(r)}"
+              f"  {r['accuracy']:>8.3f}  {r['fpr']:>6.3f}  {r['f1']:>6.3f}"
+              + ("   <- FPR <= 0.10 and accuracy >= 0.85" if r["meets_fpr_acc"] else ""))
+
+    fs_, fe_ = folds[-1][2], folds[-1][3]
+    cops = constrained_ops(yd[va_last], s_cal, dev["event_date"].to_numpy()[va_last], yt, test_scores[chosen], days_t)
+    print(f"\nCONSTRAINED OPERATING POINTS -- {chosen}; largest daily budget meeting each clause on the last "
+          f"CV fold ({fs_}..{fe_}), applied to test")
+    print("  the most recall available under each clause; the budget is never chosen on test")
+    print("  clause              budget  fold P  fold R |  flagged   recall  precision  accuracy    FPR      F1")
+    for c in cops:
+        if not c["reachable"]:
+            print(f"  {c['constraint']:18s}  not reachable on the last fold")
+            continue
+        f_, t_ = c["fold"], c["test"]
+        print(f"  {c['constraint']:18s}  {c['budget']:>6.1%}  {f_['precision']:>6.3f}  {f_['recall']:>6.3f} |"
+              f"  {t_['flag_share']:>7.1%}   {t_['recall']:>6.3f}  {_prec(t_)}  {t_['accuracy']:>8.3f}"
+              f"  {t_['fpr']:>6.3f}  {t_['f1']:>6.3f}")
     if "lgb" in models:
         print("\nLightGBM top-15 gain:")
         for f, v in top_imp.items():
@@ -594,7 +711,8 @@ def main():
     with open(os.path.join(out, "summary.json"), "w") as fh:
         json.dump({"fleet": a.fleet, "args": vars(a), "cv": cv, "chosen": chosen, "withheld": dropped, "best_params": best,
                    "test": {k: {"auc": v["auc"], "ap": v["ap"], "monthly": v["monthly"]} for k, v in res.items()},
-                   "operating_points": ops, "diagnostics": diag},
+                   "operating_points": ops, "daily_budgets": budgets, "constrained_ops": cops,
+                   "diagnostics": diag},
                   fh, indent=1, default=float)
     pd.DataFrame({"event_date": test["event_date"].to_numpy(), "y": yt, **test_scores}).to_parquet(
         os.path.join(out, "test_scores.parquet"), index=False)

@@ -141,7 +141,7 @@ def adversarial(Xd, Xt, feats, threads, seed=0, n=150_000):
 
 
 # --------------------------------------------------------------------------- models
-def fit_lgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None):
+def fit_lgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None):
     import lightgbm as lgb
 
     m = lgb.LGBMClassifier(
@@ -150,14 +150,14 @@ def fit_lgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None):
         colsample_bytree=p["cs"], reg_alpha=p["ra"], reg_lambda=p["rl"],
         n_jobs=threads, verbose=-1, random_state=42)
     if n_estimators:
-        m.fit(Xtr, ytr)
+        m.fit(Xtr, ytr, sample_weight=wtr)
         return m, n_estimators
-    m.fit(Xtr, ytr, eval_set=[(Xva, yva)], eval_metric="auc",
+    m.fit(Xtr, ytr, sample_weight=wtr, eval_set=[(Xva, yva)], eval_metric="auc",
           callbacks=[lgb.early_stopping(100, verbose=False)])
     return m, int(m.best_iteration_ or m.n_estimators)
 
 
-def fit_xgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None):
+def fit_xgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None):
     import xgboost as xgb
 
     kw = dict(n_estimators=n_estimators or 2000, learning_rate=p["lr"], max_depth=p["depth"],
@@ -166,14 +166,14 @@ def fit_xgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None):
               eval_metric="auc", n_jobs=threads, random_state=42)
     if n_estimators:
         m = xgb.XGBClassifier(**kw)
-        m.fit(Xtr, ytr, verbose=False)
+        m.fit(Xtr, ytr, sample_weight=wtr, verbose=False)
         return m, n_estimators
     m = xgb.XGBClassifier(early_stopping_rounds=100, **kw)
-    m.fit(Xtr, ytr, eval_set=[(Xva, yva)], verbose=False)
+    m.fit(Xtr, ytr, sample_weight=wtr, eval_set=[(Xva, yva)], verbose=False)
     return m, int(m.best_iteration + 1)
 
 
-def fit_cat(p, Xtr, ytr, Xva, yva, threads, n_estimators=None):
+def fit_cat(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None):
     from catboost import CatBoostClassifier
 
     kw = dict(iterations=n_estimators or 2000, learning_rate=p["lr"], depth=p["depth"],
@@ -181,10 +181,10 @@ def fit_cat(p, Xtr, ytr, Xva, yva, threads, n_estimators=None):
               verbose=False, allow_writing_files=False, random_seed=42)
     if n_estimators:
         m = CatBoostClassifier(**kw)
-        m.fit(Xtr, ytr)
+        m.fit(Xtr, ytr, sample_weight=wtr)
         return m, n_estimators
     m = CatBoostClassifier(od_type="Iter", od_wait=100, **kw)
-    m.fit(Xtr, ytr, eval_set=(Xva, yva), use_best_model=True)
+    m.fit(Xtr, ytr, sample_weight=wtr, eval_set=(Xva, yva), use_best_model=True)
     return m, int(m.get_best_iteration() + 1)
 
 
@@ -217,7 +217,7 @@ def proba(m, X):
     return m.predict_proba(X)[:, 1]
 
 
-def tune(name, X, y, folds, trials, threads, budget_min):
+def tune(name, X, y, folds, trials, threads, budget_min, W=None):
     import optuna
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -225,7 +225,8 @@ def tune(name, X, y, folds, trials, threads, budget_min):
     def objective(trial):
         p, aucs = space(trial, name), []
         for k, (tr, va, _, _) in enumerate(folds):
-            m, _ = FIT[name](p, X[tr], y[tr], X[va], y[va], threads)
+            m, _ = FIT[name](p, X[tr], y[tr], X[va], y[va], threads,
+                             wtr=None if W is None else W[tr])
             aucs.append(roc_auc_score(y[va], proba(m, X[va])))
             trial.report(float(np.mean(aucs)), k)
             if trial.should_prune():
@@ -241,11 +242,12 @@ def tune(name, X, y, folds, trials, threads, budget_min):
     return study.best_params
 
 
-def oof(name, p, X, y, folds, threads):
+def oof(name, p, X, y, folds, threads, W=None):
     """Refit the chosen parameters on every fold; return per-fold scores and best iterations."""
     out, iters = [], []
     for tr, va, _, _ in folds:
-        m, it = FIT[name](p, X[tr], y[tr], X[va], y[va], threads)
+        m, it = FIT[name](p, X[tr], y[tr], X[va], y[va], threads,
+                          wtr=None if W is None else W[tr])
         out.append(proba(m, X[va]))
         iters.append(it)
     return out, iters
@@ -314,6 +316,10 @@ def main():
     ap.add_argument("--folds", type=int, default=3)
     ap.add_argument("--recent-share", type=float, default=0.4)
     ap.add_argument("--embargo-days", type=int, default=14, help="matches CELL 9")
+    ap.add_argument("--train-start", default="",
+                    help="drop dev rows before this date (e.g. 2024-09-01); test is unchanged")
+    ap.add_argument("--recency-halflife", type=float, default=0.0,
+                    help="weight dev rows by 0.5 ** (age_days / N), age from the last dev day; 0 = off")
     ap.add_argument("--warmup-end", default="2023-08-01",
                     help="drop training rows before this date (LEFT-CENSORED warm-up); '' keeps them")
     ap.add_argument("--tune-frac", type=float, default=1.0, help="device sample used for tuning only")
@@ -347,8 +353,17 @@ def main():
         dev = dev[dev["event_date"] >= pd.Timestamp(a.warmup_end)]
         log(f"warm-up rows before {a.warmup_end} dropped from training: {n0 - len(dev):,}")
     test = df[df["split"] == "test"]
+    if a.train_start:
+        n0 = len(dev)
+        dev = dev[dev["event_date"] >= pd.Timestamp(a.train_start)]
+        log(f"train-start {a.train_start}: dropped {n0 - len(dev):,} earlier dev rows")
     dev = dev.sort_values("event_date").reset_index(drop=True)
     Xd, yd = dev[feats].to_numpy(np.float32), dev[target].to_numpy()
+    Wd = None
+    if a.recency_halflife > 0:
+        _age = (dev["event_date"].max() - dev["event_date"]).dt.days.to_numpy()
+        Wd = np.power(0.5, _age / a.recency_halflife).astype(np.float64)
+        log(f"recency weights: half-life {a.recency_halflife:g} days; oldest row weighs {Wd.min():.3f}")
     Xt, yt = test[feats].to_numpy(np.float32), test[target].to_numpy()
     log(f"dev {len(dev):,} rows ({yd.mean():.3%} positive) | test {len(test):,} rows ({yt.mean():.3%} positive)")
 
@@ -380,8 +395,8 @@ def main():
     best, oofs, iters = {}, {}, {}
     for name in models:
         log(f"tuning {name} ...")
-        best[name] = tune(name, Xd, yd, tune_folds, int(trials.get(name, 10)), a.threads, a.budget_min)
-        oofs[name], iters[name] = oof(name, best[name], Xd, yd, folds, a.threads)
+        best[name] = tune(name, Xd, yd, tune_folds, int(trials.get(name, 10)), a.threads, a.budget_min, W=Wd)
+        oofs[name], iters[name] = oof(name, best[name], Xd, yd, folds, a.threads, W=Wd)
 
     # ---- choose on CV only --------------------------------------------------
     cv = {n: [roc_auc_score(yd[va], o) for (tr, va, _, _), o in zip(folds, oofs[n])] for n in models}
@@ -398,7 +413,7 @@ def main():
     for name in models:
         n_est = int(np.mean(iters[name]) * 1.1) + 1
         log(f"final {name}: {n_est} rounds on {len(dev):,} rows")
-        m, _ = FIT[name](best[name], Xd, yd, None, None, a.threads, n_estimators=n_est)
+        m, _ = FIT[name](best[name], Xd, yd, None, None, a.threads, n_estimators=n_est, wtr=Wd)
         test_scores[name] = proba(m, Xt)
         if name == "lgb":
             imp = pd.Series(m.booster_.feature_importance("gain"), index=feats).sort_values(ascending=False)

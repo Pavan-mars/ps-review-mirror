@@ -329,6 +329,23 @@ def _exclude_active_episode() -> bool:
     return os.environ.get("PS1_EXCLUDE_ACTIVE_EPISODE", "false").strip().lower() == "true"
 
 
+def _filter_after_features() -> bool:
+    """Remove the active-episode and interior-mask rows AFTER features, not before.
+
+    Both exclusions drop rows in CELL 6, so every prior window, forward fill, recency
+    value and station peer value built in CELLS 7-8 sees only the surviving rows: a
+    device's history loses the days it spent inside an open episode or beside an
+    unobserved day. Scoring (with_label=False) runs neither exclusion and computes the
+    same features over full history, so training and serving disagree. With this on,
+    CELL 6 marks those rows in a boolean _ps1_drop column instead of dropping them,
+    CELL 8 builds every feature over the full frame and removes the marked rows
+    immediately before feature selection. The label and the scored rows are the same
+    as with it off; only the feature values move. The observed-edge drop and the onset
+    in-spell drop are unchanged. Default OFF.
+    """
+    return _ps1_env_flag("PS1_FILTER_AFTER_FEATURES")
+
+
 def _label_mask_unobserved() -> bool:
     """Drop rows whose lookahead crosses a day the completeness guard marked UNOBSERVED.
 
@@ -1197,6 +1214,13 @@ def _apply_onset_label(frame, target_col: str, key_col: str = "DEVICE_ID",
     device x component x day -- do not copy that partitioning here.
     """
     w = Window.partitionBy(key_col).orderBy(date_col)
+    # Rows marked _ps1_drop (PS1_FILTER_AFTER_FEATURES) are held for prior windows only.
+    # A separate partition keeps them out of the onset sequence, so the scored rows get
+    # the same lag as when those rows were dropped; they are also left out of the counts
+    # and are never removed as in-spell, since CELL 8 removes them.
+    _held = "_ps1_drop" in frame.columns
+    if _held:
+        w = Window.partitionBy(key_col, "_ps1_drop").orderBy(date_col)
     # coalesce to 0: without it the first row per device has a NULL prev, in_spell
     # evaluates to NULL, and `where(~in_spell)` would silently drop a real onset.
     prev = F.coalesce(F.lag(F.col(target_col)).over(w), F.lit(0)).cast("byte")
@@ -1207,7 +1231,7 @@ def _apply_onset_label(frame, target_col: str, key_col: str = "DEVICE_ID",
         .withColumn("_is_onset",
                     ((F.col(target_col) == 1) & (F.col("_prev_label") == 0)).cast("byte"))
     )
-    stats = tagged.agg(
+    stats = (tagged.where(~F.col("_ps1_drop")) if _held else tagged).agg(
         F.count(F.lit(1)).alias("n"),
         F.sum(F.col("_in_spell").cast("int")).alias("d"),
         F.sum(F.col("_is_onset").cast("int")).alias("o"),
@@ -1221,8 +1245,11 @@ def _apply_onset_label(frame, target_col: str, key_col: str = "DEVICE_ID",
         f"({100.0 * dropped / total if total else 0.0:.2f}%); {kept:,} retained, "
         f"{onsets:,} onsets ({100.0 * onsets / kept if kept else 0.0:.4f}% of retained)"
     )
+    _keep = ~F.col("_in_spell")
+    if _held:
+        _keep = _keep | F.col("_ps1_drop")
     return (
-        tagged.where(~F.col("_in_spell"))
+        tagged.where(_keep)
         .withColumn(target_col, F.col("_is_onset"))
         .drop("_prev_label", "_in_spell", "_is_onset")
     )
@@ -1303,7 +1330,9 @@ def read_spine(
         print(f"[label] min OOS minutes  : {f'{_min_oos:g} -- Sets clearing sooner are toggles, not failures' if _min_oos else 'off'}")
         print(f"[label] device match     : {'DEVICE_ID -- events under old device keys kept' if _by_id else 'DEVICE_KEY -- current keys only'}")
         _mask = _label_mask_unobserved()
+        _after_feats = _filter_after_features()
         print(f"[label] active episodes  : {'EXCLUDED -- only in-service device-days are scored' if _active else 'kept'}")
+        print(f"[label] filter timing    : {'AFTER features -- dropped rows kept for prior windows' if _after_feats else 'BEFORE features'}")
         print(f"[label] interior mask    : {'ON -- rows whose lookahead crosses an unobserved day are dropped' if _mask else 'off'}")
         print(f"[label] observed edge    : {'ON -- rows with an unobservable lookahead are dropped' if _edge else 'off'}")
         _guard = _completeness_guard()
@@ -1683,6 +1712,29 @@ def read_spine(
             .select("sp.*", TARGET_COL)
         )
 
+        def _mark_drop(frame, hits, keys, broadcast=False):
+            """Set _ps1_drop on rows matching `hits` instead of removing them.
+
+            _ps1_new marks only the rows this step flags that no earlier step had, so its
+            count equals what the step's left_anti join would have removed at that point.
+            Column order is kept; `hits` is de-duplicated so the left join cannot fan out.
+            """
+            _cols = frame.columns
+            _h = hits.select(*keys).distinct().withColumn("_ps1_hit", F.lit(True))
+            if broadcast:
+                _h = F.broadcast(_h)
+            return (
+                frame.join(_h, keys, "left")
+                .withColumn("_ps1_new",
+                            F.coalesce(F.col("_ps1_hit"), F.lit(False)) & ~F.col("_ps1_drop"))
+                .withColumn("_ps1_drop", F.col("_ps1_drop") | F.col("_ps1_new"))
+                .select(*_cols, "_ps1_new")
+                .persist(StorageLevel.MEMORY_AND_DISK)
+            )
+
+        if _after_feats and (_active or _mask):
+            _labelled = _labelled.withColumn("_ps1_drop", F.lit(False))
+
         if _active:
             _open = (
                 _all_fail_days
@@ -1691,10 +1743,17 @@ def read_spine(
                 .distinct()
             )
             _labelled = _labelled.persist(StorageLevel.MEMORY_AND_DISK)
-            _d = (_labelled.join(_open, ["DEVICE_ID", "transit_day"], "left_semi")
-                  .agg(F.count(F.lit(1)).alias("n"), F.sum(F.col(TARGET_COL).cast("int")).alias("pos"))
-                  .collect()[0])
-            _labelled = _labelled.join(_open, ["DEVICE_ID", "transit_day"], "left_anti")
+            if _after_feats:
+                _labelled = _mark_drop(_labelled, _open, ["DEVICE_ID", "transit_day"])
+                _d = (_labelled.where(F.col("_ps1_new"))
+                      .agg(F.count(F.lit(1)).alias("n"), F.sum(F.col(TARGET_COL).cast("int")).alias("pos"))
+                      .collect()[0])
+                _labelled = _labelled.drop("_ps1_new")
+            else:
+                _d = (_labelled.join(_open, ["DEVICE_ID", "transit_day"], "left_semi")
+                      .agg(F.count(F.lit(1)).alias("n"), F.sum(F.col(TARGET_COL).cast("int")).alias("pos"))
+                      .collect()[0])
+                _labelled = _labelled.join(_open, ["DEVICE_ID", "transit_day"], "left_anti")
             print(f"[label] active episodes  : dropped {_d['n']:,} device-days inside an open episode "
                   f"({(_d['pos'] or 0) / _d['n'] if _d['n'] else 0:.1%} of them labelled positive)")
         if _mask:
@@ -1706,8 +1765,13 @@ def read_spine(
                            .select(F.date_sub(F.col("cal_day"), F.col("n")).alias("transit_day"))
                            .distinct())
                 _labelled = _labelled.persist(StorageLevel.MEMORY_AND_DISK)
-                _n_m = _labelled.join(F.broadcast(_masked), "transit_day", "left_semi").count()
-                _labelled = _labelled.join(F.broadcast(_masked), "transit_day", "left_anti")
+                if _after_feats:
+                    _labelled = _mark_drop(_labelled, _masked, ["transit_day"], broadcast=True)
+                    _n_m = _labelled.where(F.col("_ps1_new")).count()
+                    _labelled = _labelled.drop("_ps1_new")
+                else:
+                    _n_m = _labelled.join(F.broadcast(_masked), "transit_day", "left_semi").count()
+                    _labelled = _labelled.join(F.broadcast(_masked), "transit_day", "left_anti")
                 print(f"[label] interior mask    : dropped {_n_m:,} rows whose {horizon_days}-day "
                       f"lookahead crosses an unobserved day")
 
@@ -1723,7 +1787,11 @@ def read_spine(
         if _ev_max is not None and max_day is not None:
             _cut = _ev_max - _dt.timedelta(days=horizon_days)
             if max_day > _cut:
-                _n_tail = _labelled.where(F.col("transit_day") > F.lit(_cut)).count()
+                _tail = _labelled.where(F.col("transit_day") > F.lit(_cut))
+                if "_ps1_drop" in _labelled.columns:
+                    # Count only scored rows; the drop below still removes marked rows too.
+                    _tail = _tail.where(~F.col("_ps1_drop"))
+                _n_tail = _tail.count()
                 if _edge:
                     _labelled = _labelled.where(F.col("transit_day") <= F.lit(_cut))
                     print(f"[label] observed edge    : events end {_ev_max}; dropped {_n_tail:,} "
@@ -1754,8 +1822,11 @@ def read_spine(
         if _label_mode() == "onset":
             df_ps1 = _apply_onset_label(df_ps1, TARGET_COL)
         if SLA_TARGET_COL in df_ps1.columns:
-            _sla = df_ps1.agg(F.avg(SLA_TARGET_COL).alias("r")).collect()[0]["r"]
-            _oos = df_ps1.agg(F.avg(TARGET_COL).alias("r")).collect()[0]["r"]
+            # Rates describe the scored rows: rows marked _ps1_drop leave in CELL 8.
+            _scored = (df_ps1.where(~F.col("_ps1_drop")) if "_ps1_drop" in df_ps1.columns
+                       else df_ps1)
+            _sla = _scored.agg(F.avg(SLA_TARGET_COL).alias("r")).collect()[0]["r"]
+            _oos = _scored.agg(F.avg(TARGET_COL).alias("r")).collect()[0]["r"]
             print(
                 f"Label rates — {SLA_TARGET_COL}: {100 * float(_sla or 0):.4f}% | "
                 f"{TARGET_COL}: {100 * float(_oos or 0):.4f}%"
@@ -2932,6 +3003,10 @@ def join_and_materialise(
     """CELL 8 — joins, grain audit, feature materialization."""
     cfg = FLEET_CONFIG[_fleet_key(fleet)]
     df_ps1 = aux['df_ps1']
+    # Row-count backstop target: the spine rows that reach feature selection. Rows CELL 6
+    # marked _ps1_drop (PS1_FILTER_AFTER_FEATURES) are removed before it in each branch.
+    df_ps1_scored = (df_ps1.where(~F.col("_ps1_drop")) if "_ps1_drop" in df_ps1.columns
+                     else df_ps1)
     df_ps2 = aux['df_ps2']
     df_ps4 = aux['df_ps4']
     df_ps5 = aux['df_ps5']
@@ -3400,6 +3475,11 @@ def join_and_materialise(
             )
         print("Spark prior-window GATE features materialized (lazy)")
 
+        # PS1_FILTER_AFTER_FEATURES: rows CELL 6 marked for exclusion stayed in the frame
+        # so every window, peer, forward-fill, recency and ratio above saw full history.
+        # Remove them here, after the last of those and before feature selection.
+        if "_ps1_drop" in df_joined.columns:
+            df_joined = df_joined.where(~F.col("_ps1_drop")).drop("_ps1_drop")
 
         available = set(df_joined.columns)
         FEATURE_COLS = [c for c in cfg.all_candidate_features if c in available]
@@ -3427,7 +3507,7 @@ def join_and_materialise(
 
         if materialize:
             with timed_stage("spark_spine_count"):
-                SPINE_ROW_COUNT = df_ps1.select(*KEY_COLS).count()
+                SPINE_ROW_COUNT = df_ps1_scored.select(*KEY_COLS).count()
 
             if _notebook_flag("RUN_DEEP_GRAIN_AUDIT"):
                 duplicate_spine_keys = (
@@ -3929,6 +4009,11 @@ def join_and_materialise(
             )
         print("Spark prior-window TVM features materialized (lazy)")
 
+        # PS1_FILTER_AFTER_FEATURES: rows CELL 6 marked for exclusion stayed in the frame
+        # so every window, peer, forward-fill, recency and ratio above saw full history.
+        # Remove them here, after the last of those and before feature selection.
+        if "_ps1_drop" in df_joined.columns:
+            df_joined = df_joined.where(~F.col("_ps1_drop")).drop("_ps1_drop")
 
         available = set(df_joined.columns)
         FEATURE_COLS = [c for c in cfg.all_candidate_features if c in available]
@@ -3956,7 +4041,7 @@ def join_and_materialise(
 
         if materialize:
             with timed_stage("spark_spine_count"):
-                SPINE_ROW_COUNT = df_ps1.select(*KEY_COLS).count()
+                SPINE_ROW_COUNT = df_ps1_scored.select(*KEY_COLS).count()
 
             if _notebook_flag("RUN_DEEP_GRAIN_AUDIT"):
                 duplicate_spine_keys = (
@@ -4503,6 +4588,11 @@ def join_and_materialise(
 
         print("Spark prior-window VALIDATOR features materialized (lazy)")
 
+        # PS1_FILTER_AFTER_FEATURES: rows CELL 6 marked for exclusion stayed in the frame
+        # so every window, peer, forward-fill, recency, ratio and station-cascade value
+        # above saw full history. Remove them here, before feature selection.
+        if "_ps1_drop" in df_joined.columns:
+            df_joined = df_joined.where(~F.col("_ps1_drop")).drop("_ps1_drop")
 
         available = set(df_joined.columns)
         FEATURE_COLS = [c for c in cfg.all_candidate_features if c in available]
@@ -4530,7 +4620,7 @@ def join_and_materialise(
 
         if materialize:
             with timed_stage("spark_spine_count"):
-                SPINE_ROW_COUNT = df_ps1.select(*KEY_COLS).count()
+                SPINE_ROW_COUNT = df_ps1_scored.select(*KEY_COLS).count()
 
             if _notebook_flag("RUN_DEEP_GRAIN_AUDIT"):
                 duplicate_spine_keys = (

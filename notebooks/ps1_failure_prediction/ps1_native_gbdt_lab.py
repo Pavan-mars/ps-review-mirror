@@ -222,6 +222,31 @@ def report(label, y, s, dates, lines):
     return {"auc": auc, "ap": ap, "monthly": mon}
 
 
+def operating_points(y_cal, s_cal, y_test, s_test, targets=(0.8, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1)):
+    """Lowering recall raises precision and accuracy and lowers FPR; it never moves AUC.
+    For each recall target, the share of devices to flag is set on the last walk-forward
+    fold and the same share is flagged on test -- a daily-budget rule, which transfers
+    across a shifting base rate where a raw probability threshold does not. Test recall
+    therefore lands near, not exactly on, the target."""
+    o = np.argsort(-s_cal)
+    cum = np.cumsum(y_cal[o]) / max(1, y_cal.sum())
+    ot, n = np.argsort(-s_test), len(s_test)
+    P = int(y_test.sum())
+    N = n - P
+    rows = []
+    for r in targets:
+        frac = (int(np.searchsorted(cum, r)) + 1) / len(s_cal)
+        k = max(1, int(round(frac * n)))
+        tp = int(y_test[ot[:k]].sum())
+        fp = k - tp
+        prec, rec = tp / k, (tp / P if P else 0.0)
+        acc, fpr = (tp + (N - fp)) / n, (fp / N if N else 0.0)
+        f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
+        rows.append({"target_recall": r, "flag_share": frac, "recall": rec, "precision": prec,
+                     "accuracy": acc, "fpr": fpr, "f1": f1})
+    return rows
+
+
 # --------------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
@@ -323,6 +348,17 @@ def main():
     for ln in lines:
         print("  " + ln)
     print(f"\nQUOTE: {chosen}  test AUC {res[chosen]['auc']:.4f}  (chosen on CV, not on test)")
+
+    va_last = folds[-1][1]
+    s_cal = (rank_mean([oofs[n][-1] for n in models]) if chosen == "ensemble" else oofs[chosen][-1])
+    ops = operating_points(yd[va_last], s_cal, yt, test_scores[chosen])
+    print(f"\nOPERATING POINTS -- {chosen}; share to flag set on the last CV fold, applied to test")
+    print("  target recall   flagged   recall  precision  accuracy    FPR      F1")
+    for r in ops:
+        print(f"  {r['target_recall']:>12.0%}   {r['flag_share']:>7.1%}   {r['recall']:>6.3f}  {r['precision']:>9.3f}"
+              f"  {r['accuracy']:>8.3f}  {r['fpr']:>6.3f}  {r['f1']:>6.3f}")
+    print(f"  accuracy if nothing is flagged: {1 - yt.mean():.3f}   contract: precision >= 0.90, "
+          f"recall >= 0.80, F1 >= 0.80, FPR <= 0.10, accuracy >= 0.90 (0.85)")
     if "lgb" in models:
         print("\nLightGBM top-15 gain:")
         for f, v in top_imp.items():
@@ -332,7 +368,8 @@ def main():
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "summary.json"), "w") as fh:
         json.dump({"fleet": a.fleet, "args": vars(a), "cv": cv, "chosen": chosen, "withheld": dropped, "best_params": best,
-                   "test": {k: {"auc": v["auc"], "ap": v["ap"], "monthly": v["monthly"]} for k, v in res.items()}},
+                   "test": {k: {"auc": v["auc"], "ap": v["ap"], "monthly": v["monthly"]} for k, v in res.items()},
+                   "operating_points": ops},
                   fh, indent=1, default=float)
     pd.DataFrame({"event_date": test["event_date"].to_numpy(), "y": yt, **test_scores}).to_parquet(
         os.path.join(out, "test_scores.parquet"), index=False)

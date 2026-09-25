@@ -862,16 +862,18 @@ if _enable_cleared_duration_features():
 STATION_DOPP_SOURCE_COLS = ["dopp_comms_err", "dopp_list_behind", "dopp_list_far", "dopp_app_db"]
 STATION_DOPP_BASE_COLS = [f"stn_{c}" for c in STATION_DOPP_SOURCE_COLS]
 STATION_DOPP_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in STATION_DOPP_BASE_COLS for w in (7, 30)]
-INCP_BASE_COLS = ["incp_opened", "incp_chargeable"]
+INCP_BASE_COLS = ["incp_opened"]
 INCP_FEATURE_COLS = ([f"{c}_prior_sum_{w}d" for c in INCP_BASE_COLS for w in (7, 30)]
                      + ["incp_opened_days_since"])
 LONG_WINDOW_FEATURE_COLS = [f"long_{c}_90d" for c in DOPP_BASE_COLS]
-SILENT_BASE_COLS = ["silent_day", "evall_count"]
+SILENT_BASE_COLS = ["silent_day", "evall_count"]   # names only; windows built in add_auxiliary
 REPAIR_FEATURE_COLS = ["rep_last_hold_days", "rep_prev_hold_days",
                        "cdur_max_prior_30d", "cdur_mean_min_prior_30d"]
 MLED_BASE_COLS = ["mled_cmd_cnt", "mled_maint_cnt"]
 MLED_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in MLED_BASE_COLS for w in (7, 30)]
-INCLAST_FEATURE_COLS = ["inclast_priority", "inclast_major", "inclast_chargeable", "inclast_cat_code"]
+# major / chargeable are adjudicated after the ticket opens, so they are not as-of day D;
+# priority and category are latest-version values too -- treat the family as exploratory.
+INCLAST_FEATURE_COLS = ["inclast_priority", "inclast_cat_code"]
 STNBUSY_BASE_COLS = ["stnbusy_taps"]
 STNBUSY_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in STNBUSY_BASE_COLS for w in (7, 30)]
 SILENT_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in SILENT_BASE_COLS for w in (7, 30)]
@@ -2206,33 +2208,52 @@ def add_auxiliary(
                 .groupBy(F.col(_a_dev).cast("string").alias("DEVICE_ID"),
                          F.to_date(F.col(_a_day)).alias("transit_day"))
                 .agg(F.count(F.lit(1)).cast("double").alias("evall_count"))
+                .withColumn("_ea_ep", F.col("transit_day").cast("timestamp").cast("long"))
             )
-            print("silver.device_event_enriched: every-event rollup for silent days")
+            # One row per device-day WITH events, unfiltered by the label. Silent days in
+            # [D-N, D-1] = observable calendar days in that range minus event days in it.
+            _w_first = Window.partitionBy("DEVICE_ID")
+            _sil_cols = []
+            for _n in (7, 30):
+                _w_n = Window.partitionBy("DEVICE_ID").orderBy("_ea_ep").rangeBetween(-_n * 86_400, -1)
+                _obs = F.least(F.lit(float(_n)),
+                               ((F.col("_ea_ep") - F.min("_ea_ep").over(_w_first)) / 86_400).cast("double"))
+                df_evall = (
+                    df_evall
+                    .withColumn(f"evall_count_prior_sum_{_n}d",
+                                F.coalesce(F.sum("evall_count").over(_w_n), F.lit(0.0)))
+                    .withColumn(f"silent_day_prior_sum_{_n}d",
+                                F.greatest(F.lit(0.0), _obs - F.count(F.lit(1)).over(_w_n).cast("double")))
+                )
+                _sil_cols += [f"evall_count_prior_sum_{_n}d", f"silent_day_prior_sum_{_n}d"]
+            df_evall = df_evall.select("DEVICE_ID", "transit_day", *_sil_cols)
+            print("silver.device_event_enriched: silent days and event volume, prior windows on the "
+                  "unfiltered event calendar")
         except Exception as exc:
             df_evall = None
             print(f"WARNING: silent-day rollup skipped ({exc})")
 
-    # -- silver.device_incident_features_daily -> device-day tickets opened ---------
+    # -- silver.incident_history -> tickets OPENED per device-day ----------------------
+    # device_incident_features_daily keeps its per-day counts inside a CTE and publishes only
+    # rolling columns, so the opening dates are read from incident_history directly. Only the
+    # opening date is used: priority, major and chargeable are latest-version values.
     df_incp = None
     if _enable_incident_prior_features():
         try:
-            _ip_raw = spark.read.parquet(f"{s3_silver}/device_incident_features_daily/")
+            _ip_raw = spark.read.parquet(f"{s3_silver}/incident_history/")
             _ip = {c.casefold(): c for c in _ip_raw.columns}
-            _i_dk, _i_day = _ip.get("device_key"), _ip.get("transit_day")
-            _i_n, _i_chg = _ip.get("inc_count_day"), _ip.get("chargeable_count_day")
-            if not (_i_dk and _i_day and _i_n):
-                raise ValueError(f"device_incident_features_daily lacks DEVICE_KEY / transit_day / "
-                                 f"inc_count_day; columns: {_ip_raw.columns[:20]}")
+            _i_dk, _i_day = _ip.get("device_key"), _ip.get("incident_date")
+            if not (_i_dk and _i_day):
+                raise ValueError(f"incident_history lacks DEVICE_KEY / incident_date: {_ip_raw.columns[:25]}")
             df_incp = (
-                _ip_raw
+                _ip_raw.where(F.col(_i_dk).isNotNull())
                 .where(F.to_date(F.col(_i_day)) >= F.to_date(F.lit(start_day)))
                 .where(F.to_date(F.col(_i_day)) <= end_day_expr)
                 .groupBy(F.regexp_replace(F.col(_i_dk).cast("string"), r"\.0+$", "").alias("_incp_dk"),
                          F.to_date(F.col(_i_day)).alias("transit_day"))
-                .agg(F.sum(F.col(_i_n).cast("double")).alias("incp_opened"),
-                     (F.sum(F.col(_i_chg).cast("double")) if _i_chg else F.lit(0.0)).alias("incp_chargeable"))
+                .agg(F.count(F.lit(1)).cast("double").alias("incp_opened"))
             )
-            print("silver.device_incident_features_daily: rolled up to device-day tickets opened")
+            print("silver.incident_history: tickets opened per device-day (opening date only)")
         except Exception as exc:
             df_incp = None
             print(f"WARNING: incident history rollup skipped ({exc})")
@@ -2452,7 +2473,7 @@ def add_auxiliary(
             for _src, _dst in (("total_msg_count", "upt_msg_count"),
                                ("distinct_message_types", "upt_msg_types"),
                                ("COMPLETE_FLAG", "upt_complete_flag")):
-                _c = _up_lc.get(_src)
+                _c = _up_lc.get(_src.casefold())
                 if _c:
                     _aggs.append(F.max(F.col(_c).cast("double")).alias(_dst))
             if not _aggs:
@@ -3165,10 +3186,8 @@ def join_and_materialise(
             # A spine day with no row in the rollup logged no event at all: that is the signal.
             df_joined = (
                 df_joined.join(df_evall, on=["DEVICE_ID", "transit_day"], how="left")
-                .withColumn("evall_count", F.coalesce(F.col("evall_count"), F.lit(0.0)))
-                .withColumn("silent_day", F.when(F.col("evall_count") == 0, F.lit(1.0)).otherwise(F.lit(0.0)))
             )
-            print("Joined every-event rollup; silent_day = no event logged (prior windows only)")
+            print("Joined silent-day / event-volume prior windows (built on the unfiltered event calendar)")
 
         try:
             if df_rep is not None:
@@ -3281,10 +3300,6 @@ def join_and_materialise(
             c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
         ]
 
-        if df_evall is not None:
-            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
-                c for c in SILENT_BASE_COLS if c in df_joined.columns
-            ]
 
         _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
             c for c in MLED_BASE_COLS + STNBUSY_BASE_COLS if c in df_joined.columns
@@ -3699,10 +3714,8 @@ def join_and_materialise(
             # A spine day with no row in the rollup logged no event at all: that is the signal.
             df_joined = (
                 df_joined.join(df_evall, on=["DEVICE_ID", "transit_day"], how="left")
-                .withColumn("evall_count", F.coalesce(F.col("evall_count"), F.lit(0.0)))
-                .withColumn("silent_day", F.when(F.col("evall_count") == 0, F.lit(1.0)).otherwise(F.lit(0.0)))
             )
-            print("Joined every-event rollup; silent_day = no event logged (prior windows only)")
+            print("Joined silent-day / event-volume prior windows (built on the unfiltered event calendar)")
 
         try:
             if df_rep is not None:
@@ -3816,10 +3829,6 @@ def join_and_materialise(
             c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
         ]
 
-        if df_evall is not None:
-            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
-                c for c in SILENT_BASE_COLS if c in df_joined.columns
-            ]
 
         _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
             c for c in MLED_BASE_COLS + STNBUSY_BASE_COLS if c in df_joined.columns
@@ -4234,10 +4243,8 @@ def join_and_materialise(
             # A spine day with no row in the rollup logged no event at all: that is the signal.
             df_joined = (
                 df_joined.join(df_evall, on=["DEVICE_ID", "transit_day"], how="left")
-                .withColumn("evall_count", F.coalesce(F.col("evall_count"), F.lit(0.0)))
-                .withColumn("silent_day", F.when(F.col("evall_count") == 0, F.lit(1.0)).otherwise(F.lit(0.0)))
             )
-            print("Joined every-event rollup; silent_day = no event logged (prior windows only)")
+            print("Joined silent-day / event-volume prior windows (built on the unfiltered event calendar)")
 
         try:
             if df_rep is not None:
@@ -4351,10 +4358,6 @@ def join_and_materialise(
             c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
         ]
 
-        if df_evall is not None:
-            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
-                c for c in SILENT_BASE_COLS if c in df_joined.columns
-            ]
 
         _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
             c for c in MLED_BASE_COLS + STNBUSY_BASE_COLS if c in df_joined.columns

@@ -222,8 +222,9 @@ def report(label, y, s, dates, lines):
     return {"auc": auc, "ap": ap, "monthly": mon}
 
 
-def operating_points(y_cal, s_cal, y_test, s_test, targets=(0.8, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1)):
+def operating_points(y_cal, s_cal, y_test, s_test, targets=(0.8, 0.7, 0.6, 0.5)):
     """Lowering recall raises precision and accuracy and lowers FPR; it never moves AUC.
+    Recall is not taken below 0.50 (PK, 25-Sep): the 50% row is the operating point.
     For each recall target, the share of devices to flag is set on the last walk-forward
     fold and the same share is flagged on test -- a daily-budget rule, which transfers
     across a shifting base rate where a raw probability threshold does not. Test recall
@@ -356,7 +357,8 @@ def main():
     print("  target recall   flagged   recall  precision  accuracy    FPR      F1")
     for r in ops:
         print(f"  {r['target_recall']:>12.0%}   {r['flag_share']:>7.1%}   {r['recall']:>6.3f}  {r['precision']:>9.3f}"
-              f"  {r['accuracy']:>8.3f}  {r['fpr']:>6.3f}  {r['f1']:>6.3f}")
+              f"  {r['accuracy']:>8.3f}  {r['fpr']:>6.3f}  {r['f1']:>6.3f}"
+              + ("   <- operating point" if r["target_recall"] == 0.5 else ""))
     print(f"  accuracy if nothing is flagged: {1 - yt.mean():.3f}   contract: precision >= 0.90, "
           f"recall >= 0.80, F1 >= 0.80, FPR <= 0.10, accuracy >= 0.90 (0.85)")
     if "lgb" in models:

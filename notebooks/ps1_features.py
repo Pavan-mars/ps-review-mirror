@@ -107,6 +107,17 @@ def _enable_kpi_features() -> bool:
     return os.environ.get("PS1_ENABLE_KPI_FEATURES", "false").strip().lower() == "true"
 
 
+def _enable_dopp_features() -> bool:
+    """Prior-window counts of DOPP (fare-processing module) warning events. Default OFF.
+
+    Measured 25-Sep: DOPP is 98.2% of GATE's and 72% of VALIDATOR's KPI OOS device-days,
+    yet no PS1 feature counted a DOPP event. In-service gates with a DOPP warning in the
+    prior 7 days went out of service within 7 days at 30.2% vs 17.6% without (1.72x).
+    Prior windows only (D-7..D-1, D-30..D-1): nothing from day D reaches the model.
+    """
+    return os.environ.get("PS1_ENABLE_DOPP_FEATURES", "false").strip().lower() == "true"
+
+
 def _enable_event_quality_features() -> bool:
     """device_event_enriched duration + component attribution. Default OFF.
 
@@ -630,6 +641,27 @@ if _enable_event_quality_features():
     if _evq_prior_only():
         print("[features] PS1_EVQ_PRIOR_ONLY=true -- same-day counts withheld; "
               "this measures the gain net of the sessionisation rule")
+
+
+# -- device_event_enriched: DOPP warning families -----------------------------
+# (event codes, states counted). Codes and states from the 25-Sep GATE event census;
+# 2201 DAP OOS is the label's own event and is deliberately NOT here.
+DOPP_FAMILIES = {
+    "dopp_comms_err":   ([2202], ("Set",)),                   # DAPCommsError
+    "dopp_offline":     ([2208], ("Set",)),                   # DAP Offline
+    "dopp_list_behind": ([2230, 2232], ("Set",)),             # positive / negative list behind
+    "dopp_list_far":    ([2231, 2233], ("Set",)),             # ... far behind
+    "dopp_app_db":      ([2204, 2240, 2236], ("Set and Clear",)),  # app error, DB file/copy integrity
+    "dopp_errors":      ([2214, 2224, 2229, 2235], ("Set",)),  # version, taps record, MAC, DB copy fail
+}
+DOPP_BASE_COLS = list(DOPP_FAMILIES)
+DOPP_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in DOPP_BASE_COLS for w in (7, 30)]
+if _enable_dopp_features():
+    for _cfg in FLEET_CONFIG.values():
+        for _c in DOPP_FEATURE_COLS:
+            if _c not in _cfg.all_candidate_features:
+                _cfg.all_candidate_features.append(_c)
+    print(f"[features] DOPP warnings enabled: +{len(DOPP_FEATURE_COLS)} prior-window candidate features")
 
 
 # -- features that encode the sessionisation gap ----------------------------
@@ -1771,6 +1803,39 @@ def add_auxiliary(
             df_evq = None
             print(f"WARNING: device_event_enriched quality rollup skipped ({exc})")
 
+    # -- device_event_enriched -> device-day DOPP warning counts ---------------
+    df_dopp = None
+    if _enable_dopp_features():
+        try:
+            _dp_raw = spark.read.parquet(f"{s3_silver}/device_event_enriched/")
+            _dp_lc = {c.casefold(): c for c in _dp_raw.columns}
+            _d_dev, _d_day = _dp_lc.get("device_id"), _dp_lc.get("transit_day")
+            _d_cat = _dp_lc.get("mars_device_category")
+            _d_id, _d_state = _dp_lc.get("event_type_id"), _dp_lc.get("event_state_type_name")
+            if not (_d_dev and _d_day and _d_id and _d_state):
+                raise ValueError("device_event_enriched lacks DEVICE_ID / transit_day / "
+                                 "EVENT_TYPE_ID / EVENT_STATE_TYPE_NAME")
+            _codes = sorted({c for ids, _ in DOPP_FAMILIES.values() for c in ids})
+            _dp = _dp_raw
+            if _d_cat:
+                _dp = _dp.where(F.col(_d_cat) == cfg.device_cat)
+            _dp = (_dp.where(F.col(_d_id).cast("int").isin(*_codes))
+                   .where(F.to_date(F.col(_d_day)) >= F.to_date(F.lit(start_day)))
+                   .where(F.to_date(F.col(_d_day)) <= end_day_expr))
+            _dp_aggs = [
+                F.sum(F.when(F.col(_d_id).cast("int").isin(*ids) & F.col(_d_state).isin(*states), 1)
+                       .otherwise(0)).alias(name)
+                for name, (ids, states) in DOPP_FAMILIES.items()
+            ]
+            df_dopp = _dp.groupBy(
+                F.col(_d_dev).cast("string").alias("DEVICE_ID"),
+                F.to_date(F.col(_d_day)).alias("transit_day"),
+            ).agg(*_dp_aggs)
+            print(f"silver.device_event_enriched: DOPP rollup, {len(_dp_aggs)} warning families")
+        except Exception as exc:
+            df_dopp = None
+            print(f"WARNING: DOPP rollup skipped ({exc})")
+
     # -- silver.kpi_daily -> device-day contract-performance rollup -------------
     df_kpi = None
     if _enable_kpi_features():
@@ -1911,11 +1976,12 @@ def add_auxiliary(
             print(f"WARNING: silver.device_uptime_intervals skipped ({exc})")
 
     global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ, _PS1_DF_KPI
-    global _PS1_DF_STATION, _PS1_DF_UPTIME
+    global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP
     global _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY
     _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
     _PS1_DF_KPI = df_kpi
     _PS1_DF_STATION, _PS1_DF_UPTIME = df_station, df_uptime
+    _PS1_DF_DOPP = df_dopp
     _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY = _stn_max_day, _upt_max_day
 
 
@@ -2346,6 +2412,7 @@ def join_and_materialise(
     df_kpi = globals().get("_PS1_DF_KPI")
     df_station = globals().get("_PS1_DF_STATION")
     df_uptime = globals().get("_PS1_DF_UPTIME")
+    df_dopp = globals().get("_PS1_DF_DOPP")
     df_mttr = aux['df_mttr']
     df_usage_ext = aux['df_usage_ext']
     df_read_tap = aux['df_read_tap']
@@ -2524,6 +2591,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_ec, F.coalesce(F.col(_ec), F.lit(0.0)))
             print("Joined device_event_enriched quality rollup on DEVICE_ID + transit_day")
 
+        if df_dopp is not None:
+            df_joined = df_joined.join(df_dopp, on=["DEVICE_ID", "transit_day"], how="left")
+            for _dc in DOPP_BASE_COLS:
+                if _dc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_dc, F.coalesce(F.col(_dc), F.lit(0.0)))
+            print("Joined DOPP warning rollup on DEVICE_ID + transit_day (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -2576,6 +2650,11 @@ def join_and_materialise(
         if df_evq is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in EVQ_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_dopp is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in DOPP_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:
@@ -2853,6 +2932,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_ec, F.coalesce(F.col(_ec), F.lit(0.0)))
             print("Joined device_event_enriched quality rollup on DEVICE_ID + transit_day")
 
+        if df_dopp is not None:
+            df_joined = df_joined.join(df_dopp, on=["DEVICE_ID", "transit_day"], how="left")
+            for _dc in DOPP_BASE_COLS:
+                if _dc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_dc, F.coalesce(F.col(_dc), F.lit(0.0)))
+            print("Joined DOPP warning rollup on DEVICE_ID + transit_day (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -2906,6 +2992,11 @@ def join_and_materialise(
         if df_evq is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in EVQ_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_dopp is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in DOPP_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:
@@ -3183,6 +3274,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_ec, F.coalesce(F.col(_ec), F.lit(0.0)))
             print("Joined device_event_enriched quality rollup on DEVICE_ID + transit_day")
 
+        if df_dopp is not None:
+            df_joined = df_joined.join(df_dopp, on=["DEVICE_ID", "transit_day"], how="left")
+            for _dc in DOPP_BASE_COLS:
+                if _dc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_dc, F.coalesce(F.col(_dc), F.lit(0.0)))
+            print("Joined DOPP warning rollup on DEVICE_ID + transit_day (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3236,6 +3334,11 @@ def join_and_materialise(
         if df_evq is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in EVQ_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_dopp is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in DOPP_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:

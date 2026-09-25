@@ -21,6 +21,7 @@ import datetime as _dt
 import json
 import os
 import time
+import warnings
 
 import joblib
 import numpy as np
@@ -29,6 +30,7 @@ from scipy.stats import rankdata
 from sklearn.metrics import average_precision_score, roc_auc_score
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
 # Features whose value on day D includes day D itself or information only known after D.
 # Found 25-Sep by code review: usage_failure_count_30d and the S20 cumulative counters end

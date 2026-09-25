@@ -159,6 +159,30 @@ def _label_observed_edge() -> bool:
     return os.environ.get("PS1_LABEL_OBSERVED_EDGE", "false").strip().lower() == "true"
 
 
+def _exclude_active_episode() -> bool:
+    """Score only in-service devices: drop device-days inside an episode already open.
+
+    Under the session rule an episode stays open until more than
+    PS1_EVENT_SESSION_GAP_DAYS days pass without a failure day, so the device-days from a
+    failure day F through F+gap belong to an episode in progress. A new episode can only
+    start after that one closes, so their label mostly reflects the session rule, not the
+    device's risk. Removing them asks: of the devices in service today, which start a new
+    episode within the horizon? Calendar days. Default OFF; it changes the population.
+    """
+    return os.environ.get("PS1_EXCLUDE_ACTIVE_EPISODE", "false").strip().lower() == "true"
+
+
+def _label_mask_unobserved() -> bool:
+    """Drop rows whose lookahead crosses a day the completeness guard marked UNOBSERVED.
+
+    PS1_LABEL_OBSERVED_EDGE handles the end of the feed; this is the same rule for
+    interior gaps such as the nine-day 2026-04 platform outage, where a silent lookahead
+    is labelled "no failure" whether or not one happened. Needs PS1_COMPLETENESS_GUARD
+    with PS1_COVERAGE_SIGNAL=fleet. Default OFF.
+    """
+    return os.environ.get("PS1_LABEL_MASK_UNOBSERVED", "false").strip().lower() == "true"
+
+
 def _completeness_guard() -> bool:
     """Count OBSERVED days rather than calendar days when sessionising. Default OFF.
 
@@ -680,6 +704,38 @@ if _exclude_gap_features():
           f"model's real predictive skill")
 
 
+# -- features whose day-D value includes day D or later ---------------------
+# Found 25-Sep by code review. Each slipped past GAP_ENCODING_FEATURES because it is a
+# longer window, or arrives through a source block the gap list never sees:
+#   usage_failure_count_30d, usage_cumulative_*   S20 windows end at CURRENT ROW
+#   availability_pct_7d   a transform of outage_min_7d, whose window includes today
+#   chain_length, met_comms_*   same-day counts
+#   evq_dur_*   durations of D-1 Sets that may clear after D
+# Mirrors ps1_native_gbdt_lab.py --drop-preset honest, so the two report the same figure.
+SAME_DAY_FEATURES = ["usage_failure_count_30d", "usage_cumulative_failure_count",
+                     "usage_cumulative_outage_min", "availability_pct_7d", "chain_length"]
+SAME_DAY_PREFIXES = ("met_comms_", "evq_dur_")
+
+
+def _exclude_same_day_features() -> bool:
+    return os.environ.get("PS1_EXCLUDE_SAME_DAY_FEATURES", "false").strip().lower() == "true"
+
+
+def _is_same_day(c):
+    return c in SAME_DAY_FEATURES or c.startswith(SAME_DAY_PREFIXES)
+
+
+if _exclude_same_day_features():
+    _sd = set()
+    for _cfg in FLEET_CONFIG.values():
+        for _lst in (_cfg.all_candidate_features, _cfg.failure_features,
+                     _cfg.chain_features, _cfg.mttr_features):
+            _sd |= {c for c in _lst if _is_same_day(c)}
+            _lst[:] = [c for c in _lst if not _is_same_day(c)]
+    print(f"[features] PS1_EXCLUDE_SAME_DAY_FEATURES=true -- withheld {len(_sd)} features "
+          f"whose day-D value includes day D or later")
+
+
 # -- silver.kpi_daily: contract performance, gap-aware windows ---------------
 # Windows start at day 4. Measured lift of a KPI miss preceding an episode start:
 # TVM 0.24x at lag 1d, 0.76x at 3d, 2.92x at 7d -- below 1.0 at short lags because
@@ -963,6 +1019,10 @@ def read_spine(
         print(f"[label] exclude relieved : {_relief}")
         print(f"[label] session gap days : {_gap}" + ("  (0 = count every event-day)" if not _gap else ""))
         _edge = _label_observed_edge()
+        _active = _exclude_active_episode()
+        _mask = _label_mask_unobserved()
+        print(f"[label] active episodes  : {'EXCLUDED -- only in-service device-days are scored' if _active else 'kept'}")
+        print(f"[label] interior mask    : {'ON -- rows whose lookahead crosses an unobserved day are dropped' if _mask else 'off'}")
         print(f"[label] observed edge    : {'ON -- rows with an unobservable lookahead are dropped' if _edge else 'off'}")
         _guard = _completeness_guard()
         if _guard:
@@ -974,7 +1034,7 @@ def read_spine(
                       "has nothing to modify and will report zeros. That is NOT a clean "
                       "feed -- it is a guard that never fired.")
         if (_defn != PS1_EVENT_DEFINITION_DEFAULT or horizon_days != 3 or _relief or _gap
-                or _guard or _edge):
+                or _guard or _edge or _active or _mask):
             print(f"[label] !! NON-DEFAULT LABEL. {TARGET_COL} holds a "
                   f"{_defn}/{horizon_days}-day label, NOT the published 3-day one. "
                   "Do not publish this run to Aurora or the dashboard.")
@@ -1069,6 +1129,10 @@ def read_spine(
             _after = failure_days.count()
             print(f"[label] relief excluded  : {_before - _after:,} of {_before:,} failure days")
 
+        # Every failure day, before sessionisation keeps only the starts -- the active-
+        # episode exclusion needs the days an episode stays open, not just where it began.
+        _all_fail_days = failure_days.select("DEVICE_ID", "failure_date")
+        _unobs_days = None
         if _gap > 0:
             failure_days = failure_days.persist(StorageLevel.MEMORY_AND_DISK)
             _pre = failure_days.count()
@@ -1140,6 +1204,7 @@ def read_spine(
                                   .select("cal_day", "obs_idx", "_obs", "dev_cnt")
                                   .persist(StorageLevel.MEMORY_AND_DISK))
                     _n_unobs = _idx.where(F.col("_obs") == 0).count()
+                    _unobs_days = _idx.where(F.col("_obs") == 0).select("cal_day")
                     print(f"[label] coverage (fleet) : median {_med:,.0f} devices/day, "
                           f"floor {_thresh:,.0f} ({_floor:.0%})")
                     _join_idx = _idx.select(F.col("cal_day").alias("_ix_day"), "obs_idx")
@@ -1320,6 +1385,34 @@ def read_spine(
             )
             .select("sp.*", TARGET_COL)
         )
+
+        if _active:
+            _open = (
+                _all_fail_days
+                .crossJoin(spark.range(0, max(_gap, 0) + 1).select(F.col("id").cast("int").alias("_k")))
+                .select("DEVICE_ID", F.date_add(F.col("failure_date"), F.col("_k")).alias("transit_day"))
+                .distinct()
+            )
+            _labelled = _labelled.persist(StorageLevel.MEMORY_AND_DISK)
+            _d = (_labelled.join(_open, ["DEVICE_ID", "transit_day"], "left_semi")
+                  .agg(F.count(F.lit(1)).alias("n"), F.sum(F.col(TARGET_COL).cast("int")).alias("pos"))
+                  .collect()[0])
+            _labelled = _labelled.join(_open, ["DEVICE_ID", "transit_day"], "left_anti")
+            print(f"[label] active episodes  : dropped {_d['n']:,} device-days inside an open episode "
+                  f"({(_d['pos'] or 0) / _d['n'] if _d['n'] else 0:.1%} of them labelled positive)")
+        if _mask:
+            if _unobs_days is None:
+                print("[label] !! interior mask needs PS1_COMPLETENESS_GUARD=true and "
+                      "PS1_COVERAGE_SIGNAL=fleet -- skipped")
+            else:
+                _masked = (_unobs_days.crossJoin(seq)
+                           .select(F.date_sub(F.col("cal_day"), F.col("n")).alias("transit_day"))
+                           .distinct())
+                _labelled = _labelled.persist(StorageLevel.MEMORY_AND_DISK)
+                _n_m = _labelled.join(F.broadcast(_masked), "transit_day", "left_semi").count()
+                _labelled = _labelled.join(F.broadcast(_masked), "transit_day", "left_anti")
+                print(f"[label] interior mask    : dropped {_n_m:,} rows whose {horizon_days}-day "
+                      f"lookahead crosses an unobserved day")
 
         # ---- the RIGHT edge: where does the event feed actually stop? --------------
         # Measured over EVERY event, not just OOS Sets: a fleet can be quiet for days,

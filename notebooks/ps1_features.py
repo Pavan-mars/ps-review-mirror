@@ -214,6 +214,17 @@ def _label_observed_edge() -> bool:
     return os.environ.get("PS1_LABEL_OBSERVED_EDGE", "false").strip().lower() == "true"
 
 
+def _enable_silent_day_features() -> bool:
+    """Days in the prior window on which the device logged NO event at all. Default OFF.
+
+    A device that goes quiet is often losing its link before a DOPP outage; on the 25-Sep
+    GATE screen the ~1% of in-service days WITHOUT the usual momentary events had a 63%
+    next-week failure rate against 29%. Also carries the prior-window total event count.
+    Only days strictly before D.
+    """
+    return os.environ.get("PS1_ENABLE_SILENT_DAY_FEATURES", "false").strip().lower() == "true"
+
+
 def _enable_station_dopp_features() -> bool:
     """Prior-window DOPP warnings on the OTHER devices at the same station (FACILITY_ID).
 
@@ -823,9 +834,12 @@ INCP_BASE_COLS = ["incp_opened", "incp_chargeable"]
 INCP_FEATURE_COLS = ([f"{c}_prior_sum_{w}d" for c in INCP_BASE_COLS for w in (7, 30)]
                      + ["incp_opened_days_since"])
 LONG_WINDOW_FEATURE_COLS = [f"long_{c}_90d" for c in DOPP_BASE_COLS]
+SILENT_BASE_COLS = ["silent_day", "evall_count"]
+SILENT_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in SILENT_BASE_COLS for w in (7, 30)]
 for _flag, _cols, _label in ((_enable_station_dopp_features(), STATION_DOPP_FEATURE_COLS, "station DOPP health"),
                              (_enable_incident_prior_features(), INCP_FEATURE_COLS, "incident history"),
-                             (_enable_long_window_features(), LONG_WINDOW_FEATURE_COLS, "90-day DOPP windows")):
+                             (_enable_long_window_features(), LONG_WINDOW_FEATURE_COLS, "90-day DOPP windows"),
+                             (_enable_silent_day_features(), SILENT_FEATURE_COLS, "silent days")):
     if _flag:
         for _cfg in FLEET_CONFIG.values():
             for _c in _cols:
@@ -2041,6 +2055,31 @@ def add_auxiliary(
             df_dopp = None
             print(f"WARNING: DOPP rollup skipped ({exc})")
 
+    # -- device_event_enriched -> every event per device-day (silent-day features) --
+    df_evall = None
+    if _enable_silent_day_features():
+        try:
+            _ea_raw = spark.read.parquet(f"{s3_silver}/device_event_enriched/")
+            _ea = {c.casefold(): c for c in _ea_raw.columns}
+            _a_dev, _a_day, _a_cat = _ea.get("device_id"), _ea.get("transit_day"), _ea.get("mars_device_category")
+            if not (_a_dev and _a_day):
+                raise ValueError("device_event_enriched lacks DEVICE_ID / transit_day")
+            _ea_f = _ea_raw
+            if _a_cat:
+                _ea_f = _ea_f.where(F.col(_a_cat) == cfg.device_cat)
+            df_evall = (
+                _ea_f
+                .where(F.to_date(F.col(_a_day)) >= F.to_date(F.lit(start_day)))
+                .where(F.to_date(F.col(_a_day)) <= end_day_expr)
+                .groupBy(F.col(_a_dev).cast("string").alias("DEVICE_ID"),
+                         F.to_date(F.col(_a_day)).alias("transit_day"))
+                .agg(F.count(F.lit(1)).cast("double").alias("evall_count"))
+            )
+            print("silver.device_event_enriched: every-event rollup for silent days")
+        except Exception as exc:
+            df_evall = None
+            print(f"WARNING: silent-day rollup skipped ({exc})")
+
     # -- silver.device_incident_features_daily -> device-day tickets opened ---------
     df_incp = None
     if _enable_incident_prior_features():
@@ -2306,7 +2345,7 @@ def add_auxiliary(
             print(f"WARNING: silver.device_uptime_intervals skipped ({exc})")
 
     global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ, _PS1_DF_KPI
-    global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE, _PS1_DF_TVMEV, _PS1_DF_CDUR, _PS1_DF_INCP
+    global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE, _PS1_DF_TVMEV, _PS1_DF_CDUR, _PS1_DF_INCP, _PS1_DF_EVALL
     global _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY
     _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
     _PS1_DF_KPI = df_kpi
@@ -2316,6 +2355,7 @@ def add_auxiliary(
     _PS1_DF_TVMEV = df_tvmev
     _PS1_DF_CDUR = df_cdur
     _PS1_DF_INCP = df_incp
+    _PS1_DF_EVALL = df_evall
     _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY = _stn_max_day, _upt_max_day
 
 
@@ -2751,6 +2791,7 @@ def join_and_materialise(
     df_tvmev = globals().get("_PS1_DF_TVMEV")
     df_cdur = globals().get("_PS1_DF_CDUR")
     df_incp = globals().get("_PS1_DF_INCP")
+    df_evall = globals().get("_PS1_DF_EVALL")
     df_mttr = aux['df_mttr']
     df_usage_ext = aux['df_usage_ext']
     df_read_tap = aux['df_read_tap']
@@ -2982,6 +3023,15 @@ def join_and_materialise(
                                (F.sum(F.col(_sc)).over(_w_fac_day) - F.col(_sc)) / (_n_fac - 1)))
             print("Station DOPP health: peer means over the other devices at each station")
 
+        if df_evall is not None:
+            # A spine day with no row in the rollup logged no event at all: that is the signal.
+            df_joined = (
+                df_joined.join(df_evall, on=["DEVICE_ID", "transit_day"], how="left")
+                .withColumn("evall_count", F.coalesce(F.col("evall_count"), F.lit(0.0)))
+                .withColumn("silent_day", F.when(F.col("evall_count") == 0, F.lit(1.0)).otherwise(F.lit(0.0)))
+            )
+            print("Joined every-event rollup; silent_day = no event logged (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3064,6 +3114,11 @@ def join_and_materialise(
         _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
             c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
         ]
+
+        if df_evall is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in SILENT_BASE_COLS if c in df_joined.columns
+            ]
 
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
@@ -3446,6 +3501,15 @@ def join_and_materialise(
                                (F.sum(F.col(_sc)).over(_w_fac_day) - F.col(_sc)) / (_n_fac - 1)))
             print("Station DOPP health: peer means over the other devices at each station")
 
+        if df_evall is not None:
+            # A spine day with no row in the rollup logged no event at all: that is the signal.
+            df_joined = (
+                df_joined.join(df_evall, on=["DEVICE_ID", "transit_day"], how="left")
+                .withColumn("evall_count", F.coalesce(F.col("evall_count"), F.lit(0.0)))
+                .withColumn("silent_day", F.when(F.col("evall_count") == 0, F.lit(1.0)).otherwise(F.lit(0.0)))
+            )
+            print("Joined every-event rollup; silent_day = no event logged (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3529,6 +3593,11 @@ def join_and_materialise(
         _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
             c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
         ]
+
+        if df_evall is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in SILENT_BASE_COLS if c in df_joined.columns
+            ]
 
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
@@ -3911,6 +3980,15 @@ def join_and_materialise(
                                (F.sum(F.col(_sc)).over(_w_fac_day) - F.col(_sc)) / (_n_fac - 1)))
             print("Station DOPP health: peer means over the other devices at each station")
 
+        if df_evall is not None:
+            # A spine day with no row in the rollup logged no event at all: that is the signal.
+            df_joined = (
+                df_joined.join(df_evall, on=["DEVICE_ID", "transit_day"], how="left")
+                .withColumn("evall_count", F.coalesce(F.col("evall_count"), F.lit(0.0)))
+                .withColumn("silent_day", F.when(F.col("evall_count") == 0, F.lit(1.0)).otherwise(F.lit(0.0)))
+            )
+            print("Joined every-event rollup; silent_day = no event logged (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3994,6 +4072,11 @@ def join_and_materialise(
         _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
             c for c in STATION_DOPP_BASE_COLS if c in df_joined.columns
         ]
+
+        if df_evall is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in SILENT_BASE_COLS if c in df_joined.columns
+            ]
 
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))

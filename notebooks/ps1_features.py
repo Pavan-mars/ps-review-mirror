@@ -107,6 +107,19 @@ def _enable_kpi_features() -> bool:
     return os.environ.get("PS1_ENABLE_KPI_FEATURES", "false").strip().lower() == "true"
 
 
+def _enable_cleared_duration_features() -> bool:
+    """Outages that had CLEARED before day D, split short (<60 min) vs long. Default OFF.
+
+    The honest replacement for the withheld evq_dur_* (which summed durations of outages
+    that may still have been open at D). Measured 25-Sep on in-service days: any outage
+    cleared in the prior 7 days lifts a new episode 3.53x on GATE (1.64x VALIDATOR), but one
+    lasting >=60 min lifts it only 0.88x (1.14x) and >=24 h 0.73x (0.91x) -- short blips come
+    back, long outages were repairs that held. Rows are keyed by CLEAR date, so the prior
+    windows (ending D-1) only ever see outages fully known at scoring time.
+    """
+    return os.environ.get("PS1_ENABLE_CLEARED_DURATION_FEATURES", "false").strip().lower() == "true"
+
+
 def _enable_tvm_event_features() -> bool:
     """Prior-window counts of TVM precursor event families. Default OFF.
 
@@ -743,6 +756,17 @@ if _enable_tvm_event_features():
             FLEET_CONFIG["TVM"].all_candidate_features.append(_c)
     print(f"[features] TVM event families enabled: +{len(TVM_EVENT_FEATURE_COLS)} prior-window "
           f"candidate features (TVM only)")
+
+# -- device_event_enriched: outages keyed by the day they CLEARED ---------------
+CDUR_BASE_COLS = ["cdur_short_cnt", "cdur_long_cnt", "cdur_minutes"]
+CDUR_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in CDUR_BASE_COLS for w in (7, 30)]
+if _enable_cleared_duration_features():
+    for _cfg in FLEET_CONFIG.values():
+        for _c in CDUR_FEATURE_COLS:
+            if _c not in _cfg.all_candidate_features:
+                _cfg.all_candidate_features.append(_c)
+    print(f"[features] cleared-outage durations enabled: +{len(CDUR_FEATURE_COLS)} prior-window "
+          f"candidate features (keyed by clear date)")
 
 # -- recency and trend over the warning families -------------------------------
 RECENCY_BASE_COLS = DOPP_BASE_COLS + TVM_EVENT_BASE_COLS + WARNING_BASE_COLS
@@ -1944,6 +1968,46 @@ def add_auxiliary(
             df_dopp = None
             print(f"WARNING: DOPP rollup skipped ({exc})")
 
+    # -- device_event_enriched -> outages keyed by the day they cleared -----------
+    df_cdur = None
+    if _enable_cleared_duration_features():
+        try:
+            _cd_raw = spark.read.parquet(f"{s3_silver}/device_event_enriched/")
+            _cd_lc = {c.casefold(): c for c in _cd_raw.columns}
+            _c_dev, _c_cat = _cd_lc.get("device_id"), _cd_lc.get("mars_device_category")
+            _c_dtm, _c_dur = _cd_lc.get("event_dtm"), _cd_lc.get("duration_to_clear_min")
+            _c_hw, _c_state = _cd_lc.get("is_hardware_oos_event"), _cd_lc.get("event_state_type_name")
+            _c_kpi = _cd_lc.get(KPI_FLAG_BY_FLEET.get(cfg.device_cat, "").casefold())
+            if not (_c_dev and _c_dtm and _c_dur and _c_hw and _c_state):
+                raise ValueError("device_event_enriched lacks DEVICE_ID / EVENT_DTM / "
+                                 "duration_to_clear_min / is_hardware_oos_event / state")
+            _cd = _cd_raw
+            if _c_cat:
+                _cd = _cd.where(F.col(_c_cat) == cfg.device_cat)
+            _cd = (_cd.where(F.col(_c_hw) == True)
+                   .where(F.col(_c_state) == "Set")
+                   .where(F.col(_c_dur).isNotNull() & (F.col(_c_dur).cast("double") >= 0)))
+            if _c_kpi:
+                _cd = _cd.where(F.col(_c_kpi) == True)
+            _dur = F.col(_c_dur).cast("double")
+            _clear_day = F.to_date(
+                (F.col(_c_dtm).cast("timestamp").cast("long") + _dur * 60.0).cast("timestamp"))
+            df_cdur = (
+                _cd.withColumn("_clear_day", _clear_day)
+                .where(F.col("_clear_day") >= F.to_date(F.lit(start_day)))
+                .where(F.col("_clear_day") <= end_day_expr)
+                .groupBy(F.col(_c_dev).cast("string").alias("DEVICE_ID"),
+                         F.col("_clear_day").alias("transit_day"))
+                .agg(F.sum(F.when(_dur < 60, 1).otherwise(0)).alias("cdur_short_cnt"),
+                     F.sum(F.when(_dur >= 60, 1).otherwise(0)).alias("cdur_long_cnt"),
+                     F.sum(_dur).alias("cdur_minutes"))
+            )
+            print("silver.device_event_enriched: cleared-outage rollup keyed by clear date"
+                  + ("" if _c_kpi else " (no KPI flag column -- all hardware OOS)"))
+        except Exception as exc:
+            df_cdur = None
+            print(f"WARNING: cleared-outage rollup skipped ({exc})")
+
     # -- device_event_enriched -> device-day TVM precursor event families ---------
     df_tvmev = None
     if _enable_tvm_event_features() and cfg.device_cat == "TVM":
@@ -2144,7 +2208,7 @@ def add_auxiliary(
             print(f"WARNING: silver.device_uptime_intervals skipped ({exc})")
 
     global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ, _PS1_DF_KPI
-    global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE, _PS1_DF_TVMEV
+    global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE, _PS1_DF_TVMEV, _PS1_DF_CDUR
     global _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY
     _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
     _PS1_DF_KPI = df_kpi
@@ -2152,6 +2216,7 @@ def add_auxiliary(
     _PS1_DF_DOPP = df_dopp
     _PS1_DF_SALE = df_sale
     _PS1_DF_TVMEV = df_tvmev
+    _PS1_DF_CDUR = df_cdur
     _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY = _stn_max_day, _upt_max_day
 
 
@@ -2585,6 +2650,7 @@ def join_and_materialise(
     df_dopp = globals().get("_PS1_DF_DOPP")
     df_sale = globals().get("_PS1_DF_SALE")
     df_tvmev = globals().get("_PS1_DF_TVMEV")
+    df_cdur = globals().get("_PS1_DF_CDUR")
     df_mttr = aux['df_mttr']
     df_usage_ext = aux['df_usage_ext']
     df_read_tap = aux['df_read_tap']
@@ -2784,6 +2850,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_tc, F.coalesce(F.col(_tc), F.lit(0.0)))
             print("Joined TVM event-family rollup on DEVICE_ID + transit_day (prior windows only)")
 
+        if df_cdur is not None:
+            df_joined = df_joined.join(df_cdur, on=["DEVICE_ID", "transit_day"], how="left")
+            for _cc in CDUR_BASE_COLS:
+                if _cc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_cc, F.coalesce(F.col(_cc), F.lit(0.0)))
+            print("Joined cleared-outage rollup on DEVICE_ID + clear date (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -2851,6 +2924,11 @@ def join_and_materialise(
         if df_tvmev is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in TVM_EVENT_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_cdur is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in CDUR_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:
@@ -3186,6 +3264,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_tc, F.coalesce(F.col(_tc), F.lit(0.0)))
             print("Joined TVM event-family rollup on DEVICE_ID + transit_day (prior windows only)")
 
+        if df_cdur is not None:
+            df_joined = df_joined.join(df_cdur, on=["DEVICE_ID", "transit_day"], how="left")
+            for _cc in CDUR_BASE_COLS:
+                if _cc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_cc, F.coalesce(F.col(_cc), F.lit(0.0)))
+            print("Joined cleared-outage rollup on DEVICE_ID + clear date (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3254,6 +3339,11 @@ def join_and_materialise(
         if df_tvmev is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in TVM_EVENT_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_cdur is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in CDUR_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:
@@ -3589,6 +3679,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_tc, F.coalesce(F.col(_tc), F.lit(0.0)))
             print("Joined TVM event-family rollup on DEVICE_ID + transit_day (prior windows only)")
 
+        if df_cdur is not None:
+            df_joined = df_joined.join(df_cdur, on=["DEVICE_ID", "transit_day"], how="left")
+            for _cc in CDUR_BASE_COLS:
+                if _cc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_cc, F.coalesce(F.col(_cc), F.lit(0.0)))
+            print("Joined cleared-outage rollup on DEVICE_ID + clear date (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3657,6 +3754,11 @@ def join_and_materialise(
         if df_tvmev is not None:
             _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
                 c for c in TVM_EVENT_BASE_COLS if c in df_joined.columns
+            ]
+
+        if df_cdur is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in CDUR_BASE_COLS if c in df_joined.columns
             ]
 
         if "_day_epoch" not in df_joined.columns:

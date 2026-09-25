@@ -85,6 +85,61 @@ def walk_forward_folds(dates, n_folds, embargo_days, recent_share):
     return folds
 
 
+def add_device_prior(df, target, horizon, m=30.0):
+    """Leak-safe device propensity: the device's own positive rate over rows whose label
+    window had closed before day D (event_date <= D - horizon - 1) -- those failures are
+    already observed at scoring time -- shrunk toward the TRAIN-split rate with m pseudo-rows.
+    Never reads a label whose window reaches day D or later."""
+    p0 = float(df.loc[df["split"] == "train", target].mean())
+    lag = np.timedelta64(horizon + 1, "D")
+    cy_at, cn_at = np.zeros(len(df)), np.zeros(len(df))
+    pos = np.arange(len(df))
+    order = df.assign(_i=pos).sort_values(["DEVICE_ID", "event_date"])
+    for _, g in order.groupby("DEVICE_ID", sort=False):
+        dates = g["event_date"].to_numpy()
+        y = g[target].to_numpy()
+        cy = np.concatenate([[0], np.cumsum(y)])
+        j = np.searchsorted(dates, dates - lag, side="right")
+        cy_at[g["_i"].to_numpy()] = cy[j]
+        cn_at[g["_i"].to_numpy()] = j
+    df["dev_prior_pos_rate"] = ((cy_at + m * p0) / (cn_at + m)).astype("float32")
+    return p0
+
+
+def leak_scan(X, y, feats, seed=0, n=200_000):
+    """Solo AUC of each feature against the label. A single feature near 1.0 on its own is
+    the classic leak signature -- PS3's text leak showed exactly this."""
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(len(y), min(n, len(y)), replace=False)
+    out = []
+    for j, f in enumerate(feats):
+        x, yy = X[idx, j], y[idx]
+        ok = ~np.isnan(x)
+        if ok.sum() < 1000 or yy[ok].min() == yy[ok].max():
+            continue
+        a = roc_auc_score(yy[ok], x[ok])
+        out.append((max(a, 1 - a), f, ok.mean()))
+    return sorted(out, reverse=True)
+
+
+def adversarial(Xd, Xt, feats, threads, seed=0, n=150_000):
+    """Train a model to tell dev rows from test rows. AUC near 0.5 = the periods look alike;
+    the top features are what changed -- stale or zeroed sources and calendar-like counters."""
+    import lightgbm as lgb
+
+    rng = np.random.default_rng(seed)
+    a = Xd[rng.choice(len(Xd), min(n, len(Xd)), replace=False)]
+    b = Xt[rng.choice(len(Xt), min(n, len(Xt)), replace=False)]
+    X = np.vstack([a, b]); y = np.r_[np.zeros(len(a)), np.ones(len(b))]
+    perm = rng.permutation(len(y)); X, y = X[perm], y[perm]
+    cut = int(len(y) * 0.7)
+    m = lgb.LGBMClassifier(n_estimators=200, learning_rate=0.1, num_leaves=31, n_jobs=threads, verbose=-1)
+    m.fit(X[:cut], y[:cut])
+    auc = roc_auc_score(y[cut:], m.predict_proba(X[cut:])[:, 1])
+    imp = sorted(zip(m.booster_.feature_importance("gain"), feats), reverse=True)[:8]
+    return auc, imp
+
+
 # --------------------------------------------------------------------------- models
 def fit_lgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None):
     import lightgbm as lgb
@@ -265,6 +320,10 @@ def main():
     ap.add_argument("--threads", type=int, default=max(1, (os.cpu_count() or 2) // 2))
     ap.add_argument("--drop", default="", help="comma list of features to withhold; name* = prefix")
     ap.add_argument("--drop-preset", default="", choices=["", "honest"])
+    ap.add_argument("--device-prior", action="store_true",
+                    help="add dev_prior_pos_rate: the device's own label rate over closed windows only")
+    ap.add_argument("--horizon", type=int, default=7, help="label horizon, for the device-prior lag")
+    ap.add_argument("--no-scan", action="store_true", help="skip the leak and drift checks")
     a = ap.parse_args()
     t0 = time.time()
 
@@ -276,6 +335,12 @@ def main():
         log(f"withheld {len(dropped)} features ({a.drop_preset or 'custom'}): {dropped}")
     log(f"{a.fleet}: {len(df):,} rows, {len(feats)} features, splits "
         + str(df["split"].value_counts().to_dict()))
+    if a.device_prior:
+        if "DEVICE_ID" not in df.columns:
+            raise SystemExit("--device-prior needs DEVICE_ID in the checkpoint")
+        p0 = add_device_prior(df, target, a.horizon)
+        feats = feats + ["dev_prior_pos_rate"]
+        log(f"device prior added (lag {a.horizon + 1}d, shrunk toward train rate {p0:.3%})")
     dev = df[df["split"].isin(["train", "val"])]
     if a.warmup_end:
         n0 = len(dev)
@@ -286,6 +351,17 @@ def main():
     Xd, yd = dev[feats].to_numpy(np.float32), dev[target].to_numpy()
     Xt, yt = test[feats].to_numpy(np.float32), test[target].to_numpy()
     log(f"dev {len(dev):,} rows ({yd.mean():.3%} positive) | test {len(test):,} rows ({yt.mean():.3%} positive)")
+
+    if not a.no_scan:
+        scan = leak_scan(Xd, yd, feats)
+        print("\nLEAK SCAN -- solo AUC per feature on the dev period (alarm above 0.85)")
+        for auc_, f, cov in scan[:8]:
+            print(f"  {f:40s} {auc_:.3f}   coverage {cov:.0%}" + ("   <-- INSPECT" if auc_ > 0.85 else ""))
+        adv_auc, adv_imp = adversarial(Xd, Xt, feats, a.threads)
+        print(f"DRIFT -- a model separating dev from test scores AUC {adv_auc:.3f} "
+              f"(0.5 = alike); features that changed most:")
+        print("  " + ", ".join(f for _, f in adv_imp))
+        print()
 
     folds = walk_forward_folds(dev["event_date"], a.folds, a.embargo_days, a.recent_share)
     for tr, va, s, e in folds:

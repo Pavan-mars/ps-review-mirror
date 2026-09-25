@@ -107,6 +107,17 @@ def _enable_kpi_features() -> bool:
     return os.environ.get("PS1_ENABLE_KPI_FEATURES", "false").strip().lower() == "true"
 
 
+def _enable_tvm_sale_features() -> bool:
+    """Prior-window TVM sale volume, error and cash/card mix from silver.tvm_sale_daily.
+
+    Coin (CHU) and bill (BHU) units are 40% of TVM KPI OOS device-days (25-Sep). A falling
+    cash share or rising transaction errors should lead those failures. Gold already
+    computed error_txn_rate_pct and cash_sales_pct, but only sales_7d_avg ever reached the
+    model. Prior windows only; TVM only; default OFF.
+    """
+    return os.environ.get("PS1_ENABLE_TVM_SALE_FEATURES", "false").strip().lower() == "true"
+
+
 def _enable_dopp_features() -> bool:
     """Prior-window counts of DOPP (fare-processing module) warning events. Default OFF.
 
@@ -662,6 +673,21 @@ if _enable_dopp_features():
             if _c not in _cfg.all_candidate_features:
                 _cfg.all_candidate_features.append(_c)
     print(f"[features] DOPP warnings enabled: +{len(DOPP_FEATURE_COLS)} prior-window candidate features")
+
+
+# -- silver.tvm_sale_daily: sale volume, errors, cash/card mix (TVM only) -------
+TVM_SALE_BASE_COLS = ["tvm_sale_count", "tvm_sale_err_count", "tvm_sale_cash_count", "tvm_sale_card_count"]
+TVM_SALE_RATIO_COLS = ([f"tvm_sale_err_rate_prior_{w}d" for w in (7, 30)]
+                       + [f"tvm_sale_cash_share_prior_{w}d" for w in (7, 30)]
+                       + ["tvm_sale_cash_share_trend_7v30d"])
+TVM_SALE_FEATURE_COLS = ([f"{c}_prior_sum_{w}d" for c in TVM_SALE_BASE_COLS for w in (7, 30)]
+                         + TVM_SALE_RATIO_COLS)
+if _enable_tvm_sale_features():
+    for _c in TVM_SALE_FEATURE_COLS:
+        if _c not in FLEET_CONFIG["TVM"].all_candidate_features:
+            FLEET_CONFIG["TVM"].all_candidate_features.append(_c)
+    print(f"[features] TVM sale features enabled: +{len(TVM_SALE_FEATURE_COLS)} prior-window "
+          f"candidate features (TVM only)")
 
 
 # -- features that encode the sessionisation gap ----------------------------
@@ -1836,6 +1862,33 @@ def add_auxiliary(
             df_dopp = None
             print(f"WARNING: DOPP rollup skipped ({exc})")
 
+    # -- silver.tvm_sale_daily -> device-day sale volume, errors, cash/card --------
+    df_sale = None
+    if _enable_tvm_sale_features() and cfg.device_cat == "TVM":
+        try:
+            _sl_raw = spark.read.parquet(f"{s3_silver}/tvm_sale_daily/")
+            _sl = {c.casefold(): c for c in _sl_raw.columns}
+            _need = ["device_id", "transit_day", "daily_sales_count", "error_txn_count",
+                     "cash_sales_count", "card_sales_count"]
+            _miss = [n for n in _need if n not in _sl]
+            if _miss:
+                raise ValueError(f"tvm_sale_daily lacks {_miss}")
+            df_sale = (
+                _sl_raw
+                .where(F.to_date(F.col(_sl["transit_day"])) >= F.to_date(F.lit(start_day)))
+                .where(F.to_date(F.col(_sl["transit_day"])) <= end_day_expr)
+                .groupBy(F.col(_sl["device_id"]).cast("string").alias("DEVICE_ID"),
+                         F.to_date(F.col(_sl["transit_day"])).alias("transit_day"))
+                .agg(F.sum(F.col(_sl["daily_sales_count"]).cast("double")).alias("tvm_sale_count"),
+                     F.sum(F.col(_sl["error_txn_count"]).cast("double")).alias("tvm_sale_err_count"),
+                     F.sum(F.col(_sl["cash_sales_count"]).cast("double")).alias("tvm_sale_cash_count"),
+                     F.sum(F.col(_sl["card_sales_count"]).cast("double")).alias("tvm_sale_card_count"))
+            )
+            print("silver.tvm_sale_daily: rolled up to 4 device-day sale columns")
+        except Exception as exc:
+            df_sale = None
+            print(f"WARNING: tvm_sale_daily rollup skipped ({exc})")
+
     # -- silver.kpi_daily -> device-day contract-performance rollup -------------
     df_kpi = None
     if _enable_kpi_features():
@@ -1976,12 +2029,13 @@ def add_auxiliary(
             print(f"WARNING: silver.device_uptime_intervals skipped ({exc})")
 
     global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ, _PS1_DF_KPI
-    global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP
+    global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE
     global _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY
     _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
     _PS1_DF_KPI = df_kpi
     _PS1_DF_STATION, _PS1_DF_UPTIME = df_station, df_uptime
     _PS1_DF_DOPP = df_dopp
+    _PS1_DF_SALE = df_sale
     _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY = _stn_max_day, _upt_max_day
 
 
@@ -2413,6 +2467,7 @@ def join_and_materialise(
     df_station = globals().get("_PS1_DF_STATION")
     df_uptime = globals().get("_PS1_DF_UPTIME")
     df_dopp = globals().get("_PS1_DF_DOPP")
+    df_sale = globals().get("_PS1_DF_SALE")
     df_mttr = aux['df_mttr']
     df_usage_ext = aux['df_usage_ext']
     df_read_tap = aux['df_read_tap']
@@ -2598,6 +2653,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_dc, F.coalesce(F.col(_dc), F.lit(0.0)))
             print("Joined DOPP warning rollup on DEVICE_ID + transit_day (prior windows only)")
 
+        if df_sale is not None:
+            df_joined = df_joined.join(df_sale, on=["DEVICE_ID", "transit_day"], how="left")
+            for _sc in TVM_SALE_BASE_COLS:
+                if _sc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_sc, F.coalesce(F.col(_sc), F.lit(0.0)))
+            print("Joined tvm_sale_daily rollup on DEVICE_ID + transit_day (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -2657,6 +2719,11 @@ def join_and_materialise(
                 c for c in DOPP_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_sale is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in TVM_SALE_BASE_COLS if c in df_joined.columns
+            ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -2668,6 +2735,21 @@ def join_and_materialise(
                     .withColumn(f"{_pcol}_prior_sum_7d", F.sum(F.col(_pcol).cast("double")).over(_w7))
                     .withColumn(f"{_pcol}_prior_sum_30d", F.sum(F.col(_pcol).cast("double")).over(_w30))
                 )
+        # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
+        # when the window saw no sales (imputed downstream like any other gap).
+        if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:
+            for _w in (7, 30):
+                _n = F.col(f"tvm_sale_count_prior_sum_{_w}d")
+                df_joined = (
+                    df_joined
+                    .withColumn(f"tvm_sale_err_rate_prior_{_w}d",
+                                F.when(_n > 0, F.col(f"tvm_sale_err_count_prior_sum_{_w}d") / _n))
+                    .withColumn(f"tvm_sale_cash_share_prior_{_w}d",
+                                F.when(_n > 0, F.col(f"tvm_sale_cash_count_prior_sum_{_w}d") / _n))
+                )
+            df_joined = df_joined.withColumn(
+                "tvm_sale_cash_share_trend_7v30d",
+                F.col("tvm_sale_cash_share_prior_7d") - F.col("tvm_sale_cash_share_prior_30d"))
         if "TRANSIT_ARRAY_ID" in df_joined.columns and "hardware_oos_events_7d" in df_joined.columns:
             _w_arr = Window.partitionBy("TRANSIT_ARRAY_ID", "transit_day")
             df_joined = df_joined.withColumn(
@@ -2939,6 +3021,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_dc, F.coalesce(F.col(_dc), F.lit(0.0)))
             print("Joined DOPP warning rollup on DEVICE_ID + transit_day (prior windows only)")
 
+        if df_sale is not None:
+            df_joined = df_joined.join(df_sale, on=["DEVICE_ID", "transit_day"], how="left")
+            for _sc in TVM_SALE_BASE_COLS:
+                if _sc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_sc, F.coalesce(F.col(_sc), F.lit(0.0)))
+            print("Joined tvm_sale_daily rollup on DEVICE_ID + transit_day (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -2999,6 +3088,11 @@ def join_and_materialise(
                 c for c in DOPP_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_sale is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in TVM_SALE_BASE_COLS if c in df_joined.columns
+            ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -3010,6 +3104,21 @@ def join_and_materialise(
                     .withColumn(f"{_pcol}_prior_sum_7d", F.sum(F.col(_pcol).cast("double")).over(_w7))
                     .withColumn(f"{_pcol}_prior_sum_30d", F.sum(F.col(_pcol).cast("double")).over(_w30))
                 )
+        # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
+        # when the window saw no sales (imputed downstream like any other gap).
+        if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:
+            for _w in (7, 30):
+                _n = F.col(f"tvm_sale_count_prior_sum_{_w}d")
+                df_joined = (
+                    df_joined
+                    .withColumn(f"tvm_sale_err_rate_prior_{_w}d",
+                                F.when(_n > 0, F.col(f"tvm_sale_err_count_prior_sum_{_w}d") / _n))
+                    .withColumn(f"tvm_sale_cash_share_prior_{_w}d",
+                                F.when(_n > 0, F.col(f"tvm_sale_cash_count_prior_sum_{_w}d") / _n))
+                )
+            df_joined = df_joined.withColumn(
+                "tvm_sale_cash_share_trend_7v30d",
+                F.col("tvm_sale_cash_share_prior_7d") - F.col("tvm_sale_cash_share_prior_30d"))
         if "FACILITY_ID" in df_joined.columns and "hardware_oos_events_7d" in df_joined.columns:
             _w_fac = Window.partitionBy("FACILITY_ID", "transit_day")
             df_joined = df_joined.withColumn(
@@ -3281,6 +3390,13 @@ def join_and_materialise(
                     df_joined = df_joined.withColumn(_dc, F.coalesce(F.col(_dc), F.lit(0.0)))
             print("Joined DOPP warning rollup on DEVICE_ID + transit_day (prior windows only)")
 
+        if df_sale is not None:
+            df_joined = df_joined.join(df_sale, on=["DEVICE_ID", "transit_day"], how="left")
+            for _sc in TVM_SALE_BASE_COLS:
+                if _sc in df_joined.columns:
+                    df_joined = df_joined.withColumn(_sc, F.coalesce(F.col(_sc), F.lit(0.0)))
+            print("Joined tvm_sale_daily rollup on DEVICE_ID + transit_day (prior windows only)")
+
         if df_kpi is not None:
             df_joined = df_joined.join(df_kpi, on=["DEVICE_ID", "transit_day"], how="left")
             for _kc in KPI_BASE_COLS:
@@ -3341,6 +3457,11 @@ def join_and_materialise(
                 c for c in DOPP_BASE_COLS if c in df_joined.columns
             ]
 
+        if df_sale is not None:
+            _SPARK_PRIOR_COLS = _SPARK_PRIOR_COLS + [
+                c for c in TVM_SALE_BASE_COLS if c in df_joined.columns
+            ]
+
         if "_day_epoch" not in df_joined.columns:
             df_joined = df_joined.withColumn("_day_epoch", F.col("transit_day").cast("timestamp").cast("long"))
         for _pcol in _SPARK_PRIOR_COLS:
@@ -3352,6 +3473,21 @@ def join_and_materialise(
                     .withColumn(f"{_pcol}_prior_sum_7d", F.sum(F.col(_pcol).cast("double")).over(_w7))
                     .withColumn(f"{_pcol}_prior_sum_30d", F.sum(F.col(_pcol).cast("double")).over(_w30))
                 )
+        # Ratios from the prior-window SUMS, so a quiet day does not dilute them; NULL
+        # when the window saw no sales (imputed downstream like any other gap).
+        if df_sale is not None and "tvm_sale_count_prior_sum_7d" in df_joined.columns:
+            for _w in (7, 30):
+                _n = F.col(f"tvm_sale_count_prior_sum_{_w}d")
+                df_joined = (
+                    df_joined
+                    .withColumn(f"tvm_sale_err_rate_prior_{_w}d",
+                                F.when(_n > 0, F.col(f"tvm_sale_err_count_prior_sum_{_w}d") / _n))
+                    .withColumn(f"tvm_sale_cash_share_prior_{_w}d",
+                                F.when(_n > 0, F.col(f"tvm_sale_cash_count_prior_sum_{_w}d") / _n))
+                )
+            df_joined = df_joined.withColumn(
+                "tvm_sale_cash_share_trend_7v30d",
+                F.col("tvm_sale_cash_share_prior_7d") - F.col("tvm_sale_cash_share_prior_30d"))
         if "FACILITY_ID" in df_joined.columns and "hardware_oos_events_7d" in df_joined.columns:
             _w_fac = Window.partitionBy("FACILITY_ID", "transit_day")
             df_joined = df_joined.withColumn(

@@ -214,7 +214,7 @@ def _label_observed_edge() -> bool:
     return os.environ.get("PS1_LABEL_OBSERVED_EDGE", "false").strip().lower() == "true"
 
 
-def _flag(name):
+def _ps1_env_flag(name):
     return os.environ.get(name, "false").strip().lower() == "true"
 
 
@@ -228,22 +228,22 @@ def _enable_repair_features() -> bool:
     prior 30 days (needs the cleared-duration flag). Failures follow the label's definition
     (fleet KPI flag, PS1_LABEL_MIN_OOS_MINUTES floor).
     """
-    return _flag("PS1_ENABLE_REPAIR_FEATURES")
+    return _ps1_env_flag("PS1_ENABLE_REPAIR_FEATURES")
 
 
 def _enable_maint_ledger_features() -> bool:
     """Commanded / maintenance OOS counts from silver.maintenance_ledger, prior windows."""
-    return _flag("PS1_ENABLE_MAINT_LEDGER_FEATURES")
+    return _ps1_env_flag("PS1_ENABLE_MAINT_LEDGER_FEATURES")
 
 
 def _enable_last_ticket_features() -> bool:
     """The most recent ticket before D: priority, category (hashed), major, chargeable."""
-    return _flag("PS1_ENABLE_LAST_TICKET_FEATURES")
+    return _ps1_env_flag("PS1_ENABLE_LAST_TICKET_FEATURES")
 
 
 def _enable_station_busy_features() -> bool:
     """Station busyness: total taps across all devices at the FACILITY_ID, prior windows."""
-    return _flag("PS1_ENABLE_STATION_BUSY_FEATURES")
+    return _ps1_env_flag("PS1_ENABLE_STATION_BUSY_FEATURES")
 
 
 def _enable_silent_day_features() -> bool:
@@ -875,7 +875,7 @@ INCLAST_FEATURE_COLS = ["inclast_priority", "inclast_major", "inclast_chargeable
 STNBUSY_BASE_COLS = ["stnbusy_taps"]
 STNBUSY_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in STNBUSY_BASE_COLS for w in (7, 30)]
 SILENT_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in SILENT_BASE_COLS for w in (7, 30)]
-for _flag, _cols, _label in ((_enable_station_dopp_features(), STATION_DOPP_FEATURE_COLS, "station DOPP health"),
+for _on, _cols, _label in ((_enable_station_dopp_features(), STATION_DOPP_FEATURE_COLS, "station DOPP health"),
                              (_enable_incident_prior_features(), INCP_FEATURE_COLS, "incident history"),
                              (_enable_long_window_features(), LONG_WINDOW_FEATURE_COLS, "90-day DOPP windows"),
                              (_enable_silent_day_features(), SILENT_FEATURE_COLS, "silent days"),
@@ -883,7 +883,7 @@ for _flag, _cols, _label in ((_enable_station_dopp_features(), STATION_DOPP_FEAT
                              (_enable_maint_ledger_features(), MLED_FEATURE_COLS, "maintenance ledger"),
                              (_enable_last_ticket_features(), INCLAST_FEATURE_COLS, "last ticket"),
                              (_enable_station_busy_features(), STNBUSY_FEATURE_COLS, "station busyness")):
-    if _flag:
+    if _on:
         for _cfg in FLEET_CONFIG.values():
             for _c in _cols:
                 if _c not in _cfg.all_candidate_features:

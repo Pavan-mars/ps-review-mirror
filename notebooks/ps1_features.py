@@ -969,8 +969,10 @@ if _enable_dopp_features():
 
 # -- short-term recency: DOPP families on the prediction day itself (GATE, VALIDATOR) ----
 DAYD_BASE_COLS = list(DOPP_FAMILIES)
+# component attribution on day D: OOS Sets and the distinct component types raising them
+DAYD_OOS_COLS = ["oos_sets_d0", "comp_types_d0"]
 DAYD_FEATURE_COLS = ([f"{c}_d0" for c in DAYD_BASE_COLS] + [f"{c}_h6" for c in DAYD_BASE_COLS]
-                     + [f"hrs_since_{c}" for c in DAYD_BASE_COLS])
+                     + [f"hrs_since_{c}" for c in DAYD_BASE_COLS] + DAYD_OOS_COLS)
 if _enable_dayd_features():
     for _fl in ("GATE", "VALIDATOR"):
         for _c in DAYD_FEATURE_COLS:
@@ -993,10 +995,10 @@ def _join_dayd(df_joined, df_dayd):
               "days a same-day warning sits beside a same-day failure and would encode the session rule")
         return df_joined
     df_joined = df_joined.join(df_dayd, on=["DEVICE_ID", "transit_day"], how="left")
-    for c in DAYD_BASE_COLS:
-        for suffix in ("_d0", "_h6"):
-            if f"{c}{suffix}" in df_joined.columns:
-                df_joined = df_joined.withColumn(f"{c}{suffix}", F.coalesce(F.col(f"{c}{suffix}"), F.lit(0.0)))
+    _counts = [f"{c}{s}" for c in DAYD_BASE_COLS for s in ("_d0", "_h6")] + DAYD_OOS_COLS
+    for c in _counts:
+        if c in df_joined.columns:
+            df_joined = df_joined.withColumn(c, F.coalesce(F.col(c), F.lit(0.0)))
     _w = (Window.partitionBy("DEVICE_ID").orderBy("transit_day")
           .rowsBetween(Window.unboundedPreceding, Window.currentRow))
     _eod = F.unix_timestamp(F.date_add(F.col("transit_day"), 1).cast("timestamp"))
@@ -2670,8 +2672,25 @@ def add_auxiliary(
                 F.col(_dd_dev).cast("string").alias("DEVICE_ID"),
                 F.to_date(_ts).alias("transit_day"),
             ).agg(*_dd_aggs)
+            # Component attribution on day D (evq_comp_types is prior-window only). An in-service
+            # row has no KPI failure on D, so these are the OOS Sets the KPI does not count.
+            _oos_c, _ct_c = _dl.get("is_oos_event"), _dl.get("component_type_name")
+            if _oos_c:
+                _oq = _dd_raw
+                if _dd_cat:
+                    _oq = _oq.where(F.col(_dd_cat) == cfg.device_cat)
+                _oq = (_oq.where(F.col(_oos_c).eqNullSafe(True)).where(F.col(_dd_st) == "Set")
+                       .where(F.to_date(_ts) >= F.to_date(F.lit(start_day)))
+                       .where(F.to_date(_ts) <= end_day_expr))
+                _oaggs = [F.count(F.lit(1)).cast("double").alias("oos_sets_d0")]
+                if _ct_c:
+                    _oaggs.append(F.countDistinct(F.col(_ct_c)).cast("double").alias("comp_types_d0"))
+                _od = _oq.groupBy(F.col(_dd_dev).cast("string").alias("DEVICE_ID"),
+                                  F.to_date(_ts).alias("transit_day")).agg(*_oaggs)
+                df_dayd = df_dayd.join(_od, ["DEVICE_ID", "transit_day"], "full")
             print(f"silver.device_event_enriched: day-D recency rollup, {len(DOPP_FAMILIES)} DOPP families "
-                  f"(calendar day, last 6 hours, latest event)")
+                  f"(calendar day, last 6 hours, latest event)"
+                  + (" + day-D OOS Sets / component types" if _oos_c else ""))
         except Exception as exc:
             df_dayd = None
             print(f"WARNING: day-D recency rollup skipped ({exc})")

@@ -141,7 +141,8 @@ def adversarial(Xd, Xt, feats, threads, seed=0, n=150_000):
 
 
 # --------------------------------------------------------------------------- models
-def fit_lgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None):
+# dtr / dva: the day of each row. Only the ranker reads them; the classifiers ignore them.
+def fit_lgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None, dtr=None, dva=None):
     import lightgbm as lgb
 
     m = lgb.LGBMClassifier(
@@ -157,7 +158,7 @@ def fit_lgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None):
     return m, int(m.best_iteration_ or m.n_estimators)
 
 
-def fit_xgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None):
+def fit_xgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None, dtr=None, dva=None):
     import xgboost as xgb
 
     kw = dict(n_estimators=n_estimators or 2000, learning_rate=p["lr"], max_depth=p["depth"],
@@ -173,7 +174,7 @@ def fit_xgb(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None):
     return m, int(m.best_iteration + 1)
 
 
-def fit_cat(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None):
+def fit_cat(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None, dtr=None, dva=None):
     from catboost import CatBoostClassifier
 
     kw = dict(iterations=n_estimators or 2000, learning_rate=p["lr"], depth=p["depth"],
@@ -188,6 +189,42 @@ def fit_cat(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None):
     return m, int(m.get_best_iteration() + 1)
 
 
+def by_day(X, y, w, d):
+    """Rows in date order plus the size of each day's block: one ranking query per day."""
+    if d is None:
+        raise SystemExit("lgbrank needs the day of each row")
+    d = np.asarray(d)
+    if (np.diff(d) < np.timedelta64(0, "D")).any():
+        o = np.argsort(d, kind="stable")
+        X, y, d, w = X[o], y[o], d[o], (None if w is None else w[o])
+    g = np.unique(d, return_counts=True)[1]
+    if g.max() > 10_000:
+        raise SystemExit(f"lgbrank: a day holds {g.max():,} rows; LightGBM caps a ranking query at 10,000")
+    return X, y, w, g
+
+
+def fit_lgbrank(p, Xtr, ytr, Xva, yva, threads, n_estimators=None, wtr=None, dtr=None, dva=None):
+    """LambdaRank with one query per day: learns to order a day's devices, the daily-flag rule,
+    rather than a probability. Raw scores compare within a day only; pooled AUC and the
+    rank-mean blend read them as they are. Days with one row or one label add no pairs."""
+    import lightgbm as lgb
+
+    m = lgb.LGBMRanker(
+        objective="lambdarank", n_estimators=n_estimators or 2000, learning_rate=p["lr"],
+        num_leaves=p["leaves"], min_child_samples=p["mcs"], subsample=p["ss"], subsample_freq=1,
+        colsample_bytree=p["cs"], reg_alpha=p["ra"], reg_lambda=p["rl"],
+        n_jobs=threads, verbose=-1, random_state=42)
+    Xtr, ytr, wtr, gtr = by_day(Xtr, ytr, wtr, dtr)
+    if n_estimators:
+        m.fit(Xtr, ytr, group=gtr, sample_weight=wtr)
+        return m, n_estimators
+    Xva, yva, _, gva = by_day(Xva, yva, None, dva)
+    # NDCG over the whole day (cut-off = the largest day): the closest ranking metric to AUC
+    m.fit(Xtr, ytr, group=gtr, sample_weight=wtr, eval_set=[(Xva, yva)], eval_group=[gva],
+          eval_metric="ndcg", eval_at=[int(gva.max())], callbacks=[lgb.early_stopping(100, verbose=False)])
+    return m, int(m.best_iteration_ or m.n_estimators)
+
+
 # --reg strong: bounds that replace the default search range, (low, high); None keeps the
 # default side. Narrows toward shallower, better-regularised trees -- the train-CV gap in the
 # overfit check is the reason. ss = bagging_fraction, cs = feature_fraction, rl = lambda_l2.
@@ -196,6 +233,7 @@ REG_STRONG = {
     "xgb": {"depth": (None, 6), "mcw": (20, None), "ss": (None, 0.8), "cs": (None, 0.7), "rl": (1, None)},
     "cat": {"depth": (None, 6), "l2": (5, None)},
 }
+REG_STRONG["lgbrank"] = REG_STRONG["lgb"]  # same trees, same search space
 
 
 def space(trial, name, reg="none"):
@@ -205,7 +243,7 @@ def space(trial, name, reg="none"):
         c_lo, c_hi = clamp.get(key, (None, None))
         return (lo if c_lo is None else max(lo, c_lo)), (hi if c_hi is None else min(hi, c_hi))
 
-    if name == "lgb":
+    if name in ("lgb", "lgbrank"):
         return {"lr": trial.suggest_float("lr", 0.02, 0.1, log=True),
                 "leaves": trial.suggest_int("leaves", *b("leaves", 15, 255), log=True),
                 "mcs": trial.suggest_int("mcs", *b("mcs", 20, 2000), log=True),
@@ -226,14 +264,16 @@ def space(trial, name, reg="none"):
             "l2": trial.suggest_float("l2", *b("l2", 1, 30), log=True)}
 
 
-FIT = {"lgb": fit_lgb, "xgb": fit_xgb, "cat": fit_cat}
+FIT = {"lgb": fit_lgb, "xgb": fit_xgb, "cat": fit_cat, "lgbrank": fit_lgbrank}
 
 
 def proba(m, X):
+    if not hasattr(m, "predict_proba"):  # the ranker: raw score, ordered within a day
+        return m.predict(X)
     return m.predict_proba(X)[:, 1]
 
 
-def tune(name, X, y, folds, trials, threads, budget_min, W=None, reg="none"):
+def tune(name, X, y, folds, trials, threads, budget_min, W=None, reg="none", D=None):
     import optuna
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -242,7 +282,8 @@ def tune(name, X, y, folds, trials, threads, budget_min, W=None, reg="none"):
         p, aucs = space(trial, name, reg), []
         for k, (tr, va, _, _) in enumerate(folds):
             m, _ = FIT[name](p, X[tr], y[tr], X[va], y[va], threads,
-                             wtr=None if W is None else W[tr])
+                             wtr=None if W is None else W[tr],
+                             dtr=None if D is None else D[tr], dva=None if D is None else D[va])
             aucs.append(roc_auc_score(y[va], proba(m, X[va])))
             trial.report(float(np.mean(aucs)), k)
             if trial.should_prune():
@@ -258,12 +299,13 @@ def tune(name, X, y, folds, trials, threads, budget_min, W=None, reg="none"):
     return study.best_params
 
 
-def oof(name, p, X, y, folds, threads, W=None):
+def oof(name, p, X, y, folds, threads, W=None, D=None):
     """Refit the chosen parameters on every fold; return per-fold scores and best iterations."""
     out, iters = [], []
     for tr, va, _, _ in folds:
         m, it = FIT[name](p, X[tr], y[tr], X[va], y[va], threads,
-                          wtr=None if W is None else W[tr])
+                          wtr=None if W is None else W[tr],
+                          dtr=None if D is None else D[tr], dva=None if D is None else D[va])
         out.append(proba(m, X[va]))
         iters.append(it)
     return out, iters
@@ -271,6 +313,29 @@ def oof(name, p, X, y, folds, threads, W=None):
 
 def rank_mean(arrs):
     return np.mean([rankdata(a) / len(a) for a in arrs], axis=0)
+
+
+def pct_ranks(arrs):
+    """Each score array as a percentile rank within its own set, one column per model."""
+    return np.column_stack([rankdata(a) / len(a) for a in arrs])
+
+
+def fit_stack(Z, y):
+    from sklearn.linear_model import LogisticRegression
+
+    return LogisticRegression(C=1.0, solver="lbfgs").fit(Z, y)
+
+
+def stack_score(meta, arrs):
+    """--stack: the meta-model on percentile ranks, built as the ensemble builds its ranks."""
+    return meta.predict_proba(pct_ranks(arrs))[:, 1]
+
+
+def add_relative(frame, cols, keys):
+    """rel_<f>: the row's percentile rank of f among the rows sharing its day (average ties,
+    NaN kept). Other devices' same-day values are known at scoring time; no label is read."""
+    r = frame.groupby(keys)[cols].rank(pct=True)
+    return {"rel_" + c: r[c].astype("float32") for c in cols}
 
 
 # --------------------------------------------------------------------------- metrics
@@ -505,13 +570,14 @@ def block_bootstrap_auc_delta(y, s1, s2, days, n_boot=200, seed=0):
     return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
 
 
-def refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, params, rounds):
+def refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, params, rounds, combine=None):
     """Production retraining, simulated: each test month is scored by models refitted -- same tuned
     params, same rounds as the final fit, nothing re-tuned -- on every row whose label had matured
     when the month opened. Day D's label covers D+1..D+horizon, so a retrain on day S may use rows
     dated <= S - (horizon + 1); earlier test months join the training data as they would in
     production. Returns scores aligned to `test` (NaN for a month that could not be fitted), with
-    the ensemble ranked within each month, and one log row per month."""
+    the ensemble ranked within each month, and one log row per month. `combine` replaces the
+    rank-mean blend of several models (--stack passes the fixed meta-model)."""
     keep = df["split"] == "test"  # the untrimmed test split: --test-start limits scoring, not training
     if a.warmup_end:
         keep &= df["event_date"] >= pd.Timestamp(a.warmup_end)
@@ -546,9 +612,10 @@ def refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, params, ro
             W = np.power(0.5, ((dp[k - 1] - dp[:k]) // np.timedelta64(1, "D")) / a.recency_halflife)
         t1, sc = time.time(), {}
         for n in names:
-            mdl, _ = FIT[n](params[n], Xp[:k], yp[:k], None, None, a.threads, n_estimators=rounds[n], wtr=W)
+            mdl, _ = FIT[n](params[n], Xp[:k], yp[:k], None, None, a.threads, n_estimators=rounds[n], wtr=W,
+                            dtr=dp[:k])
             sc[n] = proba(mdl, Xt[idx])
-        s[idx] = rank_mean([sc[n] for n in names]) if len(names) > 1 else sc[names[0]]
+        s[idx] = (combine or rank_mean)([sc[n] for n in names])
         sec = time.time() - t1
         log(f"refit {m}: trained on {k:,} rows to {pd.Timestamp(cut).date()} ({pos:,} positive), "
             f"scored {len(idx):,}, fit {sec:.0f}s")
@@ -562,7 +629,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fleet", required=True, choices=["GATE", "TVM", "VALIDATOR"])
     ap.add_argument("--ckpt", default="checkpoints", help="checkpoint folder under the fleet's outputs")
-    ap.add_argument("--models", default="lgb,xgb,cat")
+    ap.add_argument("--models", default="lgb,xgb,cat",
+                    help="any of lgb, xgb, cat, lgbrank (LambdaRank, one query per day)")
     ap.add_argument("--trials", default="lgb=25,xgb=15,cat=6")
     ap.add_argument("--budget-min", type=int, default=20, help="per-model tuning time cap")
     ap.add_argument("--folds", type=int, default=3)
@@ -593,6 +661,12 @@ def main():
     ap.add_argument("--refit-monthly", action="store_true",
                     help="also score each test month with models refitted on the rows matured before it "
                          "(tuned params and rounds unchanged); costs about one final fit per test month")
+    ap.add_argument("--stack", action="store_true",
+                    help="add 'stack': a logistic regression on the models' OOF percentile ranks; its CV "
+                         "fits on the other folds only, and it competes for the QUOTE like the ensemble")
+    ap.add_argument("--relative-features", type=int, default=0,
+                    help="add rel_<f>, f's within-day percentile rank, for the N features with the highest "
+                         "solo AUC on dev rows; 0 = off")
     a = ap.parse_args()
     t0 = time.time()
 
@@ -631,6 +705,28 @@ def main():
         dev = dev[dev["event_date"] >= pd.Timestamp(a.train_start)]
         log(f"train-start {a.train_start}: dropped {n0 - len(dev):,} earlier dev rows")
     dev = dev.sort_values("event_date").reset_index(drop=True)
+    rel = []
+    if a.relative_features > 0:
+        # picked on dev rows only; ranked within each day of dev, of test, and of df's test split
+        # (the --refit-monthly pool) separately -- a day never spans dev and test
+        # chosen on dev rows before the first CV validation block (minus the embargo), so the choice
+        # of rel_ columns never sees a validation label
+        _u = np.sort(dev["event_date"].unique())
+        _v0 = pd.Timestamp(_u[int(len(_u) * (1 - a.recent_share))]) - pd.Timedelta(days=a.embargo_days)
+        _sel = dev[dev["event_date"] < _v0]
+        # a feature equal for every device on a day ranks as a tie and would encode the day's size
+        _vary = [f for f in feats if (_sel.groupby("event_date")[f].nunique(dropna=True) > 1).mean() > 0.5]
+        top = leak_scan(_sel[_vary].to_numpy(np.float32), _sel[target].to_numpy(), _vary)[:a.relative_features]
+        log(f"relative features chosen on dev rows before {_v0:%Y-%m-%d} ({len(_sel):,} rows, "
+            f"{len(_vary)} features vary within a day)")
+        rel = [f for _, f, _ in top]
+        dev = dev.assign(**add_relative(dev, rel, "event_date"))
+        test = test.assign(**add_relative(test, rel, "event_date"))
+        for c, v in add_relative(df, rel, [df["split"].eq("test"), "event_date"]).items():
+            df[c] = v
+        feats = feats + ["rel_" + f for f in rel]
+        log(f"relative features: within-day percentile rank of the top {len(rel)} by solo dev AUC -- "
+            + ", ".join(f"{f} {auc_:.3f}" for auc_, f, _ in top))
     Xd, yd = dev[feats].to_numpy(np.float32), dev[target].to_numpy()
     Wd = None
     if a.recency_halflife > 0:
@@ -676,28 +772,51 @@ def main():
         log("regularised search (--reg strong): " + "; ".join(
             f"{m} " + " ".join(_bound(k, lo, hi) for k, (lo, hi) in REG_STRONG[m].items())
             for m in models if m in REG_STRONG))
+    Dd = dev["event_date"].to_numpy()  # the ranker's query key
     for name in models:
         log(f"tuning {name} ...")
         best[name] = tune(name, Xd, yd, tune_folds, int(trials.get(name, 10)), a.threads, a.budget_min, W=Wd,
-                          reg=a.reg)
-        oofs[name], iters[name] = oof(name, best[name], Xd, yd, folds, a.threads, W=Wd)
+                          reg=a.reg, D=Dd)
+        oofs[name], iters[name] = oof(name, best[name], Xd, yd, folds, a.threads, W=Wd, D=Dd)
 
     # ---- choose on CV only --------------------------------------------------
     cv = {n: [roc_auc_score(yd[va], o) for (tr, va, _, _), o in zip(folds, oofs[n])] for n in models}
     if len(models) > 1:
         cv["ensemble"] = [roc_auc_score(yd[va], rank_mean([oofs[n][k] for n in models]))
                           for k, (tr, va, _, _) in enumerate(folds)]
+    meta = None
+    if a.stack and (len(models) < 2 or len(folds) < 2):
+        log("--stack needs two or more models and two or more folds; skipped")
+    elif a.stack:
+        # forward-chained like the folds themselves: fold k's meta-model is fitted on the OOF rows
+        # of folds before k only, so its weights never encode later periods; fold 0 has no earlier
+        # fold and keeps the ensemble's equal-weight order
+        Z = [pct_ranks([oofs[n][k] for n in models]) for k in range(len(folds))]
+        yz = [yd[va] for _, va, _, _ in folds]
+        oofs["stack"] = [rank_mean([oofs[n][0] for n in models])]
+        for k in range(1, len(Z)):
+            m_k = fit_stack(np.vstack(Z[:k]), np.concatenate(yz[:k]))
+            oofs["stack"].append(m_k.predict_proba(Z[k])[:, 1])
+        cv["stack"] = [roc_auc_score(yz[k], s) for k, s in enumerate(oofs["stack"])]
+        meta = fit_stack(np.vstack(Z), np.concatenate(yz))  # the test meta-model: every OOF row
     print("\nWALK-FORWARD CV (train+val period only; test untouched)")
     for n, v in cv.items():
         print(f"  {n:10s} " + "  ".join(f"{x:.4f}" for x in v) + f"   mean {np.mean(v):.4f} +/- {np.std(v):.4f}")
+    if meta is not None:
+        print("  stack = logistic regression on within-fold percentile ranks; coefficients (all OOF rows): "
+              + "  ".join(f"{n} {c:+.3f}" for n, c in zip(models, meta.coef_[0]))
+              + f"  intercept {meta.intercept_[0]:+.3f}")
     chosen = max(cv, key=lambda n: np.mean(cv[n]))
+    if chosen == "stack" and "ensemble" in cv and np.mean(cv["stack"]) - np.mean(cv["ensemble"]) < 0.005:
+        # the stack adds fitted weights over the ensemble; it has to earn them by the usual margin
+        chosen = "ensemble"
 
     # ---- final fits on the whole dev period, scored once on test -----------
     test_scores, train_scores, rounds = {}, {}, {}
     for name in models:
         n_est = rounds[name] = int(np.mean(iters[name]) * 1.1) + 1
         log(f"final {name}: {n_est} rounds on {len(dev):,} rows")
-        m, _ = FIT[name](best[name], Xd, yd, None, None, a.threads, n_estimators=n_est, wtr=Wd)
+        m, _ = FIT[name](best[name], Xd, yd, None, None, a.threads, n_estimators=n_est, wtr=Wd, dtr=Dd)
         test_scores[name] = proba(m, Xt)
         train_scores[name] = proba(m, Xd)
         if name == "lgb":
@@ -706,6 +825,9 @@ def main():
     if len(models) > 1:
         test_scores["ensemble"] = rank_mean([test_scores[n] for n in models])
         train_scores["ensemble"] = rank_mean([train_scores[n] for n in models])
+    if meta is not None:  # members ranked within test (within dev for the overfit check), as the ensemble
+        test_scores["stack"] = stack_score(meta, [test_scores[n] for n in models])
+        train_scores["stack"] = stack_score(meta, [train_scores[n] for n in models])
 
     lines, res = [], {}
     for n, s in test_scores.items():
@@ -784,25 +906,28 @@ def main():
         try:
             # the static figures above score all of test with one model frozen at the end of dev; this
             # measures what monthly retraining recovers of the drift between the two periods
-            names = models if chosen == "ensemble" else [chosen]
+            blend = chosen in ("ensemble", "stack")
+            names = models if blend else [chosen]
+            # the stack keeps its meta-model fixed (fitted on the OOF rows); only the members are refitted
+            combine = (lambda arrs: stack_score(meta, arrs)) if chosen == "stack" else rank_mean
             log(f"refit monthly: {', '.join(names)}, {a.horizon}-day label lag, rounds "
                 + ", ".join(f"{n} {rounds[n]}" for n in names))
-            s_rf, rf_rows = refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, best, rounds)
+            s_rf, rf_rows = refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, best, rounds,
+                                          combine=combine)
             st = test_scores[chosen]
-            if chosen == "ensemble":
-                # rank the static members within each month as the refit does; ranks over all of test
-                # are a different blend, and the difference would mix that into the retraining effect
-                mon_t, st = test["event_date"].dt.to_period("M").astype(str).to_numpy(), np.empty(len(test))
-                for m in np.unique(mon_t):
-                    i = np.flatnonzero(mon_t == m)
-                    st[i] = rank_mean([test_scores[n][i] for n in models])
+            # rank the static side within each month exactly as the refit side is ranked; ranks over all
+            # of test are a different scale, and the difference would mix that into the retraining effect
+            mon_t, st = test["event_date"].dt.to_period("M").astype(str).to_numpy(), np.empty(len(test))
+            for m in np.unique(mon_t):
+                i = np.flatnonzero(mon_t == m)
+                st[i] = combine([test_scores[n][i] for n in names])
             cov = ~np.isnan(s_rf)
             y_c, s_c, st_c = yt[cov], s_rf[cov], st[cov]
             print(f"\nREFIT MONTHLY -- each test month scored by models retrained on data available before it "
                   f"(labels need {a.horizon} days to mature)")
             print(f"  {int(cov.sum()):,} of {len(cov):,} test rows scored; static = the final model above, same rows"
-                  + ("" if chosen != "ensemble" else "; both ensembles ranked within each month, so the pooled "
-                   "AUC is not the QUOTE figure -- read the paired delta and the monthly lines"))
+                  + "; refit and static scores both ranked within each month, so the pooled AUC is not the "
+                  "QUOTE figure -- read the paired delta and the monthly lines")
             refit = {"model": chosen, "fitted": names, "rounds": {n: rounds[n] for n in names},
                      "rows_scored": int(cov.sum()), "months": rf_rows}
             if cov.sum() == 0:
@@ -851,7 +976,10 @@ def main():
         json.dump({"fleet": a.fleet, "args": vars(a), "cv": cv, "chosen": chosen, "withheld": dropped, "best_params": best,
                    "test": {k: {"auc": v["auc"], "ap": v["ap"], "monthly": v["monthly"]} for k, v in res.items()},
                    "operating_points": ops, "daily_budgets": budgets, "constrained_ops": cops,
-                   "diagnostics": diag, **({"refit_monthly": refit} if refit else {})},
+                   "diagnostics": diag, **({"refit_monthly": refit} if refit else {}),
+                   **({"relative_from": rel} if rel else {}),
+                   **({"stack_coef": {**dict(zip(models, meta.coef_[0].tolist())),
+                                      "intercept": float(meta.intercept_[0])}} if meta is not None else {})},
                   fh, indent=1, default=float)
     pd.DataFrame({"event_date": test["event_date"].to_numpy(), "y": yt, **test_scores,
                   **({f"refit_{chosen}": s_rf} if refit else {})}).to_parquet(

@@ -1290,7 +1290,7 @@ def _device_360(city, dev):
         " risk_band, is_overdue, rul_standard_days, predicted_median_survival_days,"
         " hazard_score, current_healthy_age_days, days_since_hw_oos, roll_fail_30d,"
         " n_prior_oos, rul_rank_in_type, n_devices_in_type, act_now,"
-        " p_oos_7d, act_now_threshold "
+        " p_oos_7d, p_oos_1d, act_now_horizon_days, act_now_threshold "
         "FROM v_ps5_device_rul WHERE city_id=:c AND device_id=:d "
         "ORDER BY feature_asof_date DESC LIMIT 1", c=city, d=dev)
     _ps5_src = "v_ps5_device_rul"
@@ -2931,9 +2931,10 @@ def route(method, path, params, body, headers=None):
             " rul_standard_days, predicted_median_survival_days, hazard_score,"
             " current_healthy_age_days, days_since_hw_oos, roll_fail_30d,"
             " n_prior_oos, rul_rank_in_type, n_devices_in_type, act_now,"
-            " p_oos_7d, act_now_threshold, feature_asof_date "
+            " p_oos_7d, p_oos_1d, act_now_p, act_now_horizon_days, act_now_threshold,"
+            " feature_asof_date "
             f"FROM v_ps5_device_rul WHERE {w} "
-            "ORDER BY act_now DESC, p_oos_7d DESC NULLS LAST, rul_standard_days ASC NULLS LAST "
+            "ORDER BY act_now DESC, act_now_p DESC NULLS LAST, rul_standard_days ASC NULLS LAST "
             f"LIMIT {_clamp_int((params or {}).get('limit'), 3000, 1, 12000)}", **kw))
     if path == "/ps5/serial-rul":
         dt = (params or {}).get("device_type")
@@ -2984,6 +2985,9 @@ def route(method, path, params, body, headers=None):
             " ROUND(MIN(rul_standard_days)::numeric,1) AS min_rul_days,"
             " MAX(n_devices_in_type) AS n_devices_in_type,"
             " MAX(act_now_threshold) AS act_now_threshold,"
+            " MAX(act_now_horizon_days) AS act_now_horizon_days,"
+            " ROUND((PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY act_now_p))::numeric,4) AS p50_act_now_p,"
+            " ROUND((PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY act_now_p))::numeric,4) AS p90_act_now_p,"
             " COUNT(p_oos_7d) AS n_with_p_oos_7d,"
             " ROUND((PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p_oos_7d))::numeric,4) AS p50_p_oos_7d,"
             " ROUND((PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY p_oos_7d))::numeric,4) AS p90_p_oos_7d,"

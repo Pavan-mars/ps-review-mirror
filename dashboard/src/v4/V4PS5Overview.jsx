@@ -315,6 +315,7 @@ function useRollup(feeds) {
         LOW: num(r.n_low),
         median_rul: r.median_rul_days === null || r.median_rul_days === undefined ? null : Number(r.median_rul_days),
         threshold: r.act_now_threshold === null || r.act_now_threshold === undefined ? null : Number(r.act_now_threshold),
+        horizon: r.act_now_horizon_days === null || r.act_now_horizon_days === undefined ? null : Number(r.act_now_horizon_days),
         asof: r.feature_asof_date,
       }));
       let asof = '';
@@ -340,6 +341,7 @@ function useRollup(feeds) {
         CRITICAL: band('CRITICAL'), HIGH: band('HIGH'), MEDIUM: band('MEDIUM'), LOW: band('LOW'),
         median_rul: null,
         threshold: r[0].act_now_threshold === null || r[0].act_now_threshold === undefined ? null : Number(r[0].act_now_threshold),
+        horizon: r[0].act_now_horizon_days === null || r[0].act_now_horizon_days === undefined ? null : Number(r[0].act_now_horizon_days),
         asof: r[0].feature_asof_date,
       };
     }).filter(Boolean);
@@ -350,10 +352,16 @@ function useRollup(feeds) {
   }, [feeds.summary.data, feeds.devices.data]);
 }
 
-// "GATE 0.90, TVM 0.90" -- the per-fleet act-now bar from ps5_act_now_policy (sql/67).
+// "GATE 0.50, TVM 0.50" -- the per-fleet act-now bar from ps5_act_now_policy (sql/67, sql/71).
 const thresholdText = (roll) => {
   const t = (roll ? roll.per : []).filter((p) => Number.isFinite(p.threshold));
   return t.length ? t.map((p) => `${deviceShort(p.device_type)} ${p.threshold.toFixed(2)}`).join(', ') : 'the fleet threshold';
+};
+// The policy horizon in words. sql/71 moved it from 7 days to 1: at 7 days the probability sat near 1
+// for almost every device, because these fleets fault every one to two days.
+const horizonText = (roll) => {
+  const h = [...new Set((roll ? roll.per : []).map((p) => p.horizon).filter(Number.isFinite))];
+  return h.length === 1 ? (h[0] === 1 ? '1 day' : `${h[0]} days`) : 'its fleet horizon';
 };
 
 // Estimates are a snapshot at feature_asof_date. Past STALE_DAYS the day counts describe a past
@@ -454,7 +462,7 @@ function FleetStatus({ feeds }) {
           label="Devices to act on now"
           value={nfmt(actNow)}
           unit={`of ${nfmt(fleet)} scored`}
-          sub={`Act-now means the model gives at least the fleet's threshold probability (${thresholdText(roll)}) of another out-of-service event within 7 days. Analysis as of ${roll.asof ? dfmt(roll.asof) : 'the date published by the feed'}.`}
+          sub={`Act-now means the model gives at least the fleet's threshold probability (${thresholdText(roll)}) of another out-of-service event within ${horizonText(roll)}. Analysis as of ${roll.asof ? dfmt(roll.asof) : 'the date published by the feed'}.`}
           right={(
             <div style={{ textAlign: 'right' }}>
               <div style={{ ...font.micro, marginBottom: 6 }}>Share of the scored fleet</div>
@@ -621,8 +629,9 @@ function Devices({ feeds, onAnalyse, city }) {
     { key: 'days_since_hw_oos', label: 'Days since OOS', num: true, d: 0, width: 120 },
     { key: 'n_prior_oos', label: 'Prior OOS', num: true, d: 0, width: 95 },
     { key: 'roll_fail_30d', label: 'OOS in last 30d', num: true, d: 0, width: 120 },
-    { key: 'p_oos_7d', label: 'P(OOS within 7d)', num: true, width: 140,
-      render: cell((r) => (r.p_oos_7d === null || r.p_oos_7d === undefined ? <span style={{ color: INK_3 }}>--</span> : pct(Number(r.p_oos_7d), 0))) },
+    { key: 'act_now_p', label: 'Act-now probability', num: true, width: 150,
+      render: cell((r) => (r.act_now_p === null || r.act_now_p === undefined ? <span style={{ color: INK_3 }}>--</span>
+        : <span title={`P(another OOS within ${r.act_now_horizon_days === 1 ? '1 day' : `${r.act_now_horizon_days} days`}); act-now at ${r.act_now_threshold}`}>{pct(Number(r.act_now_p), 0)}</span>)) },
     { key: 'rul_rank_in_type', label: 'Rank in fleet', num: true, d: 0, width: 110 },
     {
       key: 'act_now',

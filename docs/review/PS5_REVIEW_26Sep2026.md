@@ -111,6 +111,7 @@ act_now = P(OOS within 7 days) >= per-fleet threshold.
 | P5-7 | Loader: `committed_partial` + HTTP 500 when any artifact is skipped/refused/errored; `incomplete` lists them. |
 | Retire (code-only) | `fastapi_app/ps5_reliability_routes.py` removed; Device-360 fallback to `ps5_reliability_estimates` removed. |
 | P5-4 (decided 26-Sep) | `PS5_DEVICE_WEIGHTED=true` weights each device equally in the final Weibull/Cox fit (default off). Run the refit once as the baseline, then again with it on, and compare typical interval, overdue share and p_oos_7d per fleet. Test: `test_device_weighting_stops_chronic_device_dominating` (needs numpy/scipy, run in Studio). |
+| P5-3 revised (26-Sep, after the refit) | p_oos_7d saturated (p50/p90 GATE 0.956/0.992, TVM 0.9995/1.0, VALIDATOR 0.988/1.0), so no 7-day threshold separates devices. Notebook now also exports `p_oos_1d`; `sql/71_ps5_act_now_1d.sql` adds the column, moves the policy to `horizon_days=1` (placeholder threshold 0.50) and computes `act_now_p` from the policy's horizon; API returns `p_oos_1d`, `act_now_p`, `act_now_horizon_days` and p50/p90 of `act_now_p`; UI column is "Act-now probability". |
 | Not done | survival curves (write `ps5_weibull_params`) — next. Shadow stack retirement waits on the AWS check. |
 
 ### Local checks
@@ -127,7 +128,7 @@ Verified here: the three pytest cases pass, and `check_sql.sql` passes on Postgr
 2. Deploy `cubic-mars-ps5-rds-loader`.
 3. Re-run the PS5 notebook (defaults already set; `PS5_EVENT_END_DATE=2026-08-29`), let it write to S3,
    invoke the loader, confirm `"status": "committed"`.
-4. Read `/ps5/summary` p50/p90 of `p_oos_7d` per fleet and set thresholds:
+4. (after sql/71) Read `/ps5/summary` p50/p90 of `act_now_p` (the 1-day probability) per fleet and set thresholds:
    `UPDATE ps5_act_now_policy SET p_threshold=<x>, note='<why>' WHERE city_id='CHI' AND device_type='<T>';`
 5. Rebuild and deploy the dashboard image.
 Until step 3 runs, `p_oos_7d` is NULL on every row, so act_now is FALSE everywhere; that is deliberate, not a guess.

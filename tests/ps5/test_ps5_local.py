@@ -106,3 +106,19 @@ def test_device_weighting_stops_chronic_device_dominating():
     unweighted = med(*ns["weibull_fit"](t, e))
     weighted = med(*ns["weibull_fit"](t, e, w))
     assert unweighted < 3 and weighted > 5 * unweighted
+
+
+def test_device_whose_last_fault_is_on_the_cutoff_day_still_gets_an_open_interval():
+    """26-Sep-2026: devices faulting ON EVENT_END_DATE had no open interval and were never scored."""
+    pd = pytest.importorskip("pandas")
+    src = "".join(json.loads(NB.read_text())["cells"][3]["source"])
+    tree = ast.parse("\n".join(l for l in src.splitlines() if not l.lstrip().startswith(("%", "!"))))
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build_intervals_from_failures")
+    ns = {"pd": pd, "CONFIG": {"EVENT_END_DATE": "2026-08-29"}}
+    exec(compile(ast.Module([fn], []), str(NB), "exec"), ns)
+    f = pd.DataFrame({"DEVICE_ID": ["A", "A", "B", "B"], "DEVICE_KEY": ["A", "A", "B", "B"],
+                      "failure_date": pd.to_datetime(["2026-08-20", "2026-08-29", "2026-08-10", "2026-08-25"])})
+    iv = ns["build_intervals_from_failures"](f, "GATE")
+    open_iv = iv[iv["is_ongoing"]].set_index("DEVICE_ID")["interval_days"]
+    assert set(open_iv.index) == {"A", "B"}          # A faulted on the cut-off day and is still scored
+    assert open_iv["A"] == 1 and open_iv["B"] == 5

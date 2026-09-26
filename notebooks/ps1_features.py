@@ -1005,8 +1005,13 @@ if _enable_validator_ticket_features():
               "or PS1_ENABLE_SN_REPAIR_FEATURES")
 
 # -- recency and trend over the warning families -------------------------------
+# Ticket outcomes join the recency set with the chargability family: days since the last
+# part swap, remote reset, hands-on clear or no-fault ticket, and their 7-v-30-day trend.
+# A device just after a swap and one on its third reset in a week are different risks.
+CHG_RECENCY_COLS = ["chg_closed_cnt", "chg_reset_cnt", "chg_replace_cnt", "chg_adjust_cnt", "chg_nff_cnt"]
 RECENCY_BASE_COLS = (DOPP_BASE_COLS + TVM_EVENT_BASE_COLS + WARNING_BASE_COLS
-                     + (MLED_BASE_COLS if _enable_maint_ledger_features() else []))
+                     + (MLED_BASE_COLS if _enable_maint_ledger_features() else [])
+                     + (CHG_RECENCY_COLS if _enable_chargability_features() else []))
 RECENCY_CAP_DAYS = 90.0
 if _enable_recency_trend_features():
     _n_rt = 0

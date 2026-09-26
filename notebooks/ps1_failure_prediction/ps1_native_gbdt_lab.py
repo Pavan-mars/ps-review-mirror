@@ -70,7 +70,7 @@ def load_checkpoint(fleet, ckpt_subdir, target_override=""):
     missing = [c for c in feats + [target, "split", "event_date"] if c not in names]
     if missing:
         raise SystemExit(f"checkpoint lacks columns {missing[:10]} -- re-run the notebook ETL")
-    extra = [c for c in ("DEVICE_ID",) if c in names]
+    extra = [c for c in ("DEVICE_ID", "FACILITY_ID") if c in names]
     df = dset.to_table(columns=feats + [target, "split", "event_date"] + extra).to_pandas()
     for c in feats:
         if not np.issubdtype(df[c].dtype, np.number):
@@ -95,25 +95,36 @@ def walk_forward_folds(dates, n_folds, embargo_days, recent_share):
     return folds
 
 
-def add_device_prior(df, target, horizon, m=30.0):
-    """Leak-safe device propensity: the device's own positive rate over rows whose label
-    window had closed before day D (event_date <= D - horizon - 1) -- those failures are
-    already observed at scoring time -- shrunk toward the TRAIN-split rate with m pseudo-rows.
-    Never reads a label whose window reaches day D or later."""
+def add_group_prior(df, target, horizon, key, out, m=30.0):
+    """Leak-safe propensity of a group (a device, a station): the group's positive rate over
+    its rows whose label window had closed before day D (event_date <= D - horizon - 1) --
+    those failures are already observed at scoring time -- shrunk toward the TRAIN-split rate
+    with m pseudo-rows. Never reads a label whose window reaches day D or later. Rows with no
+    group key get the train rate."""
     p0 = float(df.loc[df["split"] == "train", target].mean())
     lag = np.timedelta64(horizon + 1, "D")
     cy_at, cn_at = np.zeros(len(df)), np.zeros(len(df))
     pos = np.arange(len(df))
-    order = df.assign(_i=pos).sort_values(["DEVICE_ID", "event_date"])
-    for _, g in order.groupby("DEVICE_ID", sort=False):
+    order = df.assign(_i=pos).sort_values([key, "event_date"], kind="stable")
+    for _, g in order.groupby(key, sort=False):  # NaN keys are skipped
         dates = g["event_date"].to_numpy()
         y = g[target].to_numpy()
         cy = np.concatenate([[0], np.cumsum(y)])
         j = np.searchsorted(dates, dates - lag, side="right")
         cy_at[g["_i"].to_numpy()] = cy[j]
         cn_at[g["_i"].to_numpy()] = j
-    df["dev_prior_pos_rate"] = ((cy_at + m * p0) / (cn_at + m)).astype("float32")
+    df[out] = ((cy_at + m * p0) / (cn_at + m)).astype("float32")
     return p0
+
+
+def add_device_prior(df, target, horizon, m=30.0):
+    return add_group_prior(df, target, horizon, "DEVICE_ID", "dev_prior_pos_rate", m)
+
+
+def device_segment(ids):
+    """The device-type prefix of DEVICE_ID: RVG / HBG / SAG on GATE (the rule silver uses to
+    classify gates); constant on fleets whose IDs share one prefix."""
+    return pd.Series(ids).astype(str).str.upper().str.extract(r"^([A-Z]+)", expand=False).fillna("?")
 
 
 def leak_scan(X, y, feats, seed=0, n=200_000):
@@ -594,13 +605,15 @@ def parse_date_ranges(spec):
     return sorted(days)
 
 
-def thin_days(dates, floor, window=31):
+def thin_days(dates, floor, window=91):
     """Days whose checkpoint row count is below `floor` x the centred rolling median: the
     ingestion-outage signature, where a whole fleet's rows vanish together. A day with no rows
-    inside the span counts as thin; the ETL's interior mask may already have removed it."""
+    inside the span counts as thin; the ETL's interior mask may already have removed it. The
+    reference window is long (91 days) so an outage and its masked lead-in -- two to three weeks
+    -- stay a minority of it and cannot drag the median down to their own level."""
     cnt = pd.Series(1, index=pd.DatetimeIndex(dates).normalize()).groupby(level=0).size()
     full = cnt.reindex(pd.date_range(cnt.index.min(), cnt.index.max(), freq="D"), fill_value=0)
-    med = full.rolling(window, center=True, min_periods=7).median()
+    med = full.rolling(window, center=True, min_periods=15).median()
     return sorted(full.index[(full < floor * med).to_numpy()]), full, med
 
 
@@ -705,16 +718,20 @@ def threshold_policy(y, p, dates, horizon, p_high=0.90, r_med=0.50, cal_days=30,
       High   = at or above the lowest cut whose calibration precision reached p_high
       Medium = down to the cut whose calibration recall reached r_med
       Low    = the rest
-    A month with too few matured rows before it (the first test month) is the warm-up and is
-    left unscored: tier -1."""
+    When a data-quality mask has emptied most of that window, it widens to 2x and then 3x
+    cal_days. A month with too few matured rows before it even then (the first test month) is
+    the warm-up and is left unscored: tier -1."""
     dates = pd.DatetimeIndex(dates).normalize()
     mon = np.asarray(dates.to_period("M").astype(str))
     tier = np.full(len(y), -1)
     rows = []
     for m in sorted(set(mon)):
         cut_end = pd.Timestamp(f"{m}-01") - pd.Timedelta(days=horizon + 1)
-        cal = np.asarray((dates <= cut_end) & (dates > cut_end - pd.Timedelta(days=cal_days))) & ~np.isnan(p)
         idx = np.flatnonzero((mon == m) & ~np.isnan(p))
+        for span in (cal_days, 2 * cal_days, 3 * cal_days):
+            cal = np.asarray((dates <= cut_end) & (dates > cut_end - pd.Timedelta(days=span))) & ~np.isnan(p)
+            if cal.sum() >= min_cal and 0 < y[cal].sum() < cal.sum():
+                break
         if cal.sum() < min_cal or not 0 < y[cal].sum() < cal.sum() or not len(idx):
             rows.append({"month": m, "scored": False, "cal_rows": int(cal.sum())})
             continue
@@ -728,7 +745,8 @@ def threshold_policy(y, p, dates, horizon, p_high=0.90, r_med=0.50, cal_days=30,
         if th is not None:
             t[p[idx] >= th] = 2
         tier[idx] = t
-        rows.append({"month": m, "scored": True, "cal_rows": int(cal.sum()), "cut_high": th, "cut_med": tm,
+        rows.append({"month": m, "scored": True, "cal_rows": int(cal.sum()), "cal_span_days": span,
+                     "cut_high": th, "cut_med": tm,
                      "high": confusion(y[idx], t == 2), "high_med": confusion(y[idx], t >= 1)})
     return tier, rows
 
@@ -780,7 +798,7 @@ def print_policy(title, y, tier, rows, ep, p_high, r_med, horizon, cal_days):
             ok = v is not None and (v >= bound if op == ">=" else v <= bound)
             verdict.append(f"{k} {'-' if v is None else f'{v:.3f}'} {'MET' if ok else 'not met'}")
         acc_ok = c["accuracy"] is not None and c["accuracy"] >= 0.85
-        print(f"    contract (Annexure 1): " + "; ".join(verdict)
+        print("    contract (Annexure 1): " + "; ".join(verdict)
               + f"; accuracy >= 0.85 (Table 14) {'MET' if acc_ok else 'not met'}"
               + f"; recall >= 0.50 floor {'MET' if c['recall'] >= 0.50 else 'not met'}")
     print(f"  episode-recall = share of failures ({n_ep:,} approximate episodes) with at least one flagged lead day; "
@@ -895,7 +913,7 @@ def main():
                     help="data-quality mask 'YYYY-MM-DD:YYYY-MM-DD,...': the days, the rows whose --horizon "
                          "lookahead crosses them and --mask-post days after leave training and test")
     ap.add_argument("--mask-thin", type=float, default=0.0,
-                    help="also mask days whose checkpoint row count is below this share of the 31-day rolling "
+                    help="also mask days whose checkpoint row count is below this share of the 91-day rolling "
                          "median within their split (0.5 matches the notebook's completeness guard); 0 = off")
     ap.add_argument("--mask-post", type=int, default=0,
                     help="with a mask: also drop N days after each masked day, whose prior windows it silenced")
@@ -905,6 +923,21 @@ def main():
     ap.add_argument("--policy-precision", type=float, default=0.90, help="the High tier's calibration precision")
     ap.add_argument("--policy-recall", type=float, default=0.50, help="the Medium tier's calibration recall")
     ap.add_argument("--policy-cal-days", type=int, default=30, help="matured days each monthly cut is set on")
+    ap.add_argument("--mask-pre", type=int, default=-1,
+                    help="days before each --mask-thin day also masked (their lookahead crosses it); -1 = 0 when "
+                         "the checkpoint's ETL already dropped them (PS1_LABEL_MASK_UNOBSERVED), else --horizon. "
+                         "--exclude-dates days always use --horizon")
+    ap.add_argument("--test-end", default="", help="score only test rows on/before this date (a source-tail check)")
+    ap.add_argument("--segment", action="store_true",
+                    help="add seg_code, the DEVICE_ID type prefix (GATE: RVG / HBG / SAG), and report test AUC "
+                         "per segment; skipped on a fleet whose IDs share one prefix")
+    ap.add_argument("--facility-prior", action="store_true",
+                    help="add fac_prior_pos_rate: the station's own label rate over closed windows only "
+                         "(FACILITY_ID; the device prior's rule at station level)")
+    ap.add_argument("--fleet-state", type=int, default=0,
+                    help="add fs_<f>, the day's fleet-wide mean of f, for the N features with the highest solo "
+                         "dev AUC; constant within a day, so daily budgets do not move, only pooled ranking and "
+                         "fixed thresholds; 0 = off")
     a = ap.parse_args()
     t0 = time.time()
 
@@ -925,16 +958,25 @@ def main():
     log(f"{a.fleet}: {len(df):,} rows, {len(feats)} features, splits "
         + str(df["split"].value_counts().to_dict()))
     mask_days = parse_date_ranges(a.exclude_dates) if a.exclude_dates else []
+    mk = mask_rows(df["event_date"], mask_days, a.horizon, a.mask_post)
+    thin = []
     if a.mask_thin > 0:
         # per split, so the embargo gaps between splits never read as an outage
         thin = sorted(set().union(*[thin_days(df.loc[df["split"] == sp, "event_date"], a.mask_thin)[0]
                                     for sp in df["split"].unique()]))
-        log(f"thin days (< {a.mask_thin:.0%} of the 31-day median row count): {ranges_text(thin)}")
+        # With the notebook's interior mask on, the rows whose lookahead crosses an outage day are
+        # already gone -- they show here as empty days -- so extending before them again would
+        # drop another `horizon` days of valid rows.
+        _etl_pre = (_sig.get("PS1_LABEL_MASK_UNOBSERVED") or "").lower() == "true"
+        pre = a.mask_pre if a.mask_pre >= 0 else (0 if _etl_pre else a.horizon)
+        log(f"thin days (< {a.mask_thin:.0%} of the 91-day median row count): {ranges_text(thin)}; "
+            f"masked {pre}d before" + (" (the ETL's interior mask already dropped the lookahead rows)" if _etl_pre
+                                       and a.mask_pre < 0 else "") + f" and {a.mask_post}d after")
+        mk = mk | mask_rows(df["event_date"], thin, pre, a.mask_post)
         mask_days = sorted(set(mask_days) | set(thin))
-    if mask_days:
-        mk = mask_rows(df["event_date"], mask_days, a.horizon, a.mask_post)
-        log(f"data-quality mask: {ranges_text(mask_days)}; extended {a.horizon}d before and {a.mask_post}d after "
-            f"each day; removed {int(mk.sum()):,} rows " + str(df.loc[mk, "split"].value_counts().to_dict()))
+    if mk.any():
+        log(f"data-quality mask: {ranges_text(mask_days)}; removed {int(mk.sum()):,} rows "
+            + str(df.loc[mk, "split"].value_counts().to_dict()))
         df = df.loc[~mk].reset_index(drop=True)
     if a.device_prior:
         if "DEVICE_ID" not in df.columns:
@@ -942,6 +984,30 @@ def main():
         p0 = add_device_prior(df, target, a.horizon)
         feats = feats + ["dev_prior_pos_rate"]
         log(f"device prior added (lag {a.horizon + 1}d, shrunk toward train rate {p0:.3%})")
+    if a.facility_prior:
+        _fac_ok = "FACILITY_ID" in df.columns and df["FACILITY_ID"].notna().mean() > 0.5
+        if not _fac_ok:
+            log("--facility-prior skipped: FACILITY_ID is missing from the checkpoint or null on most rows")
+        else:
+            p0 = add_group_prior(df, target, a.horizon, "FACILITY_ID", "fac_prior_pos_rate", m=100.0)
+            feats = feats + ["fac_prior_pos_rate"]
+            log(f"station prior added over {df['FACILITY_ID'].nunique():,} facilities "
+                f"(FACILITY_ID on {df['FACILITY_ID'].notna().mean():.0%} of rows; lag {a.horizon + 1}d)")
+    seg = None
+    if a.segment:
+        if "DEVICE_ID" not in df.columns:
+            raise SystemExit("--segment needs DEVICE_ID in the checkpoint")
+        seg = device_segment(df["DEVICE_ID"].to_numpy())
+        _cnt = seg.value_counts()
+        if len(_cnt) < 2:
+            log(f"--segment skipped: every device ID starts with {_cnt.index[0]!r}")
+            seg = None
+        else:
+            _codes = {s: float(i) for i, s in enumerate(sorted(_cnt.index))}
+            df["seg_code"] = seg.map(_codes).astype("float32").to_numpy()
+            df["_seg"] = seg.to_numpy()
+            feats = feats + ["seg_code"]
+            log("segments (seg_code): " + ", ".join(f"{s}={int(v)} ({_cnt[s]:,} rows)" for s, v in _codes.items()))
     dev = df[df["split"].isin(["train", "val"])]
     if a.warmup_end:
         n0 = len(dev)
@@ -952,6 +1018,10 @@ def main():
         n0 = len(test)
         test = test[test["event_date"] >= pd.Timestamp(a.test_start)]
         log(f"test-start {a.test_start}: scoring {len(test):,} of {n0:,} test rows")
+    if a.test_end:
+        n0 = len(test)
+        test = test[test["event_date"] <= pd.Timestamp(a.test_end)]
+        log(f"test-end {a.test_end}: scoring {len(test):,} of {n0:,} test rows")
     if a.train_start:
         n0 = len(dev)
         dev = dev[dev["event_date"] >= pd.Timestamp(a.train_start)]
@@ -979,6 +1049,28 @@ def main():
         feats = feats + ["rel_" + f for f in rel]
         log(f"relative features: within-day percentile rank of the top {len(rel)} by solo dev AUC -- "
             + ", ".join(f"{f} {auc_:.3f}" for auc_, f, _ in top))
+    fs = []
+    if a.fleet_state > 0:
+        # chosen like the relative features: on dev rows before the first validation block. The day's
+        # mean over every scored device uses only values known on that day (prior-window features),
+        # and no label.
+        _u = np.sort(dev["event_date"].unique())
+        _v0 = pd.Timestamp(_u[int(len(_u) * (1 - a.recent_share))]) - pd.Timedelta(days=a.embargo_days)
+        _sel = dev[dev["event_date"] < _v0]
+        _base = [f for f in feats if not f.startswith(("rel_", "seg_", "dev_prior", "fac_prior"))]
+        top_fs = leak_scan(_sel[_base].to_numpy(np.float32), _sel[target].to_numpy(), _base)[:a.fleet_state]
+        fs = [f for _, f, _ in top_fs]
+        daily = df.groupby("event_date")[fs].mean()
+
+        def _fs(frame):
+            return {"fs_" + f: frame["event_date"].map(daily[f]).astype("float32").to_numpy() for f in fs}
+
+        dev = dev.assign(**_fs(dev))
+        test = test.assign(**_fs(test))
+        for c, v in _fs(df).items():
+            df[c] = v
+        feats = feats + ["fs_" + f for f in fs]
+        log(f"fleet-state features: the day's fleet mean of {', '.join(fs)}")
     Xd, yd = dev[feats].to_numpy(np.float32), dev[target].to_numpy()
     Wd = None
     if a.recency_halflife > 0:
@@ -1110,6 +1202,16 @@ def main():
     print(f"  overfit check: train AUC {_tr_auc:.4f} vs CV {_cv:.4f} vs test {res[chosen]['auc']:.4f}"
           + ("   <-- large train-CV gap" if _tr_auc - _cv > 0.08 else "   OK"))
     diag.update({"test_auc_ci95": [_lo, _hi], "train_auc": _tr_auc})
+    if "_seg" in test.columns:
+        _sg = test["_seg"].to_numpy()
+        _parts = []
+        for s in sorted(set(_sg)):
+            i = _sg == s
+            if 0 < yt[i].sum() < i.sum():
+                _parts.append(f"{s} {roc_auc_score(yt[i], test_scores[chosen][i]):.3f} "
+                              f"({int(i.sum()):,} rows, base {yt[i].mean():.3f})")
+        print("  test AUC by segment: " + "; ".join(_parts))
+        diag["segment_auc"] = _parts
 
     va_last = folds[-1][1]
     s_cal = (rank_mean([oofs[n][-1] for n in models]) if chosen == "ensemble" else oofs[chosen][-1])

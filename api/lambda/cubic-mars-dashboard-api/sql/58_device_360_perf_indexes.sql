@@ -31,8 +31,7 @@ CREATE INDEX IF NOT EXISTS ix_ps1_xw_latest_per_device
 CREATE INDEX IF NOT EXISTS ix_ps4_weekly_latest_per_device
   ON ps4_weekly_device_summary (city_id, device_id, week_start DESC);
 
-CREATE INDEX IF NOT EXISTS ix_ps4_cluster_latest_per_device
-  ON ps4_cluster_assignments (city_id, device_id, asof_date DESC);
+-- ix_ps4_cluster_latest_per_device removed 26-Sep-2026: v_ps4_cluster_latest reads the weekly summary (sql/69).
 
 CREATE INDEX IF NOT EXISTS ix_ps5_rul_latest_per_device
   ON ps5_device_rul (city_id, device_id, feature_asof_date DESC);

@@ -196,10 +196,7 @@ UNION ALL SELECT 'ps4', 'weekly_devices', (SELECT COUNT(*) FROM v_ps4_device_lat
 UNION ALL SELECT 'ps4', 'weekly_matched_to_dim',
     (SELECT COUNT(*) FROM v_ps4_device_latest p JOIN v_device_central d
       ON d.city_id = p.city_id AND d.device_id = p.device_id)
-UNION ALL SELECT 'ps4', 'cluster_rows_null_device_id_latest_asof',
-    (SELECT COUNT(*) FROM ps4_cluster_assignments
-      WHERE device_id IS NULL
-        AND asof_date = (SELECT MAX(asof_date) FROM ps4_cluster_assignments))
+UNION ALL SELECT 'ps4', 'cluster_devices_latest', (SELECT COUNT(*) FROM v_ps4_cluster_latest)
 UNION ALL SELECT 'ps5', 'rul_devices', (SELECT COUNT(*) FROM v_ps5_device_latest)
 UNION ALL SELECT 'ps5', 'matched_to_dim',
     (SELECT COUNT(*) FROM v_ps5_device_latest p JOIN v_device_central d

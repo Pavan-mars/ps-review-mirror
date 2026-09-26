@@ -560,10 +560,27 @@ def lambda_handler(event, context):
                 "partition_cols": sorted(hive_partition_cols(parts[0][0]).keys()),
             }
 
+        # A dataset with no parts would leave its table on the PREVIOUS run (same pipeline_version)
+        # or empty (new version) while ps4_v3_runs below makes this run current -- the dashboard
+        # would silently mix or lose data. Fail the whole load instead; the transaction rolls back.
+        _missing = sorted(k for k, v in out["datasets"].items() if v.get("error"))
+        if _missing and not (event or {}).get("allow_partial"):
+            raise RuntimeError(f"datasets missing for this run: {_missing} "
+                               "(re-invoke with allow_partial=true to load the rest anyway)")
+
         # ---- cluster quality -------------------------------------------------
         sil = find_silhouette(man)
         source = "manifest" if sil else "run_log"
-        if not sil:
+        if not sil and run_id and run_id != SILHOUETTE_RUN_LOG_RUN:
+            # 26-Sep-2026: never store another run's silhouettes as this run's. The logged values
+            # are only valid for SILHOUETTE_RUN_LOG_RUN; any other run gets NULL and says so.
+            sil = {k: {"k_selected": None, "silhouette": None, "train_rows": None}
+                   for k in SILHOUETTE_RUN_LOG}
+            source = "not_published"
+            out["silhouette_warning"] = (
+                f"Manifest for run {run_id} published no silhouette; stored NULL with "
+                "quality_source='not_published'. Publish cluster_metrics in the manifest.")
+        elif not sil:
             sil = {k: dict(v) for k, v in SILHOUETTE_RUN_LOG.items()}
             out["silhouette_note"] = (
                 "The manifest published no silhouette. The three values below are "
@@ -571,12 +588,6 @@ def lambda_handler(event, context):
                 f"{SILHOUETTE_RUN_LOG_RUN} and are stored with quality_source="
                 "'run_log' so the dashboard states their provenance. They are only "
                 "valid for that run.")
-            if run_id and run_id != SILHOUETTE_RUN_LOG_RUN:
-                out["silhouette_warning"] = (
-                    f"Loaded run_id is {run_id} but the fallback silhouettes were "
-                    f"measured on {SILHOUETTE_RUN_LOG_RUN}. They are NOT this run's "
-                    f"numbers. Publish silhouette in the manifest, or treat the "
-                    f"cluster quality panel as unverified for this run.")
         qrows = [{"city_id": city, "device_type": dt, "pipeline_version": pv,
                   "k_selected": v.get("k_selected"), "silhouette": v.get("silhouette"),
                   "train_rows": v.get("train_rows"), "quality_source": source,

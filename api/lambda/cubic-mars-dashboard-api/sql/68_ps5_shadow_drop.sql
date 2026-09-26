@@ -14,13 +14,18 @@
 --   DB:    run {"action":"depends"} on each name BEFORE this file. No CASCADE below, so an
 --          unexpected dependent makes this fail rather than silently take it with it.
 --
+-- Full object list taken from the shadow loader's own migrations (_retired/.../sql/05-07), and
+-- tested 26-Sep against them on Postgres 16 with no CASCADE.
 -- KEPT: ps5_weibull_params, ps5_cox_hazard_ratios (declared in sql/01, reserved for the
 -- survival-curve panel).  The CREATE/seed blocks for everything dropped here were removed from
 -- sql/01, 02 and 29 in the same commit, so a migrate replay cannot resurrect them.
 DROP VIEW  IF EXISTS v_ps5_reliability_oos_latest;
 DROP VIEW  IF EXISTS v_ps5_serial_oos_latest;
 DROP VIEW  IF EXISTS v_ps5_dashboard_ready;
+DROP VIEW  IF EXISTS v_ps5_device_360;
 DROP TABLE IF EXISTS ps5_scoring_runs;
 DROP TABLE IF EXISTS ps5_serial_reliability;
 DROP TABLE IF EXISTS ps5_reliability_estimates;
 DROP TABLE IF EXISTS ps5_reliability_status;
+DROP TABLE IF EXISTS ps5_event_definition;
+DROP TABLE IF EXISTS ps5_feature_alignment_audit;

@@ -646,27 +646,7 @@ INSERT INTO schema_migrations (version, name) VALUES
 
 -- Gap #100: PS4's "Real-Time Alerts" panel needs discrete, actionable alert events —
 -- ps4_anomaly_scores_daily (section 7 above) is a daily aggregate, not an event feed.
-CREATE TYPE ps4_alert_status AS ENUM ('active', 'investigating', 'acknowledged', 'resolved');
-
-CREATE TABLE ps4_anomaly_alerts (
-  id                    UUID          DEFAULT uuid_generate_v4() PRIMARY KEY,
-  city_id               city_code     NOT NULL REFERENCES cities(id),
-  device_id             VARCHAR(30)   NOT NULL,
-  device_type           device_type   NOT NULL,
-  detected_at           TIMESTAMPTZ   NOT NULL,
-  triggering_signal     VARCHAR(30)   NOT NULL,
-  anomaly_score         NUMERIC(6,5)  NOT NULL,
-  severity              severity_level NOT NULL,
-  description           TEXT,
-  status                ps4_alert_status NOT NULL DEFAULT 'active',
-  acknowledged_by       UUID          REFERENCES users(id),
-  acknowledged_at       TIMESTAMPTZ,
-  resolved_at           TIMESTAMPTZ,
-  calibration_version   VARCHAR(20)   NOT NULL,
-  created_at            TIMESTAMPTZ   DEFAULT NOW()
-);
-CREATE INDEX idx_ps4_alerts_city_status ON ps4_anomaly_alerts(city_id, status);
-CREATE INDEX idx_ps4_alerts_detected    ON ps4_anomaly_alerts(detected_at DESC);
+-- ps4_anomaly_alerts + ps4_alert_status retired 26-Sep-2026 (never wired to scoring); dropped by sql/70_ps4_legacy_drop.sql.
 -- Gate note (same pattern as PS5): do not wire this to real scoring until task #90
 -- (SPC/tap-rejection threshold recalibration) lands — today's uncalibrated 36.44%
 -- ensemble rate would flood this table with false alerts.

@@ -34,6 +34,10 @@ import { CARD, CAT, INK, INK_2, INK_3, LINE, STATUS, deviceColor, deviceShort, f
 import { Badge, Card, Empty, Grid, Loading, Note, Panel } from './V4Kit';
 import { Bubble } from './V4Charts';
 
+// A NULL silhouette is "not measured", not 0.000 -- Number(null) would print a perfect-looking zero.
+const silText = (q) => (q.silhouette === null || q.silhouette === undefined || !Number.isFinite(Number(q.silhouette))
+  ? '--' : Number(q.silhouette).toFixed(3));
+
 
 // STABLE CALLBACK IDENTITIES.                                v5
 // These were inline arrows in JSX, so every render produced a NEW
@@ -254,7 +258,12 @@ function SilhouetteScale({ rows }) {
           <span key={q.device_type} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.2 }}>
             <span style={{ width: 9, height: 9, borderRadius: 5, background: deviceColor(q.device_type) }} />
             <strong style={{ color: INK }}>{deviceShort(q.device_type)}</strong>
-            <span style={{ ...font.num, color: INK_2 }}>{Number(q.silhouette).toFixed(3)}</span>
+            <span style={{ ...font.num, color: INK_2 }}>{silText(q)}</span>
+            {q.quality_source && q.quality_source !== 'manifest' && (
+              <Badge tone="warning" title={`quality_source=${q.quality_source}`}>
+                {q.quality_source === 'not_published' ? 'not published for this run' : 'from the run log, not this run\'s manifest'}
+              </Badge>
+            )}
           </span>
         ))}
       </div>
@@ -329,7 +338,7 @@ export default function PS4Clusters({ quality, profile, weeklyFeed, typeOn, onDe
           <Card key={t} style={{ borderLeft: `3px solid ${deviceColor(t)}` }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
               <h3 style={{ ...font.h3, margin: 0 }}>{deviceShort(t)}</h3>
-              <span style={{ ...font.num, fontSize: 13.1, color: INK_2 }}>separation {Number(q.silhouette || 0).toFixed(3)}</span>
+              <span style={{ ...font.num, fontSize: 13.1, color: INK_2 }}>separation {silText(q)}</span>
               {q.separation_verdict && (
                 <Badge tone={Number(q.silhouette) >= 0.5 ? 'good' : 'warning'}>{q.separation_verdict}</Badge>
               )}

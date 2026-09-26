@@ -245,7 +245,7 @@ def migrate(_evt):
                "sql/17_phase2c_ps3_two_head_views.sql",
                "sql/18_purge_ps3_bridge_test_rows.sql",
                "sql/19_ps3_severity_collapse_fix.sql",
-               "sql/20_ps4_anomaly.sql",
+               # sql/20_ps4_anomaly.sql retired 26-Sep-2026 (sql/70 drops its objects)
                "sql/21_fleet_event_baseline.sql",
                "sql/22_dim_device_serial.sql",
                # 27-Jul-2026. Must come AFTER sql/22 -- v_ps3_category_coverage
@@ -258,7 +258,7 @@ def migrate(_evt):
                # 27-Jul-2026. PS4 tables shaped to the notebooks' REAL export
                # layout (artifacts bucket, chicago/ps4/scored/asof=<date>).
                # sql/20's assumed shape is left in place but stays empty.
-               "sql/25_ps4_scored.sql",
+               # sql/25_ps4_scored.sql retired 26-Sep-2026 (sql/70 drops its objects)
                # 27-Jul-2026. Adds scope to ps2_network_centrality and rebuilds
                # its primary key. Without it the PS2 load dies on a duplicate
                # key for (CHI, PRINTER, 2026-07-26): the export carries the same
@@ -296,7 +296,7 @@ def migrate(_evt):
                # 28-Jul-2026. PS4 device_daily + lifetime rollup, and the views
                # that reproduce the anomalies / outliers feeds without storing
                # 6.4M redundant rows.
-               "sql/33_ps4_device_daily.sql",
+               # sql/33_ps4_device_daily.sql retired 26-Sep-2026 (sql/70 drops its objects)
                "sql/34_ps1_cross_wired.sql",
                "sql/35_ps1_label_onset.sql",
                "sql/36_ps1_state_framing.sql",
@@ -3139,13 +3139,6 @@ def route(method, path, params, body, headers=None):
                           "ORDER BY actionable_devices DESC, devices DESC LIMIT :l",
                           c=city, l=lim))
 
-        if path == "/ps4/weekly-device":
-            dev = p.get("device_id") or ""
-            if not dev:
-                return err(400, "device_id required")
-            return ok(_v3("SELECT * FROM v_ps4_weekly_device WHERE city_id=:c "
-                          "AND device_id=:d ORDER BY week_start DESC LIMIT 60",
-                          c=city, d=dev))
 
         if path == "/ps4/weekly":
             if dt and wk:
@@ -3261,32 +3254,6 @@ def route(method, path, params, body, headers=None):
             return ok(_v2("SELECT * FROM v_ps3_v2_causal WHERE city_id=:c "
                           "ORDER BY device_category, treatment_id", c=city))
 
-    if path == "/ps4/alerts":
-        st = (params or {}).get("status")
-        if st: return ok(rows("SELECT * FROM ps4_anomaly_alerts WHERE city_id=:c AND status=:s ORDER BY detected_at DESC LIMIT 200", c=city, s=st))
-        return ok(rows("SELECT * FROM ps4_anomaly_alerts WHERE city_id=:c ORDER BY detected_at DESC LIMIT 200", c=city))
-    if path.startswith("/ps4/alerts/") and method == "PATCH":
-        aid = path.rsplit("/", 1)[-1]; new = (body or {}).get("status")
-        if new not in ("active", "investigating", "acknowledged", "resolved"): return err(400, "bad status")
-        # Marking an alert 'resolved' silences it. That is a more damaging
-        # anonymous write than any read on this API.
-        _blocked = write_guard(headers)
-        if _blocked: return _blocked
-        # 2026-08-10 -- THIS ROUTE HAS NEVER WORKED. PostgreSQL could not deduce a
-        # type for :s, which appears once as an assignment to a VARCHAR column and
-        # twice compared against a text literal:
-        #     42P08 inconsistent types deduced for parameter $1
-        #           text versus character varying
-        # Every PATCH against this route has returned a 500. Found while testing
-        # the write guard below, not by reading the code -- the SQL looks fine.
-        # Explicit casts on both sides resolve the deduction.
-        conn().run("UPDATE ps4_anomaly_alerts SET status=CAST(:s AS varchar), "
-                   "acknowledged_at=CASE WHEN CAST(:s AS text)='acknowledged' THEN NOW() "
-                   "ELSE acknowledged_at END, "
-                   "resolved_at=CASE WHEN CAST(:s AS text)='resolved' THEN NOW() "
-                   "ELSE resolved_at END "
-                   "WHERE id=CAST(:i AS uuid)", s=new, i=aid)
-        return ok({"id": aid, "status": new})
     if path == "/overview/summary":
         return err(501, "v_executive_summary deferred to Phase 2 (needs PS1/PS3/PS4 tables)")
     # ---- Device-central family (sql/56 + sql/57, added 2026-08-27) ----------

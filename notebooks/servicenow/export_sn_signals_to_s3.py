@@ -215,6 +215,15 @@ base = chg_raw.select(
     F.col(c_start).isNotNull().alias("_start_raw"),
     F.col(c_end).isNotNull().alias("_end_raw"),
 ).withColumn("device_id", F.upper(F.col("_dev")))
+# Bus validators are filed under the bare bus number ("1087"); the fleet key is BMV + the bus
+# number padded to five digits ("BMV01087") -- the same mapping silver S25 uses for task_ci.
+# Without it only 1 of 2,557 BMV devices joined the PS1 spine.
+base = base.withColumn(
+    "device_id",
+    F.when((F.upper(F.coalesce(F.col("device_type"), F.lit(""))) == "BMV")
+           & F.col("device_id").rlike("^[0-9]{1,5}$"),
+           F.concat(F.lit("BMV"), F.lpad(F.col("device_id"), 5, "0")))
+     .otherwise(F.col("device_id")))
 
 # One row per event: most recently updated wins, sys_id breaks ties so reruns are
 # stable. Rows without an event id are kept as they are -- they cannot be collapsed.

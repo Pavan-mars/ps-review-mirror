@@ -166,25 +166,32 @@ def ts_col(name):
 
 
 def res_rule(txt):
+    """Resolution outcome, from the vocabulary seen on 26-Sep (top values in the cell above):
+    replace ("Replaced", "Replaced BMV", "Replaced Battery", "Replaced Component"),
+    reset ("Reset Remotely", "Reset", "Reintialized", "Reseated Connector"),
+    nff -- no action needed ("Event self-cleared", "Recovered", "Passed", "No Fault Found",
+    "Ping - Server Acknowledged"), adjust -- hands-on clear or adjust ("Cleared Feed Errors",
+    "Cleared Foreign Material", "Cleared Worn/Torn Bill", "Cleared", "Adjusted Barrier").
+    Order matters: a swap outranks a reboot, and "self-cleared" is nff, not adjust."""
     t = F.lower(txt)
-    # replace before reset: techs reboot after a swap, and the swap is what the repair was
-    return (F.when(t.rlike(r"replac|swap|install|exchang|new part|changed out"), "replace")
-             .when(t.rlike(r"reset|reboot|restart|power cycl|re-?seat"), "reset")
-             .when(t.rlike(r"no fault|nff|cannot dup|could not dup|unable to dup|no issue"
-                           r"|tested ok|working on arrival|woa"), "nff")
-             # clear\w* also takes "cleared jam", which a literal "clear jam" misses
-             .when(t.rlike(r"adjust|clean|clear\w* (the )?jam|jam\w* clear|realign|tighten|lubric"),
-                   "adjust")
+    return (F.when(t.rlike("replac|swap|exchang|new part|changed out"), "replace")
+             .when(t.rlike("reset|reboot|restart|power cycl|reinitiali|reintiali|re-?seat"), "reset")
+             .when(t.rlike("no fault|nff|self-cleared|self cleared|recovered|passed|ping"
+                           "|cannot dup|could not dup|unable to dup|no issue|tested ok"), "nff")
+             .when(t.rlike("adjust|clean|clear|realign|tighten|lubric|foreign material|jam"), "adjust")
              .otherwise("other"))
 
 
-def req_rule(txt):
-    t = F.lower(txt)
-    # pm as a word, not a time of day ("arrived 3 pm") -- request types are free-form text
-    return (F.when(t.rlike(r"vandal|customer|damage|abuse|graffiti"), "vandal_customer")
-             .when(t.rlike(r"planned|preventive|(?<![0-9] )\bpm\b|scheduled|install|upgrade|project"),
-                   "planned")
-             .when(t.rlike(r"repair|fault|corrective|break|fix|incident"), "corrective")
+def req_rule(req_txt, res_txt):
+    """Request type is "Corrective Maintenance" on 99.4% of tickets, so it cannot separate
+    planned work. The resolution can: "Level 1 PM" (10,301 tickets) is preventive maintenance.
+    vandal_customer is kept for the contract but only an explicit request type can set it --
+    resolution notes use "customer" and "damage" on ordinary repairs."""
+    q, r = F.lower(F.coalesce(req_txt, F.lit(""))), F.lower(F.coalesce(res_txt, F.lit("")))
+    return (F.when(r.rlike("level [0-9]+ pm|preventive"), "planned")
+             .when(q.rlike("vandal|graffiti|abuse"), "vandal_customer")
+             .when(q.rlike("planned|preventive|scheduled"), "planned")
+             .when(q.rlike("corrective|repair|fault|break|fix|incident"), "corrective")
              .otherwise("other"))
 
 
@@ -228,10 +235,7 @@ chg = (chg
                           F.least(F.greatest(F.col("_raw_min"), F.lit(0.0)),
                                   F.lit(MAX_REPAIR_MIN))).cast("double"))
        .withColumn("res_class", res_rule(F.coalesce(F.col("_res_txt"), F.lit(""))))
-       # request type only: resolution notes say "customer" and "damage" on ordinary repairs,
-       # so a missing request type stays "other" rather than being guessed from free text
-       .withColumn("req_class", F.when(F.col("_req_txt").isNull(), F.lit("other"))
-                                 .otherwise(req_rule(F.col("_req_txt")))))
+       .withColumn("req_class", req_rule(F.col("_req_txt"), F.col("_res_txt"))))
 
 _q = chg.agg(
     F.count(F.lit(1)).alias("rows"),

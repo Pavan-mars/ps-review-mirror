@@ -967,7 +967,7 @@ SNREP_FEATURE_COLS = ([f"{c}_prior_sum_{w}d" for c in SNREP_BASE_COLS for w in (
 # VALIDATOR has no incident_history rows; it gets SN repair only through incident_task_ci_link.
 SNREP_FLEETS = ("GATE", "TVM") + (("VALIDATOR",) if _enable_validator_ticket_features() else ())
 # CTA chargability tickets, keyed by the day the ticket CLOSED.
-CHG_BASE_COLS = ["chg_closed_cnt", "chg_reset_cnt", "chg_replace_cnt", "chg_nff_cnt",
+CHG_BASE_COLS = ["chg_closed_cnt", "chg_reset_cnt", "chg_replace_cnt", "chg_nff_cnt", "chg_adjust_cnt",
                  "chg_vandal_cnt", "chg_planned_cnt", "chg_repair_min_sum", "chg_component_types"]
 CHG_FEATURE_COLS = [f"{c}_prior_sum_{w}d" for c in CHG_BASE_COLS for w in (7, 30)]
 # Day-D calendar facts, known in advance -- not windows, and not same-day leakage.
@@ -2590,6 +2590,7 @@ def add_auxiliary(
                 .agg(F.max(_cls(_g_res, "reset")).alias("_reset"),
                      F.max(_cls(_g_res, "replace")).alias("_replace"),
                      F.max(_cls(_g_res, "nff")).alias("_nff"),
+                     F.max(_cls(_g_res, "adjust")).alias("_adjust"),
                      F.max(_cls(_g_req, "vandal_customer")).alias("_vandal"),
                      F.max(_cls(_g_req, "planned")).alias("_planned"),
                      (F.max(F.col(_g_rep).cast("double")) if _g_rep
@@ -2603,6 +2604,8 @@ def add_auxiliary(
                      F.sum("_reset").alias("chg_reset_cnt"),
                      F.sum("_replace").alias("chg_replace_cnt"),
                      F.sum("_nff").alias("chg_nff_cnt"),
+                     # hands-on clears: feed errors, jams, worn/torn bills, foreign material
+                     F.sum("_adjust").alias("chg_adjust_cnt"),
                      F.sum("_vandal").alias("chg_vandal_cnt"),
                      F.sum("_planned").alias("chg_planned_cnt"),
                      F.sum("_rep").alias("chg_repair_min_sum"),

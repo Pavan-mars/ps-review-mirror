@@ -110,7 +110,8 @@ act_now = P(OOS within 7 days) >= per-fleet threshold.
 | P5-6 | Hard-coded concordance narrative replaced by text computed from the feeds. |
 | P5-7 | Loader: `committed_partial` + HTTP 500 when any artifact is skipped/refused/errored; `incomplete` lists them. |
 | Retire (code-only) | `fastapi_app/ps5_reliability_routes.py` removed; Device-360 fallback to `ps5_reliability_estimates` removed. |
-| Not done | P5-4 (per-device weighting) — needs a modelling decision after the refit; survival curves (write `ps5_weibull_params`) — next. Shadow stack retirement waits on the AWS check. |
+| P5-4 (decided 26-Sep) | `PS5_DEVICE_WEIGHTED=true` weights each device equally in the final Weibull/Cox fit (default off). Run the refit once as the baseline, then again with it on, and compare typical interval, overdue share and p_oos_7d per fleet. Test: `test_device_weighting_stops_chronic_device_dominating` (needs numpy/scipy, run in Studio). |
+| Not done | survival curves (write `ps5_weibull_params`) — next. Shadow stack retirement waits on the AWS check. |
 
 ### Local checks
 ```bash

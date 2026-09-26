@@ -21,7 +21,7 @@ READY manifest → `cubic-mars-ps4-v3-loader` → `ps4_weekly_*`, `ps4_cluster_*
 - **P4-3** loader rolls the whole load back when any dataset is missing (`allow_partial=true` to override).
 - **P4-4** loader stores NULL + `quality_source='not_published'` instead of another run's silhouettes; dashboard shows "--" for NULL and a provenance badge whenever the source is not this run's manifest.
 - **P4-6 + legacy generation** removed: the two routes; `sql/20, 25, 33` deleted and `ps4_anomaly_alerts` removed from sql/01; `sql/70_ps4_legacy_drop.sql` drops 16 tables, 10 views and 1 type (no CASCADE, dependents-first, tested on PG16 against the original DDL); legacy producers moved to `_retired/ps4_daily_loader/producers/`. `gold.device_ps4_hourly` (feeds PS1) untouched.
-- **Not changed — needs your call:** P4-5. Proposed: exclude device-days with a hardware-OOS event (and the 3 days before) from `train_daily`, compare alert volumes and precision against incidents on one run before adopting.
+- **P4-5 (decided 26-Sep)** the clustering fit (centroids and each cluster's p99 outlier line) excludes training device-days with an OOS event on the day or within 3 days after (`TRAIN_EXCLUDE_FAULT_DAYS`, `TRAIN_FAULT_LOOKAHEAD_DAYS`, cell 4). The z-score baselines keep the full history on purpose: without OOS days the OOS-rate spread is zero and `signal_oos` could never fire. The run prints and records in the manifest how many days were excluded. Expect more candidate/actionable weeks than before; compare one run with the flag False vs True.
 
 ## 3. Client-facing gaps
 - Link each actionable week to what happened next (OOS/incident within 14 days) — the only honest precision measure for an unsupervised detector, and the table the client will ask for.

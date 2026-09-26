@@ -18,6 +18,7 @@ at the end. The figure to quote is the one marked CV-SELECTED.
 """
 import argparse
 import datetime as _dt
+import fnmatch
 import json
 import os
 import time
@@ -969,7 +970,7 @@ def main():
                     help="drop training rows before this date (LEFT-CENSORED warm-up); '' keeps them")
     ap.add_argument("--tune-frac", type=float, default=1.0, help="device sample used for tuning only")
     ap.add_argument("--threads", type=int, default=max(1, (os.cpu_count() or 2) // 2))
-    ap.add_argument("--drop", default="", help="comma list of features to withhold; name* = prefix")
+    ap.add_argument("--drop", default="", help="comma list of features to withhold; shell patterns, e.g. name* (prefix) or *_d0 (suffix)")
     ap.add_argument("--drop-preset", default="", choices=["", "honest"])
     ap.add_argument("--device-prior", action="store_true",
                     help="add dev_prior_pos_rate: the device's own label rate over closed windows only")
@@ -1041,7 +1042,8 @@ def main():
             raise SystemExit(f"--horizon {a.horizon} is shorter than the checkpoint's {_ckpt_h}-day label: "
                              f"lagged labels would not have matured; pass --horizon {_ckpt_h}")
     pats = [x.strip() for x in a.drop.split(",") if x.strip()] + DROP_PRESETS.get(a.drop_preset, [])
-    dropped = [f for f in feats if any(f == p or (p.endswith("*") and f.startswith(p[:-1])) for p in pats)]
+    # shell-style patterns: name* (prefix, as before), *_d0 (suffix), exact names
+    dropped = [f for f in feats if any(fnmatch.fnmatchcase(f, p) for p in pats)]
     if dropped:
         feats = [f for f in feats if f not in dropped]
         log(f"withheld {len(dropped)} features ({a.drop_preset or 'custom'}): {dropped}")

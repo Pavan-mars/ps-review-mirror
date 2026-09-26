@@ -490,6 +490,73 @@ def block_bootstrap_auc(y, s, days, n_boot=200, seed=0):
     return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
 
 
+def block_bootstrap_auc_delta(y, s1, s2, days, n_boot=200, seed=0):
+    """95% interval for AUC(s1) - AUC(s2) over the same day resamples. Two overlapping marginal
+    intervals say little about a difference between scores of the same rows; this pairs them."""
+    rng = np.random.default_rng(seed)
+    ud = np.unique(days)
+    idx_by_day = {d: np.where(days == d)[0] for d in ud}
+    vals = []
+    for _ in range(n_boot):
+        pick = rng.choice(ud, len(ud), replace=True)
+        ii = np.concatenate([idx_by_day[d] for d in pick])
+        if 0 < y[ii].sum() < len(ii):
+            vals.append(roc_auc_score(y[ii], s1[ii]) - roc_auc_score(y[ii], s2[ii]))
+    return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
+
+
+def refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, params, rounds):
+    """Production retraining, simulated: each test month is scored by models refitted -- same tuned
+    params, same rounds as the final fit, nothing re-tuned -- on every row whose label had matured
+    when the month opened. Day D's label covers D+1..D+horizon, so a retrain on day S may use rows
+    dated <= S - (horizon + 1); earlier test months join the training data as they would in
+    production. Returns scores aligned to `test` (NaN for a month that could not be fitted), with
+    the ensemble ranked within each month, and one log row per month."""
+    keep = df["split"] == "test"  # the untrimmed test split: --test-start limits scoring, not training
+    if a.warmup_end:
+        keep &= df["event_date"] >= pd.Timestamp(a.warmup_end)
+    if a.train_start:
+        keep &= df["event_date"] >= pd.Timestamp(a.train_start)
+    late = df.loc[keep, feats + [target, "event_date"]].sort_values("event_date", kind="stable")
+    # dev is date-sorted and ends before test, so the pool is one sorted matrix and every month's
+    # training set is a prefix of it -- a view, not a per-month copy. Dev rows keep Xd's order,
+    # so a month whose cutoff admits exactly the dev rows reproduces the final fit.
+    Xp = np.concatenate([Xd, late[feats].to_numpy(np.float32)])
+    yp = np.concatenate([yd, late[target].to_numpy()])
+    dp = np.concatenate([dev["event_date"].to_numpy(), late["event_date"].to_numpy()])
+    del late
+    if (np.diff(dp) < np.timedelta64(0, "D")).any():  # splits overlap in time: sort once
+        o = np.argsort(dp, kind="stable")
+        Xp, yp, dp = Xp[o], yp[o], dp[o]
+    mon = test["event_date"].dt.to_period("M").astype(str).to_numpy()
+    s = np.full(len(test), np.nan)
+    rows = []
+    for m in sorted(set(mon)):
+        idx = np.flatnonzero(mon == m)
+        cut = (pd.Timestamp(f"{m}-01") - pd.Timedelta(days=a.horizon + 1)).to_datetime64()
+        k = int(np.searchsorted(dp, cut, side="right"))
+        pos = int(yp[:k].sum())
+        if not 0 < pos < k:
+            log(f"refit {m}: {k:,} matured rows, {pos:,} positive -- cannot fit, month left unscored")
+            rows.append({"month": m, "cutoff": str(pd.Timestamp(cut).date()), "train_rows": k,
+                         "positives": pos, "scored": 0, "fit_sec": 0.0})
+            continue
+        W = None
+        if a.recency_halflife > 0:  # age from this refit's last training day, as the final fit ages from dev's
+            W = np.power(0.5, ((dp[k - 1] - dp[:k]) // np.timedelta64(1, "D")) / a.recency_halflife)
+        t1, sc = time.time(), {}
+        for n in names:
+            mdl, _ = FIT[n](params[n], Xp[:k], yp[:k], None, None, a.threads, n_estimators=rounds[n], wtr=W)
+            sc[n] = proba(mdl, Xt[idx])
+        s[idx] = rank_mean([sc[n] for n in names]) if len(names) > 1 else sc[names[0]]
+        sec = time.time() - t1
+        log(f"refit {m}: trained on {k:,} rows to {pd.Timestamp(cut).date()} ({pos:,} positive), "
+            f"scored {len(idx):,}, fit {sec:.0f}s")
+        rows.append({"month": m, "cutoff": str(pd.Timestamp(cut).date()), "train_rows": k,
+                     "positives": pos, "scored": int(len(idx)), "fit_sec": round(sec, 1)})
+    return s, rows
+
+
 # --------------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
@@ -516,16 +583,26 @@ def main():
     ap.add_argument("--drop-preset", default="", choices=["", "honest"])
     ap.add_argument("--device-prior", action="store_true",
                     help="add dev_prior_pos_rate: the device's own label rate over closed windows only")
-    ap.add_argument("--horizon", type=int, default=7, help="label horizon, for the device-prior lag")
+    ap.add_argument("--horizon", type=int, default=7,
+                    help="label horizon, for the device-prior lag and the --refit-monthly cutoff")
     ap.add_argument("--no-scan", action="store_true", help="skip the leak and drift checks")
     ap.add_argument("--no-diag", action="store_true",
                     help="skip the methodology diagnostics (duplicates, collinearity, PSI, shuffled-label)")
     ap.add_argument("--reg", default="none", choices=["none", "strong"],
                     help="strong narrows the Optuna ranges toward regularised trees (REG_STRONG)")
+    ap.add_argument("--refit-monthly", action="store_true",
+                    help="also score each test month with models refitted on the rows matured before it "
+                         "(tuned params and rounds unchanged); costs about one final fit per test month")
     a = ap.parse_args()
     t0 = time.time()
 
     base, meta, feats, target, df = load_checkpoint(a.fleet, a.ckpt)
+    _sig = meta.get("PS1_LABEL_SIGNATURE") or {}
+    if "PS1_LABEL_HORIZON_DAYS" in _sig:  # '' is the notebook default of 3
+        _ckpt_h = int(_sig.get("PS1_LABEL_HORIZON_DAYS") or 3)
+        if (a.refit_monthly or a.device_prior) and a.horizon < _ckpt_h:
+            raise SystemExit(f"--horizon {a.horizon} is shorter than the checkpoint's {_ckpt_h}-day label: "
+                             f"lagged labels would not have matured; pass --horizon {_ckpt_h}")
     pats = [x.strip() for x in a.drop.split(",") if x.strip()] + DROP_PRESETS.get(a.drop_preset, [])
     dropped = [f for f in feats if any(f == p or (p.endswith("*") and f.startswith(p[:-1])) for p in pats)]
     if dropped:
@@ -616,9 +693,9 @@ def main():
     chosen = max(cv, key=lambda n: np.mean(cv[n]))
 
     # ---- final fits on the whole dev period, scored once on test -----------
-    test_scores, train_scores = {}, {}
+    test_scores, train_scores, rounds = {}, {}, {}
     for name in models:
-        n_est = int(np.mean(iters[name]) * 1.1) + 1
+        n_est = rounds[name] = int(np.mean(iters[name]) * 1.1) + 1
         log(f"final {name}: {n_est} rounds on {len(dev):,} rows")
         m, _ = FIT[name](best[name], Xd, yd, None, None, a.threads, n_estimators=n_est, wtr=Wd)
         test_scores[name] = proba(m, Xt)
@@ -701,6 +778,68 @@ def main():
         print(f"  {c['constraint']:18s}  {c['budget']:>6.1%}  {f_['precision']:>6.3f}  {f_['recall']:>6.3f} |"
               f"  {t_['flag_share']:>7.1%}   {t_['recall']:>6.3f}  {_prec(t_)}  {t_['accuracy']:>8.3f}"
               f"  {t_['fpr']:>6.3f}  {t_['f1']:>6.3f}")
+
+    refit, s_rf = None, None
+    if a.refit_monthly:
+        try:
+            # the static figures above score all of test with one model frozen at the end of dev; this
+            # measures what monthly retraining recovers of the drift between the two periods
+            names = models if chosen == "ensemble" else [chosen]
+            log(f"refit monthly: {', '.join(names)}, {a.horizon}-day label lag, rounds "
+                + ", ".join(f"{n} {rounds[n]}" for n in names))
+            s_rf, rf_rows = refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, best, rounds)
+            st = test_scores[chosen]
+            if chosen == "ensemble":
+                # rank the static members within each month as the refit does; ranks over all of test
+                # are a different blend, and the difference would mix that into the retraining effect
+                mon_t, st = test["event_date"].dt.to_period("M").astype(str).to_numpy(), np.empty(len(test))
+                for m in np.unique(mon_t):
+                    i = np.flatnonzero(mon_t == m)
+                    st[i] = rank_mean([test_scores[n][i] for n in models])
+            cov = ~np.isnan(s_rf)
+            y_c, s_c, st_c = yt[cov], s_rf[cov], st[cov]
+            print(f"\nREFIT MONTHLY -- each test month scored by models retrained on data available before it "
+                  f"(labels need {a.horizon} days to mature)")
+            print(f"  {int(cov.sum()):,} of {len(cov):,} test rows scored; static = the final model above, same rows"
+                  + ("" if chosen != "ensemble" else "; both ensembles ranked within each month, so the pooled "
+                   "AUC is not the QUOTE figure -- read the paired delta and the monthly lines"))
+            refit = {"model": chosen, "fitted": names, "rounds": {n: rounds[n] for n in names},
+                     "rows_scored": int(cov.sum()), "months": rf_rows}
+            if cov.sum() == 0:
+                print("  no month could be refitted (see the refit log lines) -- nothing to measure")
+            elif not 0 < y_c.sum() < len(y_c):
+                print("  no scored month holds both classes -- nothing to measure")
+            else:
+                days_c = days_t[cov]
+                d_c = test["event_date"].reset_index(drop=True)[cov].reset_index(drop=True)
+                rl = []
+                r_rf = report(f"refit {chosen}", y_c, s_c, d_c, rl)
+                r_st = report(f"static {chosen}", y_c, st_c, d_c, rl)
+                rlo, rhi = block_bootstrap_auc(y_c, s_c, days_c)
+                dlo, dhi = block_bootstrap_auc_delta(y_c, s_c, st_c, days_c)
+                rb = budget_metrics(y_c, daily_rank(s_c, days_c), DAILY_BUDGETS)
+                for r in rb:
+                    r["meets_fpr_acc"] = bool(r["fpr"] <= 0.10 and r["accuracy"] >= 0.85)
+                for ln in rl:
+                    print("  " + ln)
+                print(f"  95% CI (day-block bootstrap, 200 resamples): {rlo:.4f} - {rhi:.4f}   refit - static AUC "
+                      f"{r_rf['auc'] - r_st['auc']:+.4f} (paired 95% CI {dlo:+.4f} .. {dhi:+.4f})")
+                for tag, rr in (("refit ", r_rf), ("static", r_st)):
+                    if rr["monthly"]:
+                        print(f"  monthly AUC {tag}: "
+                              + "  ".join(f"{m} {v:.3f}" for m, v in sorted(rr["monthly"].items())))
+                print(f"  daily budget -- {chosen} refit; each day, flag the top q% of that day's devices by score")
+                print("  budget   flagged   recall  precision  accuracy    FPR      F1")
+                for r in rb:
+                    print(f"  {r['budget']:>6.0%}   {r['flag_share']:>7.1%}   {r['recall']:>6.3f}  {_prec(r)}"
+                          f"  {r['accuracy']:>8.3f}  {r['fpr']:>6.3f}  {r['f1']:>6.3f}"
+                          + ("   <- FPR <= 0.10 and accuracy >= 0.85" if r["meets_fpr_acc"] else ""))
+                refit.update({"auc": r_rf["auc"], "ap": r_rf["ap"], "ci95": [rlo, rhi], "monthly": r_rf["monthly"],
+                              "static_auc": r_st["auc"], "static_ap": r_st["ap"], "static_monthly": r_st["monthly"],
+                              "delta_auc_ci95": [dlo, dhi], "budgets": rb})
+        except Exception as exc:  # the static results above must still be written
+            print(f"\nREFIT MONTHLY failed ({type(exc).__name__}: {exc}); the static results are unaffected")
+            refit = {"error": f"{type(exc).__name__}: {exc}"}
     if "lgb" in models:
         print("\nLightGBM top-15 gain:")
         for f, v in top_imp.items():
@@ -712,9 +851,10 @@ def main():
         json.dump({"fleet": a.fleet, "args": vars(a), "cv": cv, "chosen": chosen, "withheld": dropped, "best_params": best,
                    "test": {k: {"auc": v["auc"], "ap": v["ap"], "monthly": v["monthly"]} for k, v in res.items()},
                    "operating_points": ops, "daily_budgets": budgets, "constrained_ops": cops,
-                   "diagnostics": diag},
+                   "diagnostics": diag, **({"refit_monthly": refit} if refit else {})},
                   fh, indent=1, default=float)
-    pd.DataFrame({"event_date": test["event_date"].to_numpy(), "y": yt, **test_scores}).to_parquet(
+    pd.DataFrame({"event_date": test["event_date"].to_numpy(), "y": yt, **test_scores,
+                  **({f"refit_{chosen}": s_rf} if refit else {})}).to_parquet(
         os.path.join(out, "test_scores.parquet"), index=False)
     log(f"written {os.path.normpath(out)}  ({(time.time() - t0) / 60:.1f} min)")
 

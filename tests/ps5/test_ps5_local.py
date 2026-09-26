@@ -33,7 +33,7 @@ def _notebook_fn(name):
     src = "".join(_engine_src())
     tree = ast.parse("\n".join(l for l in src.splitlines() if not l.lstrip().startswith(("%", "!"))))
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
-    ns = {"weibull_survival": lambda t, k, lam: math.exp(-((max(t, 0.0) / lam) ** k))}
+    ns = {"weibull_survival": lambda t, k, lam: math.exp(-((max(t, 0.0) / lam) ** k)), "_expm1_fn": math.expm1}
     exec(compile(ast.Module([node], []), str(NB), "exec"), ns)
     return ns[name]
 
@@ -49,6 +49,15 @@ def test_p_event_within_bounds_and_monotonic():
             assert vals == sorted(vals)
     assert p(0, 1.0, 1.5, 7.0) == pytest.approx(1 - math.exp(-7 / 1.5))   # memoryless check
     assert p(0, 1.0, 1.5, 0.0) == pytest.approx(0.0)
+
+
+def test_long_quiet_device_is_not_scored_as_certain():
+    """26-Sep-2026 run: 51 gates / 298 validators got p_oos_1d = 1.0 because S(age) underflowed. With shape < 1 a
+    long quiet run LOWERS the hazard, so these must score below a recently faulted device, never 1.0."""
+    p = _notebook_fn("p_event_within")
+    long_quiet = p(400.0, 0.93, 1.0, 1.0)          # S(400) ~ 1e-163 under the old ratio form
+    assert 0.0 < long_quiet < 0.5
+    assert long_quiet < p(0.5, 0.93, 1.0, 1.0)
 
 
 def _load_loader(monkeypatch):

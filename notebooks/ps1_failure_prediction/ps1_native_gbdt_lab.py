@@ -710,6 +710,75 @@ def episode_recall(ep, flag):
     return float(caught.mean()), int(len(caught))
 
 
+def confirm_flags(dev_ids, dates, flag, days=2):
+    """A flag that has held for `days` consecutive calendar days on the same device: flagged
+    today and on each of the previous days-1 days. A device with no row yesterday (out of the
+    scored population, or no events) starts a new run. Trades lead time for fewer one-day
+    false alarms."""
+    d = pd.DataFrame({"dev": np.asarray(dev_ids), "t": pd.DatetimeIndex(dates).normalize(),
+                      "f": np.asarray(flag, bool), "i": np.arange(len(flag))}).sort_values(["dev", "t"])
+    prev_f = d.groupby("dev")["f"].shift(1, fill_value=False).astype(bool)
+    step1 = d.groupby("dev")["t"].diff().dt.days.eq(1)
+    cont = d["f"] & prev_f & step1
+    run = d.groupby((~cont).cumsum()).cumcount() + 1
+    out = np.zeros(len(d), bool)
+    out[d["i"].to_numpy()] = (d["f"] & (run >= days)).to_numpy()
+    return out
+
+
+def alert_rows(dev_ids, dates, flag, window=7):
+    """One alert per device per `window` days, as a ticket would be raised: a device's first
+    flag is an alert, and a later flag is a new alert only once `window` days have passed since
+    the last one. The flags in between ride on the open alert."""
+    d = pd.DataFrame({"dev": np.asarray(dev_ids), "t": pd.DatetimeIndex(dates).normalize(),
+                      "i": np.arange(len(flag))})[np.asarray(flag, bool)].sort_values(["dev", "t"])
+    out = np.zeros(len(flag), bool)
+    step = np.timedelta64(window, "D")
+    for _, g in d.groupby("dev", sort=False):
+        last = None
+        for t, i in zip(g["t"].to_numpy(), g["i"].to_numpy()):
+            if last is None or t - last >= step:
+                out[i] = True
+                last = t
+    return out
+
+
+def alert_views(y, flag, dev_ids, dates, ep, confirm_days=2, alert_window=7):
+    """Three readings of one set of flags: as flagged (per device-day), confirmed over
+    consecutive days, and as alerts (one per device per week). Alert precision = alerts
+    followed by a failure start within the horizon, which is the alert row's own label."""
+    out = {}
+    for name, f in (("flagged", np.asarray(flag, bool)),
+                    ("confirmed", confirm_flags(dev_ids, dates, flag, confirm_days))):
+        c = confusion(y, f)
+        c["episode_recall"] = episode_recall(ep, f)[0]
+        out[name] = c
+    al = alert_rows(dev_ids, dates, flag, alert_window)
+    out["alerts"] = {"alerts": int(al.sum()), "precision": float(y[al].mean()) if al.any() else None,
+                     "episode_recall": episode_recall(ep, al)[0]}
+    return out
+
+
+def print_alert_views(rows, confirm_days, alert_window):
+    """rows: (label, alert_views output). Row recall, per-failure recall and precision for the
+    flags as raised, after the confirmation rule, and as de-duplicated alerts."""
+    def _f(v, w=6):
+        return f"{v:>{w}.3f}" if v is not None else f"{'-':>{w}s}"
+
+    print(f"  {'':18s}  ----- as flagged -----   -- confirmed {confirm_days} days: rows --------------   "
+          f"-- alerts, 1 per device per {alert_window}d --")
+    print(f"  {'':18s}  recall  per-fail   prec   recall  per-fail   prec    FPR     acc     F1     "
+          f"alerts   prec  per-fail")
+    for label, v in rows:
+        f_, c_, a_ = v["flagged"], v["confirmed"], v["alerts"]
+        print(f"  {label:18s}  {_f(f_['recall'])}  {_f(f_['episode_recall'], 8)}  {_f(f_['precision'])}"
+              f"  {_f(c_['recall'])}  {_f(c_['episode_recall'], 8)}  {_f(c_['precision'])}  {_f(c_['fpr'])}"
+              f"  {_f(c_['accuracy'])}  {_f(c_['f1'])}   {a_['alerts']:>7,}  {_f(a_['precision'])}  "
+              f"{_f(a_['episode_recall'], 8)}")
+    print("  per-fail = share of failures (approximate episodes) with at least one flag -- or alert -- in the "
+          "days before them; a metric definition to agree with Cubic, reported beside row recall")
+
+
 def threshold_policy(y, p, dates, horizon, p_high=0.90, r_med=0.50, cal_days=30, min_cal=500):
     """Calibrated fixed cuts on the model's probability, recalibrated every month. Before each
     month, both cuts are set on the latest `cal_days` of rows whose labels had matured by then
@@ -751,8 +820,10 @@ def threshold_policy(y, p, dates, horizon, p_high=0.90, r_med=0.50, cal_days=30,
     return tier, rows
 
 
-def print_policy(title, y, tier, rows, ep, p_high, r_med, horizon, cal_days):
-    """The threshold-policy tables: month by month, the tiers, both policies and the contract."""
+def print_policy(title, y, tier, rows, ep, p_high, r_med, horizon, cal_days, dev_ids=None, dates=None,
+                 confirm_days=2, alert_window=7):
+    """The threshold-policy tables: month by month, the tiers, both policies and the contract; with
+    dev_ids, also the confirmed and per-alert readings of both policies."""
     def _f(v, w=6, d=3):
         return f"{v:>{w}.{d}f}" if v is not None else f"{'-':>{w}s}"
 
@@ -803,6 +874,19 @@ def print_policy(title, y, tier, rows, ep, p_high, r_med, horizon, cal_days):
               + f"; recall >= 0.50 floor {'MET' if c['recall'] >= 0.50 else 'not met'}")
     print(f"  episode-recall = share of failures ({n_ep:,} approximate episodes) with at least one flagged lead day; "
           "a metric definition to agree with Cubic, reported beside row recall, never instead of it")
+    if dev_ids is not None:
+        dv, dt = np.asarray(dev_ids)[sc], np.asarray(dates)[sc]
+        views = [(name, alert_views(ys, flag, dv, dt, ep[sc], confirm_days, alert_window))
+                 for name, flag in (("flag High", ts == 2), ("flag High+Medium", ts >= 1))]
+        print("  the same two policies, confirmed and as alerts:")
+        print_alert_views(views, confirm_days, alert_window)
+        out["alert_views"] = dict(views)
+        for name, v in views:
+            c = v["confirmed"]
+            verdict = [f"{k} {'-' if c[k] is None else f'{c[k]:.3f}'} "
+                       f"{'MET' if c[k] is not None and (c[k] >= b if op == '>=' else c[k] <= b) else 'not met'}"
+                       for k, op, b in CONTRACT]
+            print(f"    contract, {name} confirmed {confirm_days} days: " + "; ".join(verdict))
     return out
 
 
@@ -928,6 +1012,12 @@ def main():
                          "the checkpoint's ETL already dropped them (PS1_LABEL_MASK_UNOBSERVED), else --horizon. "
                          "--exclude-dates days always use --horizon")
     ap.add_argument("--test-end", default="", help="score only test rows on/before this date (a source-tail check)")
+    ap.add_argument("--alerts", action="store_true",
+                    help="for the daily budgets and the --policy tiers, also report per-failure recall, the flags "
+                         "confirmed over --confirm-days consecutive days, and one alert per device per "
+                         "--alert-window days")
+    ap.add_argument("--confirm-days", type=int, default=2)
+    ap.add_argument("--alert-window", type=int, default=7)
     ap.add_argument("--segment", action="store_true",
                     help="add seg_code, the DEVICE_ID type prefix (GATE: RVG / HBG / SAG), and report test AUC "
                          "per segment; skipped on a fleet whose IDs share one prefix")
@@ -1226,6 +1316,11 @@ def main():
           f"recall >= 0.80, F1 >= 0.80, FPR <= 0.10, accuracy >= 0.90 (0.85)")
 
     days_t = test["event_date"].to_numpy()
+    dev_t = test["DEVICE_ID"].to_numpy() if "DEVICE_ID" in test.columns else None
+    ep_t = episode_ids(dev_t, days_t, yt) if dev_t is not None else np.full(len(yt), -1)
+    if a.alerts and dev_t is None:
+        log("--alerts needs DEVICE_ID in the checkpoint; skipped")
+    _alerts = a.alerts and dev_t is not None
     budgets = budget_metrics(yt, daily_rank(test_scores[chosen], days_t), DAILY_BUDGETS)
     for r in budgets:
         r["meets_fpr_acc"] = bool(r["fpr"] <= 0.10 and r["accuracy"] >= 0.85)
@@ -1239,6 +1334,14 @@ def main():
         print(f"  {r['budget']:>6.0%}   {r['flag_share']:>7.1%}   {r['recall']:>6.3f}  {_prec(r)}"
               f"  {r['accuracy']:>8.3f}  {r['fpr']:>6.3f}  {r['f1']:>6.3f}"
               + ("   <- FPR <= 0.10 and accuracy >= 0.85" if r["meets_fpr_acc"] else ""))
+    budget_alerts = {}
+    if _alerts:
+        _r_t = daily_rank(test_scores[chosen], days_t)
+        views = [(f"daily {q:.0%}", alert_views(yt, _r_t <= q + 1e-9, dev_t, days_t, ep_t,
+                                                a.confirm_days, a.alert_window)) for q in DAILY_BUDGETS]
+        print(f"  the same budgets, per failure, confirmed {a.confirm_days} days, and as alerts:")
+        print_alert_views(views, a.confirm_days, a.alert_window)
+        budget_alerts = dict(views)
 
     fs_, fe_ = folds[-1][2], folds[-1][3]
     cops = constrained_ops(yd[va_last], s_cal, dev["event_date"].to_numpy()[va_last], yt, test_scores[chosen], days_t)
@@ -1256,8 +1359,8 @@ def main():
               f"  {t_['fpr']:>6.3f}  {t_['f1']:>6.3f}")
 
     blend_names = models if chosen in ("ensemble", "stack") else [chosen]
-    ep_t = (episode_ids(test["DEVICE_ID"].to_numpy(), days_t, yt) if "DEVICE_ID" in test.columns
-            else np.full(len(yt), -1))
+    _av = dict(dev_ids=dev_t if _alerts else None, dates=days_t, confirm_days=a.confirm_days,
+               alert_window=a.alert_window)
     policy = {}
     if a.policy:
         p_static = policy_score(test_scores, blend_names)
@@ -1266,7 +1369,7 @@ def main():
         policy["static"] = print_policy(
             f"THRESHOLD POLICY -- {chosen} (static model), probability "
             + ("= mean of member probabilities" if len(blend_names) > 1 else "of the model"),
-            yt, tier, prow, ep_t, a.policy_precision, a.policy_recall, a.horizon, a.policy_cal_days)
+            yt, tier, prow, ep_t, a.policy_precision, a.policy_recall, a.horizon, a.policy_cal_days, **_av)
         if a.fleet == "TVM":
             print("  TVM is scored on all days, so a device's positive rows can run through an open outage; "
                   "episode-recall is looser there than on the in-service fleets")
@@ -1340,7 +1443,7 @@ def main():
                     policy["refit"] = print_policy(
                         f"THRESHOLD POLICY -- {chosen} refitted monthly (production cadence)",
                         yt, tier_r, prow_r, ep_t, a.policy_precision, a.policy_recall, a.horizon,
-                        a.policy_cal_days)
+                        a.policy_cal_days, **_av)
         except Exception as exc:  # the static results above must still be written
             print(f"\nREFIT MONTHLY failed ({type(exc).__name__}: {exc}); the static results are unaffected")
             refit = {"error": f"{type(exc).__name__}: {exc}"}
@@ -1355,6 +1458,7 @@ def main():
         json.dump({"fleet": a.fleet, "args": vars(a), "cv": cv, "chosen": chosen, "withheld": dropped, "best_params": best,
                    "test": {k: {"auc": v["auc"], "ap": v["ap"], "monthly": v["monthly"]} for k, v in res.items()},
                    "operating_points": ops, "daily_budgets": budgets, "constrained_ops": cops,
+                   **({"daily_budget_alerts": budget_alerts} if budget_alerts else {}),
                    "diagnostics": diag, **({"refit_monthly": refit} if refit else {}),
                    **({"policy": policy} if policy else {}),
                    **({"target": target} if a.target else {}),

@@ -346,18 +346,23 @@ def _exclude_nondevice_outages() -> bool:
     return _ps1_env_flag("PS1_EXCLUDE_NONDEVICE_OUTAGES")
 
 
-LABEL_VARIANT_NAMES = ("nondev", "sys", "cap", "all")
+LABEL_VARIANT_NAMES = ("nondev", "sys", "cap", "svc", "all")
+# the exclusions "all" combines; svc and the extra caps are measured on their own
+LABEL_VARIANT_ALL = ("nondev", "sys", "cap")
 # Systemic-outage rule (label variant "sys"). A failure day is systemic when EITHER
 #   site:  at least SYSTEMIC_SITE_MIN_DEVICES devices of the fleet at its FACILITY_ID failed that
 #          day AND they are at least SYSTEMIC_SITE_MIN_SHARE of the fleet's devices observed there
 #   spike: the fleet-wide share of observed devices failing that day is at least
 #          SYSTEMIC_SPIKE_RATIO x its median over the previous SYSTEMIC_SPIKE_LOOKBACK days AND
-#          at least SYSTEMIC_SPIKE_POINTS above it
+#          at least SYSTEMIC_SPIKE_POINTS above it, with at least SYSTEMIC_SPIKE_MIN_DEVICES failing
 SYSTEMIC_SITE_MIN_DEVICES = 3
 SYSTEMIC_SITE_MIN_SHARE = 0.5
 SYSTEMIC_SPIKE_RATIO = 2.0
 SYSTEMIC_SPIKE_POINTS = 0.05
 SYSTEMIC_SPIKE_LOOKBACK = 28
+# a spike needs this many failing devices too: on a small or quiet fleet a near-zero median makes
+# any single failure look like a doubling
+SYSTEMIC_SPIKE_MIN_DEVICES = 10
 
 
 def _label_variants() -> list:
@@ -371,8 +376,12 @@ def _label_variants() -> list:
                 fleet-wide spike (SYSTEMIC_* above). No history of one device predicts those.
       cap    -- days whose every timed OOS Set outlasted PS1_LABEL_MAX_OOS_MINUTES. For
                 VALIDATOR these are buses parked in a depot or garage (PK, 26-Sep): the
-                validator is off because the bus is off.
-      all    -- every exclusion above together
+                validator is off because the bus is off. PS1_LABEL_CAP_ALTS adds one column per
+                shorter cap (lblv_cap720, lblv_cap480, ...) to see where parking starts.
+      svc    -- days whose every OOS Set started in the overnight hours
+                (PS1_LABEL_OVERNIGHT_HOURS, default 1-4 = 01:00-04:59): power cycles and
+                maintenance windows outside service rather than faults a rider meets
+      all    -- nondev, sys and cap together (svc and the extra caps are measured alone)
     The headline label and the scored population are unchanged: an excluded day still keeps
     its device out of the in-service population, since the device was down either way. The
     lab scores a variant with --target lblv_<name>.
@@ -392,6 +401,28 @@ def _label_max_oos_minutes() -> float:
         return float(os.environ.get("PS1_LABEL_MAX_OOS_MINUTES", "1440").strip() or 1440)
     except ValueError:
         raise ValueError("PS1_LABEL_MAX_OOS_MINUTES must be a number of minutes")
+
+
+def _label_cap_alts() -> list:
+    """Extra depot caps, in minutes, each written as lblv_cap<N> (e.g. "720,480")."""
+    raw = os.environ.get("PS1_LABEL_CAP_ALTS", "").strip()
+    try:
+        return sorted({int(float(x)) for x in raw.split(",") if x.strip()}, reverse=True)
+    except ValueError:
+        raise ValueError("PS1_LABEL_CAP_ALTS must be a comma list of minutes, e.g. 720,480")
+
+
+def _label_overnight_hours() -> tuple:
+    """(first, last) overnight hour for the svc variant, inclusive, from 'a-b' (default 1-4, i.e.
+    01:00 to 04:59). a > b wraps midnight, e.g. 23-4."""
+    raw = os.environ.get("PS1_LABEL_OVERNIGHT_HOURS", "1-4").strip()
+    try:
+        a, b = (int(x) for x in raw.split("-"))
+    except ValueError:
+        raise ValueError("PS1_LABEL_OVERNIGHT_HOURS must look like '1-4' (first-last hour, inclusive)")
+    if not (0 <= a <= 23 and 0 <= b <= 23):
+        raise ValueError("PS1_LABEL_OVERNIGHT_HOURS hours must be 0-23")
+    return a, b
 
 
 def _enable_dayd_features() -> bool:
@@ -1555,13 +1586,18 @@ def read_spine(
                   f"ignored for {device_category}")
             _variants = [v for v in _variants if v != "cap"]
         _vexcl = [v for v in _variants if v != "all"]
-        if "all" in _variants and len(_vexcl) < 2:
+        if "all" in _variants and len([v for v in _vexcl if v in LABEL_VARIANT_ALL]) < 2:
             _variants = [v for v in _variants if v != "all"]  # 'all' of one exclusion is that exclusion
         _cap_min = _label_max_oos_minutes() if "cap" in _vexcl else 0.0
+        _cap_alts = [m for m in _label_cap_alts() if m != int(_cap_min)] if _cap_min else []
+        _svc = "svc" in _vexcl
+        _night_h = _label_overnight_hours() if _svc else None
         if _variants:
-            print(f"[label] label variants   : {', '.join('lblv_' + v for v in _variants)} beside {TARGET_COL}; "
-                  f"headline label and scored rows unchanged"
-                  + (f"; cap = timed OOS Sets over {_cap_min:g} min" if _cap_min else ""))
+            print(f"[label] label variants   : "
+                  f"{', '.join(['lblv_' + v for v in _variants] + [f'lblv_cap{m}' for m in _cap_alts])} beside "
+                  f"{TARGET_COL}; headline label and scored rows unchanged"
+                  + (f"; cap = timed OOS Sets over {_cap_min:g} min" if _cap_min else "")
+                  + (f"; svc = Sets starting {_night_h[0]:02d}:00-{_night_h[1]:02d}:59 only" if _svc else ""))
         print(f"[label] session gap days : {_gap}" + ("  (0 = count every event-day)" if not _gap else ""))
         _edge = _label_observed_edge()
         _active = _exclude_active_episode()
@@ -1677,29 +1713,60 @@ def read_spine(
         # (VALIDATOR in a depot or garage), not a fault. A Set with no recorded clear is not
         # timed, so a day holding one stays a failure day unless a timed long Set is also there
         # and no short one is.
-        _long_days = None
-        if _cap_min:
-            _durc = _silver_col(dee_raw, "duration_to_clear_min", dee_map)
-            _dur = F.col(f"dee.{_durc}").cast("double")
-            _fd_cap = (
+        # Variant "svc": a failure day whose every Set started in the overnight hours. One
+        # aggregation over the Sets serves the caps and the overnight test.
+        _long_days, _alt_long, _night_days = None, {}, None
+        if _cap_min or _svc:
+            _aggs = []
+            if _cap_min:
+                _durc = _silver_col(dee_raw, "duration_to_clear_min", dee_map)
+                # NaN is "no recorded clear" like NULL; Spark orders NaN above every number, so
+                # left alone it would count as the longest outage of all
+                _dur = F.nanvl(F.col(f"dee.{_durc}").cast("double"), F.lit(None).cast("double"))
+                for _m in [_cap_min] + _cap_alts:
+                    _tg = "" if _m == _cap_min else f"_{int(_m)}"
+                    _aggs += [F.sum(F.when(_dur <= F.lit(float(_m)), 1).otherwise(0)).alias(f"_n_short{_tg}"),
+                              F.sum(F.when(_dur > F.lit(float(_m)), 1).otherwise(0)).alias(f"_n_long{_tg}")]
+                _aggs.append(F.sum(F.when(_dur.isNull(), 1).otherwise(0)).alias("_n_open"))
+            if _svc:
+                _hr = F.hour(F.to_timestamp(F.col(f"dee.{dee_dtm}")))
+                _h0, _h1 = _night_h
+                _night = ((_hr >= _h0) & (_hr <= _h1)) if _h0 <= _h1 else ((_hr >= _h0) | (_hr <= _h1))
+                _aggs += [F.sum(F.when(_night, 1).otherwise(0)).alias("_n_night"),
+                          F.sum(F.when(_hr.isNotNull() & ~_night, 1).otherwise(0)).alias("_n_dayt")]
+            _fd_attr = (
                 _fd_ev.groupBy(F.col(f"dee.{dee_dev}").alias("DEVICE_ID"),
                                F.to_date(F.col(f"dee.{dee_dtm}")).alias("failure_date"))
-                .agg(F.sum(F.when(_dur <= F.lit(_cap_min), 1).otherwise(0)).alias("_n_short"),
-                     F.sum(F.when(_dur > F.lit(_cap_min), 1).otherwise(0)).alias("_n_long"),
-                     F.sum(F.when(_dur.isNull(), 1).otherwise(0)).alias("_n_open"))
+                .agg(*_aggs)
                 .persist(StorageLevel.MEMORY_AND_DISK)
             )
-            _is_long = (F.col("_n_short") == 0) & (F.col("_n_long") > 0)
-            _cc = _fd_cap.agg(
-                F.count(F.lit(1)).alias("days"),
-                F.sum(F.when(_is_long, 1).otherwise(0)).alias("long_only"),
-                F.sum(F.when(F.col("_n_short") > 0, 1).otherwise(0)).alias("short"),
-                F.sum(F.when((F.col("_n_short") == 0) & (F.col("_n_long") == 0), 1).otherwise(0)).alias("open_only"),
-            ).collect()[0]
-            print(f"[label] cap variant      : {_cc['days']:,} failure days -- {_cc['long_only']:,} hold only Sets "
-                  f"over {_cap_min:g} min (not counted in lblv_cap), {_cc['short']:,} hold a shorter Set, "
-                  f"{_cc['open_only']:,} only Sets with no recorded clear (kept)")
-            _long_days = _fd_cap.where(_is_long).select("DEVICE_ID", "failure_date")
+            _days_n = _fd_attr.count()
+            if _cap_min:
+                # Variant "cap": a failure day whose every TIMED Set outlasted the cap is a parked bus
+                # (VALIDATOR in a depot or garage), not a fault. A Set with no recorded clear is not
+                # timed, so a day holding one stays a failure day unless a timed long Set is also
+                # there and no short one is.
+                for _m in [_cap_min] + _cap_alts:
+                    _tg = "" if _m == _cap_min else f"_{int(_m)}"
+                    _is_long = (F.col(f"_n_short{_tg}") == 0) & (F.col(f"_n_long{_tg}") > 0)
+                    _ld = _fd_attr.where(_is_long).select("DEVICE_ID", "failure_date")
+                    _nl = _ld.count()
+                    _vname = "lblv_cap" if _m == _cap_min else f"lblv_cap{int(_m)}"
+                    print(f"[label] cap variant      : {_nl:,} of {_days_n:,} failure days hold only Sets over "
+                          f"{_m:g} min (not counted in {_vname})")
+                    if _m == _cap_min:
+                        _long_days = _ld
+                    else:
+                        _alt_long[int(_m)] = _ld
+                _n_open_only = _fd_attr.where((F.col("_n_short") == 0) & (F.col("_n_long") == 0)).count()
+                print(f"[label]   untimed        : {_n_open_only:,} failure days hold only Sets with no recorded "
+                      f"clear -- kept as failures in every cap variant")
+            if _svc:
+                _night_days = (_fd_attr.where((F.col("_n_dayt") == 0) & (F.col("_n_night") > 0))
+                               .select("DEVICE_ID", "failure_date"))
+                _nn = _night_days.count()
+                print(f"[label] svc variant      : {_nn:,} of {_days_n:,} failure days hold only Sets starting "
+                      f"{_night_h[0]:02d}:00-{_night_h[1]:02d}:59 (not counted in lblv_svc)")
         if _relief:
             kae_raw = spark.read.parquet(f"{s3_silver}/kpi_avail_enriched/")
             kae_map = _silver_col_map(kae_raw)
@@ -1830,7 +1897,8 @@ def read_spine(
                     _ok = _daily["n"] >= max(10.0, 0.5 * _n_med)
                     _share = (_daily["k"] / _daily["n"]).where(_ok)
                     _med = _share.shift(1).rolling(SYSTEMIC_SPIKE_LOOKBACK, min_periods=7).median()
-                    _hit = _ok & (_share >= SYSTEMIC_SPIKE_RATIO * _med) & (_share >= _med + SYSTEMIC_SPIKE_POINTS)
+                    _hit = (_ok & (_daily["k"] >= SYSTEMIC_SPIKE_MIN_DEVICES)
+                            & (_share >= SYSTEMIC_SPIKE_RATIO * _med) & (_share >= _med + SYSTEMIC_SPIKE_POINTS))
                     _spike_days = [d for d, h in _hit.items() if bool(h)]
                 if _spike_days:
                     _spdf = spark.createDataFrame([(d,) for d in _spike_days], "failure_date date")
@@ -2141,27 +2209,32 @@ def read_spine(
                     .where(F.col("failure_date") >= F.lit(min_day + _dt.timedelta(days=1)))
                     .select("DEVICE_ID", "failure_date"))
 
-        _excl = {"nondev": _nd_days, "sys": _sys_days, "cap": _long_days}
+        _excl = {"nondev": _nd_days, "sys": _sys_days, "cap": _long_days, "svc": _night_days,
+                 **{f"cap{m}": d for m, d in _alt_long.items()}}
         _vsets = {}
-        for _vn in _vexcl:
+        for _vn in list(_vexcl) + [f"cap{m}" for m in _alt_long]:
             if _excl.get(_vn) is None:
                 print(f"[label] !! lblv_{_vn} not written: its exclusion could not be built (see above)")
                 continue
             _vsets[_vn] = _excl[_vn]
-        if "all" in _variants and len(_vsets) >= 2:
+        _all_parts = [v for v in LABEL_VARIANT_ALL if v in _vsets]
+        if "all" in _variants and len(_all_parts) >= 2:
             _u = None
-            for _vn in list(_vsets):
+            for _vn in _all_parts:
                 _u = _vsets[_vn] if _u is None else _u.unionByName(_vsets[_vn])
             _vsets["all"] = _u.distinct()
         for _vn, _vdrop in _vsets.items():
             _vc = f"lblv_{_vn}"
             _vfd = _all_fail_days.join(_vdrop.select("DEVICE_ID", "failure_date"),
                                        ["DEVICE_ID", "failure_date"], "left_anti")
+            # materialised with its lineage cut: a variant's plan carries the whole failure-day
+            # build, and several of them joined onto _labelled would multiply it
             _vld = (_variant_starts(_vfd).crossJoin(seq)
                     .select(F.col("DEVICE_ID").alias("_vdev"),
                             F.date_sub(F.col("failure_date"), F.col("n")).alias("_vday"))
                     .distinct()
-                    .withColumn("_vhit", F.lit(True)))
+                    .withColumn("_vhit", F.lit(True))
+                    .localCheckpoint())
             _labelled = (
                 _labelled.alias("sp")
                 .join(_vld.alias("vl"),
@@ -2169,8 +2242,12 @@ def read_spine(
                       "left")
                 .withColumn(_vc, F.when(F.col("vl._vhit"), F.lit(1)).otherwise(F.lit(0)).cast("byte"))
                 .select("sp.*", _vc)
-                .persist(StorageLevel.MEMORY_AND_DISK)
             )
+        if _vsets:
+            # One persist after all the variant joins, not one per join: nested caches repeat every
+            # inner plan inside the outer one's description, which grows exponentially with the
+            # number of variants and ran a 2 GB driver out of heap on a 1,080-row test.
+            _labelled = _labelled.persist(StorageLevel.MEMORY_AND_DISK)
 
         def _mark_drop(frame, hits, keys, broadcast=False):
             """Set _ps1_drop on rows matching `hits` instead of removing them.

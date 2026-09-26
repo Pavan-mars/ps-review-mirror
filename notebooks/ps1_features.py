@@ -425,6 +425,39 @@ def _label_overnight_hours() -> tuple:
     return a, b
 
 
+def _exclude_nightly_blips() -> bool:
+    """LABEL and POPULATION flag: drop failure days made only of the nightly system blip. Default OFF.
+
+    Measured 26-Sep on GATE, Jun-2025..May-2026, local time: at 02:00 every night about half the
+    fleet (414 of ~805 gates) logs a KPI-counted OOS Set that clears in about a minute (median
+    0.95 min, 99% under 15 min) -- 148,401 Sets at that one hour against ~3,000 in any other,
+    64% of the year's KPI OOS Sets, with a matching burst of DAP comms errors. That is a
+    scheduled system process, not a device fault, yet 93% of GATE failure days held nothing
+    else, so the label was mostly predicting the nightly process.
+
+    A failure day whose every OOS Set started inside PS1_NIGHTLY_BLIP_HOURS and cleared within
+    PS1_NIGHTLY_BLIP_MAX_MINUTES is removed before sessionisation AND before the in-service
+    population is drawn: the device was never really out of service. A day with any other Set --
+    a longer one, an untimed one, or one at another hour -- stays a failure day. Changes both the
+    label and the scored rows.
+    """
+    return _ps1_env_flag("PS1_EXCLUDE_NIGHTLY_BLIPS")
+
+
+def _nightly_blip_window() -> tuple:
+    """(first hour, last hour, max minutes) of the nightly blip: PS1_NIGHTLY_BLIP_HOURS 'a-b'
+    (inclusive, default 2-2, i.e. 02:00-02:59) and PS1_NIGHTLY_BLIP_MAX_MINUTES (default 15)."""
+    raw = os.environ.get("PS1_NIGHTLY_BLIP_HOURS", "2-2").strip()
+    try:
+        a, b = (int(x) for x in raw.split("-"))
+        mx = float(os.environ.get("PS1_NIGHTLY_BLIP_MAX_MINUTES", "15").strip() or 15)
+    except ValueError:
+        raise ValueError("PS1_NIGHTLY_BLIP_HOURS must look like '2-2'; PS1_NIGHTLY_BLIP_MAX_MINUTES a number")
+    if not (0 <= a <= 23 and 0 <= b <= 23) or mx <= 0:
+        raise ValueError("PS1_NIGHTLY_BLIP_HOURS hours must be 0-23 and the max minutes positive")
+    return a, b, mx
+
+
 def _enable_dayd_features() -> bool:
     """Short-term recency for the in-service fleets (GATE, VALIDATOR). Default OFF.
 
@@ -1709,6 +1742,31 @@ def read_spine(
             )
             .distinct()
         )
+        # The nightly system blip (see _exclude_nightly_blips): removed here, ahead of relief,
+        # sessionisation and _all_fail_days, so it is neither a failure nor a reason to leave the
+        # in-service population.
+        if _exclude_nightly_blips():
+            _b0, _b1, _bmax = _nightly_blip_window()
+            _durb = F.nanvl(F.col(f"dee.{_silver_col(dee_raw, 'duration_to_clear_min', dee_map)}").cast("double"),
+                            F.lit(None).cast("double"))
+            _hrb = F.hour(F.to_timestamp(F.col(f"dee.{dee_dtm}")))
+            _inw = ((_hrb >= _b0) & (_hrb <= _b1)) if _b0 <= _b1 else ((_hrb >= _b0) | (_hrb <= _b1))
+            _is_blip = _inw & _durb.isNotNull() & (_durb < F.lit(_bmax))
+            _blip_days = (
+                _fd_ev.groupBy(F.col(f"dee.{dee_dev}").alias("DEVICE_ID"),
+                               F.to_date(F.col(f"dee.{dee_dtm}")).alias("failure_date"))
+                .agg(F.count(F.lit(1)).alias("_n"), F.sum(F.when(_is_blip, 1).otherwise(0)).alias("_nb"))
+                .where(F.col("_n") == F.col("_nb"))
+                .select("DEVICE_ID", "failure_date")
+            )
+            failure_days = failure_days.persist(StorageLevel.MEMORY_AND_DISK)
+            _nb0 = failure_days.count()
+            failure_days = (failure_days.join(_blip_days, ["DEVICE_ID", "failure_date"], "left_anti")
+                            .persist(StorageLevel.MEMORY_AND_DISK))
+            _nb1 = failure_days.count()
+            print(f"[label] nightly blips    : {_nb0 - _nb1:,} of {_nb0:,} failure days held only Sets starting "
+                  f"{_b0:02d}:00-{_b1:02d}:59 that cleared within {_bmax:g} min -- dropped from the label AND "
+                  f"the in-service population ({_nb1:,} failure days remain)")
         # Variant "cap": a failure day whose every TIMED Set outlasted the cap is a parked bus
         # (VALIDATOR in a depot or garage), not a fault. A Set with no recorded clear is not
         # timed, so a day holding one stays a failure day unless a timed long Set is also there

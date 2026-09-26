@@ -130,3 +130,10 @@ Verified here: the three pytest cases pass, and `check_sql.sql` passes on Postgr
    `UPDATE ps5_act_now_policy SET p_threshold=<x>, note='<why>' WHERE city_id='CHI' AND device_type='<T>';`
 5. Rebuild and deploy the dashboard image.
 Until step 3 runs, `p_oos_7d` is NULL on every row, so act_now is FALSE everywhere; that is deliberate, not a guess.
+
+### Retirement (26-Sep, after the CloudShell check)
+Source moved to `_retired/ps5_shadow_stack/` (see its RETIRED.md); `sql/68_ps5_shadow_drop.sql` drops the 4 tables and
+3 views (no CASCADE) and their CREATE/seed blocks are removed from sql/01, 02, 29. Kept: `ps5_weibull_params`,
+`ps5_cox_hazard_ratios` for the survival-curve panel. Note on the refit: enrichment is joined as-of (backward), so
+intervals after 11-Apr carry the frozen April features forward -- nothing is read past 11-Apr, but those features are stale
+for late intervals; judge the refit on the event-history features first.

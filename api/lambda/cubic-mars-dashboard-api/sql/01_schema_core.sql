@@ -612,21 +612,7 @@ CREATE TABLE ps2_hmm_regimes (
   PRIMARY KEY (city_id, regime, computed_date)
 );
 
--- PS5 — reliability / RUL. Was ENTIRELY MISSING from v1.0.0 despite the UI expecting it.
--- data_quality_gate_passed defaults FALSE and stays FALSE until tasks #66/#88/#89/#91 clear.
-CREATE TABLE ps5_reliability_estimates (
-  city_id                  city_code    NOT NULL REFERENCES cities(id),
-  device_id                VARCHAR(30)  NOT NULL,
-  device_type              device_type  NOT NULL,
-  as_of_date               DATE         NOT NULL,
-  concordance_index        NUMERIC(6,5),
-  rul_standard_days        NUMERIC(10,2),
-  rul_conservative_days    NUMERIC(10,2),
-  reader_fault_count_30d   SMALLINT,
-  data_quality_gate_passed BOOLEAN      NOT NULL DEFAULT FALSE,
-  model_id                 UUID         NOT NULL REFERENCES ml_models(id),
-  PRIMARY KEY (device_id, as_of_date)
-);
+-- ps5_reliability_estimates retired 26-Sep-2026 (shadow PS5 stack); dropped by sql/68_ps5_shadow_drop.sql.
 
 CREATE TABLE ps5_weibull_params (
   city_id            city_code    NOT NULL REFERENCES cities(id),
@@ -648,10 +634,7 @@ CREATE TABLE ps5_cox_hazard_ratios (
   PRIMARY KEY (city_id, device_type, fault_code, computed_date)
 );
 
-CREATE OR REPLACE VIEW v_ps5_dashboard_ready AS
-SELECT city_id, device_type, as_of_date, concordance_index, data_quality_gate_passed
-FROM ps5_reliability_estimates
-WHERE data_quality_gate_passed = TRUE;  -- returns 0 rows today by design
+-- v_ps5_dashboard_ready retired 26-Sep-2026 (shadow PS5 stack); dropped by sql/68_ps5_shadow_drop.sql.
 
 INSERT INTO schema_migrations (version, name) VALUES
   ('20260711000001', 'v3_reconcile_dashboard_and_ml_schema_reader_reversal_ps5_added');

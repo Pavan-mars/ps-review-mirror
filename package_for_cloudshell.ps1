@@ -154,6 +154,8 @@ try {
     "api/lambda/cubic-mars-dashboard-api/sql/30_ps5_serial_rul.sql",
     "api/lambda/cubic-mars-dashboard-api/sql/31_ps5_serial_rul_grain.sql",
     "api/lambda/cubic-mars-dashboard-api/sql/32_ps5_serial_dedup.sql",
+    "api/lambda/cubic-mars-dashboard-api/sql/67_ps5_act_now_probability.sql",
+    "api/lambda/cubic-mars-dashboard-api/sql/68_ps5_shadow_drop.sql",
     "api/lambda/cubic-mars-dashboard-api/sql/33_ps4_device_daily.sql",
     "api/lambda/cubic-mars-dashboard-api/sql/34_ps1_cross_wired.sql",
     "api/lambda/cubic-mars-dashboard-api/sql/35_ps1_label_onset.sql",

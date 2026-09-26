@@ -57,18 +57,7 @@ CREATE TABLE IF NOT EXISTS ps2_facility_contagion_summary (
   PRIMARY KEY (city_id, computed_date)
 );
 
--- Category-level PS5 status (the granular ps5_reliability_estimates stays for
--- per-device daily data once the #66/#88/#89/#91 gate clears).
-CREATE TABLE IF NOT EXISTS ps5_reliability_status (
-  city_id           city_code   NOT NULL REFERENCES cities(id),
-  device_type       device_type NOT NULL,
-  concordance_index NUMERIC(6,5),
-  registry_status   VARCHAR(40),
-  dashboard_ready   BOOLEAN     NOT NULL DEFAULT FALSE,
-  blockers          TEXT,
-  as_of_date        DATE        NOT NULL,
-  PRIMARY KEY (city_id, device_type, as_of_date)
-);
+-- ps5_reliability_status retired 26-Sep-2026 (shadow PS5 stack); dropped by sql/68_ps5_shadow_drop.sql.
 
 -- ---------- backfill: PS2 cascade window distribution (2,198,548 total) ----------
 INSERT INTO ps2_cascade_window_summary

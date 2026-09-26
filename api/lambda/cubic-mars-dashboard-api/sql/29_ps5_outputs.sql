@@ -47,30 +47,7 @@ CREATE TABLE IF NOT EXISTS ps5_device_rul (
 CREATE INDEX IF NOT EXISTS ix_ps5_device_rul_band
   ON ps5_device_rul (city_id, device_type, risk_band, rul_standard_days);
 
--- Component grain. The serial-level detail PS3 and PS1 already expose and PS5
--- did not: one row per fitted component, with its own RUL and risk tier.
-CREATE TABLE IF NOT EXISTS ps5_serial_reliability (
-  city_id city_code NOT NULL REFERENCES cities(id),
-  device_type VARCHAR(12) NOT NULL,
-  device_id VARCHAR(40) NOT NULL,
-  component_serial_nbr VARCHAR(64) NOT NULL,
-  component_type_name VARCHAR(120),
-  mars_device_category VARCHAR(12),
-  component_age_days NUMERIC(10,2),
-  device_oos_failures_total INT,
-  risk_score NUMERIC(12,6),
-  risk_tier VARCHAR(16),
-  expected_component_rul_days NUMERIC(10,2),
-  predicted_median_survival_days NUMERIC(10,2),
-  is_overdue BOOLEAN,
-  event_definition VARCHAR(40),
-  event_def_version VARCHAR(60),
-  feature_asof_date DATE,
-  serial_source VARCHAR(60),
-  PRIMARY KEY (city_id, device_id, component_serial_nbr)
-);
-CREATE INDEX IF NOT EXISTS ix_ps5_serial_tier
-  ON ps5_serial_reliability (city_id, device_type, risk_tier);
+-- ps5_serial_reliability retired 26-Sep-2026 (shadow PS5 stack); dropped by sql/68_ps5_shadow_drop.sql.
 
 -- Out-of-time concordance leaderboard. `sd` is the standard deviation across
 -- folds, so a model with a high oot_cindex and a wide sd is not better than a

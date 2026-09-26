@@ -662,8 +662,9 @@ def main():
                     help="also score each test month with models refitted on the rows matured before it "
                          "(tuned params and rounds unchanged); costs about one final fit per test month")
     ap.add_argument("--stack", action="store_true",
-                    help="add 'stack': a logistic regression on the models' OOF percentile ranks; its CV "
-                         "fits on the other folds only, and it competes for the QUOTE like the ensemble")
+                    help="add 'stack': a logistic regression on the models' OOF percentile ranks; its CV is "
+                         "forward-chained (fold k fits on earlier folds only), and it takes the QUOTE from the "
+                         "ensemble only by 0.005 or more")
     ap.add_argument("--relative-features", type=int, default=0,
                     help="add rel_<f>, f's within-day percentile rank, for the N features with the highest "
                          "solo AUC on dev rows; 0 = off")

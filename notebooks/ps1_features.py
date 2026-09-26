@@ -346,6 +346,82 @@ def _exclude_nondevice_outages() -> bool:
     return _ps1_env_flag("PS1_EXCLUDE_NONDEVICE_OUTAGES")
 
 
+LABEL_VARIANT_NAMES = ("nondev", "sys", "cap", "all")
+# Systemic-outage rule (label variant "sys"). A failure day is systemic when EITHER
+#   site:  at least SYSTEMIC_SITE_MIN_DEVICES devices of the fleet at its FACILITY_ID failed that
+#          day AND they are at least SYSTEMIC_SITE_MIN_SHARE of the fleet's devices observed there
+#   spike: the fleet-wide share of observed devices failing that day is at least
+#          SYSTEMIC_SPIKE_RATIO x its median over the previous SYSTEMIC_SPIKE_LOOKBACK days AND
+#          at least SYSTEMIC_SPIKE_POINTS above it
+SYSTEMIC_SITE_MIN_DEVICES = 3
+SYSTEMIC_SITE_MIN_SHARE = 0.5
+SYSTEMIC_SPIKE_RATIO = 2.0
+SYSTEMIC_SPIKE_POINTS = 0.05
+SYSTEMIC_SPIKE_LOOKBACK = 28
+
+
+def _label_variants() -> list:
+    """Label variants written BESIDE the headline label, for measurement. Default none.
+
+    PS1_LABEL_VARIANTS is a comma list of nondev, sys, cap and all. Each adds a byte column
+    lblv_<name> built with the same rows, horizon and session rule as the headline label, with
+    one class of failure day no longer counted as a device failure:
+      nondev -- days a chargability ticket files as vandalism/customer misuse or planned work
+      sys    -- systemic days: most of a site's observed devices failing together, or a
+                fleet-wide spike (SYSTEMIC_* above). No history of one device predicts those.
+      cap    -- days whose every timed OOS Set outlasted PS1_LABEL_MAX_OOS_MINUTES. For
+                VALIDATOR these are buses parked in a depot or garage (PK, 26-Sep): the
+                validator is off because the bus is off.
+      all    -- every exclusion above together
+    The headline label and the scored population are unchanged: an excluded day still keeps
+    its device out of the in-service population, since the device was down either way. The
+    lab scores a variant with --target lblv_<name>.
+    """
+    raw = os.environ.get("PS1_LABEL_VARIANTS", "").strip().lower()
+    names = [x.strip() for x in raw.split(",") if x.strip()]
+    bad = [x for x in names if x not in LABEL_VARIANT_NAMES]
+    if bad:
+        raise ValueError(f"PS1_LABEL_VARIANTS: unknown {bad}; choose from {list(LABEL_VARIANT_NAMES)}")
+    return list(dict.fromkeys(names))
+
+
+def _label_max_oos_minutes() -> float:
+    """Longest OOS Set, in minutes, that still counts as a device failure in the "cap" label
+    variant. Default 1440 (24 hours). A Set with no recorded clear is not timed and is kept."""
+    try:
+        return float(os.environ.get("PS1_LABEL_MAX_OOS_MINUTES", "1440").strip() or 1440)
+    except ValueError:
+        raise ValueError("PS1_LABEL_MAX_OOS_MINUTES must be a number of minutes")
+
+
+def _enable_dayd_features() -> bool:
+    """Short-term recency for the in-service fleets (GATE, VALIDATOR). Default OFF.
+
+    Every other warning feature ends at day D-1. These read the prediction day itself, as of
+    the end of calendar day D: per DOPP family, the count on day D (<name>_d0), the count in
+    its last six hours, 18:00-24:00 (<name>_h6), and the hours from the family's latest event to
+    midnight ending D (hrs_since_<name>). The label counts failures on calendar days D+1..D+7,
+    and an in-service row has no failure on D, so a day-D warning precedes the outcome.
+    Requires PS1_EXCLUDE_ACTIVE_EPISODE: on all days a same-day warning sits beside a same-day
+    failure and would encode the session rule, so the features are withheld there (TVM).
+    Scoring must run after day D is complete.
+    """
+    return _ps1_env_flag("PS1_ENABLE_DAYD_FEATURES")
+
+
+def _date_ranges_text(days, limit=40):
+    """Sorted dates as 'a..b (nd)' runs of consecutive days, for the label printout."""
+    days = sorted(set(days))
+    out, i = [], 0
+    while i < len(days):
+        j = i
+        while j + 1 < len(days) and (days[j + 1] - days[j]).days == 1:
+            j += 1
+        out.append(str(days[i]) + (f"..{days[j]} ({j - i + 1}d)" if j > i else ""))
+        i = j + 1
+    return (", ".join(out[:limit]) + (f", ... {len(out) - limit} more" if len(out) > limit else "")) or "none"
+
+
 def _norm_device_id(col):
     """DEVICE_ID as upper-case trimmed text. Some sources carry it as a float ("1704.0");
     Spark returns a silent zero-row match on that rather than raising."""
@@ -891,6 +967,49 @@ if _enable_dopp_features():
                 _cfg.all_candidate_features.append(_c)
     print(f"[features] DOPP warnings enabled: +{len(DOPP_FEATURE_COLS)} prior-window candidate features")
 
+# -- short-term recency: DOPP families on the prediction day itself (GATE, VALIDATOR) ----
+DAYD_BASE_COLS = list(DOPP_FAMILIES)
+DAYD_FEATURE_COLS = ([f"{c}_d0" for c in DAYD_BASE_COLS] + [f"{c}_h6" for c in DAYD_BASE_COLS]
+                     + [f"hrs_since_{c}" for c in DAYD_BASE_COLS])
+if _enable_dayd_features():
+    for _fl in ("GATE", "VALIDATOR"):
+        for _c in DAYD_FEATURE_COLS:
+            if _c not in FLEET_CONFIG[_fl].all_candidate_features:
+                FLEET_CONFIG[_fl].all_candidate_features.append(_c)
+    print(f"[features] day-D recency enabled: +{len(DAYD_FEATURE_COLS)} candidate features "
+          "(GATE, VALIDATOR; in-service rows only)")
+
+
+def _join_dayd(df_joined, df_dayd):
+    """Join the day-D recency rollup and derive hrs_since_<family>: hours from the family's
+    latest event on or before calendar day D to the midnight that ends D. The latest event is
+    carried forward over every row of the device, including rows PS1_FILTER_AFTER_FEATURES
+    will drop later, so a device's history is complete. No-op without the rollup, and
+    withheld unless the in-service filter is on (see _enable_dayd_features)."""
+    if df_dayd is None:
+        return df_joined
+    if not _exclude_active_episode():
+        print("[features] !! day-D recency withheld: it needs PS1_EXCLUDE_ACTIVE_EPISODE=true; on all "
+              "days a same-day warning sits beside a same-day failure and would encode the session rule")
+        return df_joined
+    df_joined = df_joined.join(df_dayd, on=["DEVICE_ID", "transit_day"], how="left")
+    for c in DAYD_BASE_COLS:
+        for suffix in ("_d0", "_h6"):
+            if f"{c}{suffix}" in df_joined.columns:
+                df_joined = df_joined.withColumn(f"{c}{suffix}", F.coalesce(F.col(f"{c}{suffix}"), F.lit(0.0)))
+    _w = (Window.partitionBy("DEVICE_ID").orderBy("transit_day")
+          .rowsBetween(Window.unboundedPreceding, Window.currentRow))
+    _eod = F.unix_timestamp(F.date_add(F.col("transit_day"), 1).cast("timestamp"))
+    for c in DAYD_BASE_COLS:
+        _ts = f"_{c}_lastts"
+        if _ts in df_joined.columns:
+            _last = F.last(F.col(_ts), ignorenulls=True).over(_w)
+            df_joined = (df_joined
+                         .withColumn(f"hrs_since_{c}", ((_eod - F.unix_timestamp(_last)) / 3600.0).cast("double"))
+                         .drop(_ts))
+    print("Joined day-D recency on DEVICE_ID + calendar day (counts on D, 18:00-24:00, hours since latest)")
+    return df_joined
+
 
 # -- silver.tvm_sale_daily: sale volume, errors, cash/card mix (TVM only) -------
 TVM_SALE_BASE_COLS = ["tvm_sale_count", "tvm_sale_err_count", "tvm_sale_cash_count", "tvm_sale_card_count"]
@@ -1425,6 +1544,22 @@ def read_spine(
         _nondev = _exclude_nondevice_outages()
         if _nondev:
             print("[label] non-device excl : ON -- vandal/customer and planned chargability outages dropped")
+        # Label variants: extra lblv_* columns beside the headline label (PS1_LABEL_VARIANTS).
+        # The depot cap is VALIDATOR's: a GATE or TVM outage over a day is a long repair, not a
+        # parked bus, so "cap" is ignored elsewhere and "all" joins the exclusions that remain.
+        _variants = _label_variants()
+        if "cap" in _variants and device_category.strip().upper() != "VALIDATOR":
+            print(f"[label] label variants   : 'cap' (depot/garage outages) applies to VALIDATOR only -- "
+                  f"ignored for {device_category}")
+            _variants = [v for v in _variants if v != "cap"]
+        _vexcl = [v for v in _variants if v != "all"]
+        if "all" in _variants and len(_vexcl) < 2:
+            _variants = [v for v in _variants if v != "all"]  # 'all' of one exclusion is that exclusion
+        _cap_min = _label_max_oos_minutes() if "cap" in _vexcl else 0.0
+        if _variants:
+            print(f"[label] label variants   : {', '.join('lblv_' + v for v in _variants)} beside {TARGET_COL}; "
+                  f"headline label and scored rows unchanged"
+                  + (f"; cap = timed OOS Sets over {_cap_min:g} min" if _cap_min else ""))
         print(f"[label] session gap days : {_gap}" + ("  (0 = count every event-day)" if not _gap else ""))
         _edge = _label_observed_edge()
         _active = _exclude_active_episode()
@@ -1507,7 +1642,7 @@ def read_spine(
         _lookback = _coverage_lookback_days() if (_guard and _gap > 0) else 0
         _read_start = (min_day - _dt.timedelta(days=_lookback)) if _lookback \
             else (min_day + _dt.timedelta(days=1))
-        failure_days = (
+        _fd_ev = (
             dee_raw.alias("dee")
             .join(
                 F.broadcast(current_devices).alias("d_cur"),
@@ -1528,12 +1663,41 @@ def read_spine(
                 F.to_date(F.col(f"dee.{dee_dtm}"))
                 <= F.date_add(F.lit(max_day), horizon_days)
             )
-            .select(
+        )
+        failure_days = (
+            _fd_ev.select(
                 F.col(f"dee.{dee_dev}").alias("DEVICE_ID"),
                 F.to_date(F.col(f"dee.{dee_dtm}")).alias("failure_date"),
             )
             .distinct()
         )
+        # Variant "cap": a failure day whose every TIMED Set outlasted the cap is a parked bus
+        # (VALIDATOR in a depot or garage), not a fault. A Set with no recorded clear is not
+        # timed, so a day holding one stays a failure day unless a timed long Set is also there
+        # and no short one is.
+        _long_days = None
+        if _cap_min:
+            _durc = _silver_col(dee_raw, "duration_to_clear_min", dee_map)
+            _dur = F.col(f"dee.{_durc}").cast("double")
+            _fd_cap = (
+                _fd_ev.groupBy(F.col(f"dee.{dee_dev}").alias("DEVICE_ID"),
+                               F.to_date(F.col(f"dee.{dee_dtm}")).alias("failure_date"))
+                .agg(F.sum(F.when(_dur <= F.lit(_cap_min), 1).otherwise(0)).alias("_n_short"),
+                     F.sum(F.when(_dur > F.lit(_cap_min), 1).otherwise(0)).alias("_n_long"),
+                     F.sum(F.when(_dur.isNull(), 1).otherwise(0)).alias("_n_open"))
+                .persist(StorageLevel.MEMORY_AND_DISK)
+            )
+            _is_long = (F.col("_n_short") == 0) & (F.col("_n_long") > 0)
+            _cc = _fd_cap.agg(
+                F.count(F.lit(1)).alias("days"),
+                F.sum(F.when(_is_long, 1).otherwise(0)).alias("long_only"),
+                F.sum(F.when(F.col("_n_short") > 0, 1).otherwise(0)).alias("short"),
+                F.sum(F.when((F.col("_n_short") == 0) & (F.col("_n_long") == 0), 1).otherwise(0)).alias("open_only"),
+            ).collect()[0]
+            print(f"[label] cap variant      : {_cc['days']:,} failure days -- {_cc['long_only']:,} hold only Sets "
+                  f"over {_cap_min:g} min (not counted in lblv_cap), {_cc['short']:,} hold a shorter Set, "
+                  f"{_cc['open_only']:,} only Sets with no recorded clear (kept)")
+            _long_days = _fd_cap.where(_is_long).select("DEVICE_ID", "failure_date")
         if _relief:
             kae_raw = spark.read.parquet(f"{s3_silver}/kpi_avail_enriched/")
             kae_map = _silver_col_map(kae_raw)
@@ -1565,7 +1729,8 @@ def read_spine(
         # The active-episode filter still needs every OOS day, excluded or not: a device down
         # for vandalism is not in service, it just did not fail on its own.
         _all_fail_days = failure_days.select("DEVICE_ID", "failure_date")
-        if _nondev:
+        _nd_days = None  # the failure days the rule covers; the headline drops them only under _nondev
+        if _nondev or "nondev" in _vexcl:
             try:
                 _cg_raw = spark.read.parquet(f"{s3_silver}/servicenow_cta_chargability/")
                 _cg = _silver_col_map(_cg_raw)
@@ -1586,24 +1751,106 @@ def read_spine(
                             F.least(F.greatest(_nd_e, _nd_s), F.date_add(_nd_s, 30)).alias("_nd_end"))
                     .distinct()
                 )
-                _fd_in = failure_days.persist(StorageLevel.MEMORY_AND_DISK)
-                _nd_before = _fd_in.count()
-                _fd_out = (
-                    _fd_in.alias("fd")
+                _nd_days = (
+                    _all_fail_days.alias("fd")
                     .join(_nd.alias("nd"),
                           (_norm_device_id(F.col("fd.DEVICE_ID")) == F.col("nd._nd_dev"))
                           & (F.col("fd.failure_date") >= F.col("nd._nd_start"))
                           & (F.col("fd.failure_date") <= F.col("nd._nd_end")),
-                          "left_anti")
+                          "left_semi")
+                    .select("DEVICE_ID", "failure_date")
+                    .distinct()
                     .persist(StorageLevel.MEMORY_AND_DISK)
                 )
-                _nd_after = _fd_out.count()
-                failure_days = _fd_out
-                print(f"[label] non-device excl : {_nd_before - _nd_after:,} of {_nd_before:,} failure days "
-                      f"(chargability req_class vandal_customer/planned)")
+                if _nondev:
+                    _fd_in = failure_days.persist(StorageLevel.MEMORY_AND_DISK)
+                    _nd_before = _fd_in.count()
+                    _fd_out = (_fd_in.join(_nd_days, ["DEVICE_ID", "failure_date"], "left_anti")
+                               .persist(StorageLevel.MEMORY_AND_DISK))
+                    _nd_after = _fd_out.count()
+                    failure_days = _fd_out
+                    print(f"[label] non-device excl : {_nd_before - _nd_after:,} of {_nd_before:,} failure days "
+                          f"(chargability req_class vandal_customer/planned)")
+                else:
+                    print(f"[label] nondev variant   : {_nd_days.count():,} of {_all_fail_days.count():,} failure days "
+                          f"filed vandal_customer/planned (not counted in lblv_nondev)")
             except Exception as exc:
+                _nd_days = None
                 print(f"[label] !! non-device exclusion requested but servicenow_cta_chargability "
                       f"is unavailable ({exc}); nothing excluded")
+
+        # Variant "sys": systemic failure days (SYSTEMIC_* rule, module header). Coverage per
+        # site and per day comes from every event of the fleet, not just OOS Sets, so a site
+        # counts the devices that were reporting at all.
+        _sys_days = None
+        if "sys" in _vexcl:
+            try:
+                _fac_c = _silver_col(dim_raw, "FACILITY_ID", dim_map)
+                _dim_dev_c = _silver_col(dim_raw, "DEVICE_ID", dim_map)
+                _fac = (dim_raw.where(F.col(is_current_col) == True)
+                        .select(_norm_device_id(F.col(_dim_dev_c)).alias("_sd_dev"),
+                                F.col(_fac_c).cast("string").alias("_fac"))
+                        .where(F.col("_fac").isNotNull())
+                        .dropDuplicates(["_sd_dev"]))
+                _obs = (dee_raw.where(F.col(dee_cat) == device_category)
+                        .where(F.to_date(F.col(dee_dtm)).between(
+                            F.lit(_read_start), F.lit(max_day + _dt.timedelta(days=horizon_days))))
+                        .select(_norm_device_id(F.col(dee_dev)).alias("_sd_dev"),
+                                F.to_date(F.col(dee_dtm)).alias("failure_date"))
+                        .distinct()
+                        .persist(StorageLevel.MEMORY_AND_DISK))
+                _fdn = (_all_fail_days
+                        .select(_norm_device_id(F.col("DEVICE_ID")).alias("_sd_dev"), "DEVICE_ID", "failure_date")
+                        .join(F.broadcast(_fac), "_sd_dev", "left")
+                        .persist(StorageLevel.MEMORY_AND_DISK))
+                _n_site = (_obs.join(F.broadcast(_fac), "_sd_dev")
+                           .groupBy("_fac", "failure_date").agg(F.countDistinct("_sd_dev").alias("_n_obs")))
+                _site = (_fdn.where(F.col("_fac").isNotNull())
+                         .groupBy("_fac", "failure_date").agg(F.countDistinct("_sd_dev").alias("_k"))
+                         .join(_n_site, ["_fac", "failure_date"], "left")
+                         .where((F.col("_k") >= SYSTEMIC_SITE_MIN_DEVICES)
+                                & (F.col("_k") >= F.lit(SYSTEMIC_SITE_MIN_SHARE)
+                                   * F.greatest(F.coalesce(F.col("_n_obs"), F.col("_k")), F.col("_k"))))
+                         .select("_fac", "failure_date"))
+                _sys_site = (_fdn.join(_site, ["_fac", "failure_date"], "left_semi")
+                             .select("DEVICE_ID", "failure_date").distinct())
+                # fleet spike: the day's failing share against the median of the days before it
+                _daily = (_obs.groupBy("failure_date").agg(F.countDistinct("_sd_dev").alias("n"))
+                          .join(_fdn.groupBy("failure_date").agg(F.countDistinct("_sd_dev").alias("k")),
+                                "failure_date", "left")
+                          .toPandas())
+                _spike_days = []
+                if len(_daily):
+                    _daily = _daily.sort_values("failure_date").set_index("failure_date")
+                    _daily["k"] = _daily["k"].fillna(0)
+                    _n_med = float(_daily["n"].median())
+                    # a thinly observed day (a feed outage) is not judged: two devices seen, one down, is no spike
+                    _ok = _daily["n"] >= max(10.0, 0.5 * _n_med)
+                    _share = (_daily["k"] / _daily["n"]).where(_ok)
+                    _med = _share.shift(1).rolling(SYSTEMIC_SPIKE_LOOKBACK, min_periods=7).median()
+                    _hit = _ok & (_share >= SYSTEMIC_SPIKE_RATIO * _med) & (_share >= _med + SYSTEMIC_SPIKE_POINTS)
+                    _spike_days = [d for d, h in _hit.items() if bool(h)]
+                if _spike_days:
+                    _spdf = spark.createDataFrame([(d,) for d in _spike_days], "failure_date date")
+                    _sys_spike = (_fdn.join(F.broadcast(_spdf), "failure_date", "left_semi")
+                                  .select("DEVICE_ID", "failure_date"))
+                    _sys_days = _sys_site.unionByName(_sys_spike).distinct()
+                else:
+                    _sys_days = _sys_site
+                _sys_days = _sys_days.persist(StorageLevel.MEMORY_AND_DISK)
+                _n_fd = _fdn.count()
+                _n_sys = _sys_days.count()
+                _n_ss = _sys_site.count()
+                _fac_known = _fdn.where(F.col("_fac").isNotNull()).count()
+                print(f"[label] sys variant      : {_n_sys:,} of {_n_fd:,} failure days systemic "
+                      f"({_n_sys / max(_n_fd, 1):.1%}; not counted in lblv_sys) -- site rule {_n_ss:,} "
+                      f"(FACILITY_ID known on {_fac_known / max(_n_fd, 1):.0%} of failure days), "
+                      f"fleet-spike rule {len(_spike_days)} days")
+                if _spike_days:
+                    print("[label]   spike days     : " + _date_ranges_text(_spike_days, limit=25))
+            except Exception as exc:
+                _sys_days = None
+                print(f"[label] !! systemic variant requested but could not be built ({exc}); lblv_sys skipped")
 
         # Every failure day (captured above, before the non-device exclusion) -- the active-
         # episode exclusion needs the days an episode stays open, not just where it began.
@@ -1682,6 +1929,10 @@ def read_spine(
                     _unobs_days = _idx.where(F.col("_obs") == 0).select("cal_day")
                     print(f"[label] coverage (fleet) : median {_med:,.0f} devices/day, "
                           f"floor {_thresh:,.0f} ({_floor:.0%})")
+                    # the dates themselves, so a data-quality mask can be checked against them
+                    _ud = [r["cal_day"] for r in _unobs_days.where(
+                        (F.col("cal_day") >= F.lit(min_day)) & (F.col("cal_day") <= F.lit(max_day))).collect()]
+                    print(f"[label] unobserved days  : {_date_ranges_text(_ud)}")
                     _join_idx = _idx.select(F.col("cal_day").alias("_ix_day"), "obs_idx")
                     failure_days = (
                         failure_days
@@ -1861,6 +2112,64 @@ def read_spine(
             .select("sp.*", TARGET_COL)
         )
 
+        # ---- label variants (PS1_LABEL_VARIANTS): the headline rule on fewer failure days ----
+        # Each variant starts from _all_fail_days (after relief, before the headline's own
+        # non-device exclusion), drops its class of days, and is sessionised exactly as the
+        # headline is -- same gap, and under the guard the same observed-day index -- so a
+        # variant differs from the headline only by the days it no longer counts.
+        def _variant_starts(fd):
+            fd = fd.select("DEVICE_ID", "failure_date").distinct()
+            if _gap <= 0:
+                return fd
+            _wv = Window.partitionBy("DEVICE_ID").orderBy("failure_date")
+            if not _guard:
+                return (fd.withColumn("_pv", F.lag("failure_date").over(_wv))
+                        .where(F.col("_pv").isNull()
+                               | (F.datediff(F.col("failure_date"), F.col("_pv")) > _gap))
+                        .drop("_pv"))
+            if _coverage_signal() == "fleet":
+                fd = (fd.join(F.broadcast(_join_idx), F.col("failure_date") == F.col("_ix_day"), "left")
+                      .drop("_ix_day"))
+            else:
+                fd = (fd.join(_join_idx, (F.col("DEVICE_ID") == F.col("_ix_dev"))
+                              & (F.col("failure_date") == F.col("_ix_day")), "left")
+                      .drop("_ix_dev", "_ix_day"))
+            return (fd.withColumn("_pi", F.lag("obs_idx").over(_wv))
+                    .where(F.col("_pi").isNull() | ((F.col("obs_idx") - F.col("_pi")) > _gap))
+                    .where(F.col("failure_date") >= F.lit(min_day + _dt.timedelta(days=1)))
+                    .select("DEVICE_ID", "failure_date"))
+
+        _excl = {"nondev": _nd_days, "sys": _sys_days, "cap": _long_days}
+        _vsets = {}
+        for _vn in _vexcl:
+            if _excl.get(_vn) is None:
+                print(f"[label] !! lblv_{_vn} not written: its exclusion could not be built (see above)")
+                continue
+            _vsets[_vn] = _excl[_vn]
+        if "all" in _variants and len(_vsets) >= 2:
+            _u = None
+            for _vn in list(_vsets):
+                _u = _vsets[_vn] if _u is None else _u.unionByName(_vsets[_vn])
+            _vsets["all"] = _u.distinct()
+        for _vn, _vdrop in _vsets.items():
+            _vc = f"lblv_{_vn}"
+            _vfd = _all_fail_days.join(_vdrop.select("DEVICE_ID", "failure_date"),
+                                       ["DEVICE_ID", "failure_date"], "left_anti")
+            _vld = (_variant_starts(_vfd).crossJoin(seq)
+                    .select(F.col("DEVICE_ID").alias("_vdev"),
+                            F.date_sub(F.col("failure_date"), F.col("n")).alias("_vday"))
+                    .distinct()
+                    .withColumn("_vhit", F.lit(True)))
+            _labelled = (
+                _labelled.alias("sp")
+                .join(_vld.alias("vl"),
+                      (F.col("sp.DEVICE_ID") == F.col("vl._vdev")) & (F.col("sp.transit_day") == F.col("vl._vday")),
+                      "left")
+                .withColumn(_vc, F.when(F.col("vl._vhit"), F.lit(1)).otherwise(F.lit(0)).cast("byte"))
+                .select("sp.*", _vc)
+                .persist(StorageLevel.MEMORY_AND_DISK)
+            )
+
         def _mark_drop(frame, hits, keys, broadcast=False):
             """Set _ps1_drop on rows matching `hits` instead of removing them.
 
@@ -1950,6 +2259,13 @@ def read_spine(
                           f"{max_day}: {_n_tail:,} rows after {_cut} are labelled from a lookahead "
                           f"that is partly unobserved, so their labels are biased toward 0. Set "
                           f"PS1_LABEL_OBSERVED_EDGE=true to drop them.")
+        if _vsets:
+            _sc = (_labelled.where(~F.col("_ps1_drop")) if "_ps1_drop" in _labelled.columns
+                   else _labelled)
+            _vcols = [TARGET_COL] + [f"lblv_{v}" for v in _vsets]
+            _vr = _sc.agg(*[F.avg(F.col(c).cast("double")).alias(c) for c in _vcols]).collect()[0]
+            print("[label] variant rates    : " + " | ".join(
+                f"{c} {100 * float(_vr[c] or 0):.2f}%" for c in _vcols) + "  (scored rows)")
         return _labelled
 
 
@@ -2320,6 +2636,45 @@ def add_auxiliary(
         except Exception as exc:
             df_dopp = None
             print(f"WARNING: DOPP rollup skipped ({exc})")
+
+    # -- short-term recency: DOPP families on CALENDAR day D ------------------------
+    # Keyed by to_date(EVENT_DTM), the same clock the label reads, not by transit_day: a
+    # transit day runs past midnight into D+1, the first day the label looks at.
+    df_dayd = None
+    if _enable_dayd_features() and cfg.device_cat in ("GATE", "VALIDATOR"):
+        try:
+            _dd_raw = spark.read.parquet(f"{s3_silver}/device_event_enriched/")
+            _dl = {c.casefold(): c for c in _dd_raw.columns}
+            _dd_dev, _dd_dtm, _dd_cat = _dl.get("device_id"), _dl.get("event_dtm"), _dl.get("mars_device_category")
+            _dd_id, _dd_st = _dl.get("event_type_id"), _dl.get("event_state_type_name")
+            if not (_dd_dev and _dd_dtm and _dd_id and _dd_st):
+                raise ValueError("device_event_enriched lacks DEVICE_ID / EVENT_DTM / EVENT_TYPE_ID / "
+                                 "EVENT_STATE_TYPE_NAME")
+            _codes = sorted({c for ids, _ in DOPP_FAMILIES.values() for c in ids})
+            _ts = F.to_timestamp(F.col(_dd_dtm))
+            _dd = _dd_raw
+            if _dd_cat:
+                _dd = _dd.where(F.col(_dd_cat) == cfg.device_cat)
+            _dd = (_dd.where(F.col(_dd_id).cast("int").isin(*_codes))
+                   .where(F.to_date(_ts) >= F.to_date(F.lit(start_day)))
+                   .where(F.to_date(_ts) <= end_day_expr))
+            _dd_aggs = []
+            for name, (ids, states) in DOPP_FAMILIES.items():
+                _hit = F.col(_dd_id).cast("int").isin(*ids) & F.col(_dd_st).isin(*states)
+                _dd_aggs += [
+                    F.sum(F.when(_hit, 1).otherwise(0)).cast("double").alias(f"{name}_d0"),
+                    F.sum(F.when(_hit & (F.hour(_ts) >= 18), 1).otherwise(0)).cast("double").alias(f"{name}_h6"),
+                    F.max(F.when(_hit, _ts)).alias(f"_{name}_lastts"),
+                ]
+            df_dayd = _dd.groupBy(
+                F.col(_dd_dev).cast("string").alias("DEVICE_ID"),
+                F.to_date(_ts).alias("transit_day"),
+            ).agg(*_dd_aggs)
+            print(f"silver.device_event_enriched: day-D recency rollup, {len(DOPP_FAMILIES)} DOPP families "
+                  f"(calendar day, last 6 hours, latest event)")
+        except Exception as exc:
+            df_dayd = None
+            print(f"WARNING: day-D recency rollup skipped ({exc})")
 
     # -- repair durability: completed episode starts and the hold before each -------
     df_rep = None
@@ -2866,7 +3221,7 @@ def add_auxiliary(
     global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ, _PS1_DF_KPI
     global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE, _PS1_DF_TVMEV, _PS1_DF_CDUR, _PS1_DF_INCP, _PS1_DF_EVALL
     global _PS1_DF_REP, _PS1_DF_MLED, _PS1_DF_INCLAST
-    global _PS1_DF_SNREP, _PS1_DF_CHG
+    global _PS1_DF_SNREP, _PS1_DF_CHG, _PS1_DF_DAYD
     global _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY
     _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
     _PS1_DF_KPI = df_kpi
@@ -2879,6 +3234,7 @@ def add_auxiliary(
     _PS1_DF_EVALL = df_evall
     _PS1_DF_REP, _PS1_DF_MLED, _PS1_DF_INCLAST = df_rep, df_mled, df_inclast
     _PS1_DF_SNREP, _PS1_DF_CHG = df_snrep, df_chg
+    _PS1_DF_DAYD = df_dayd
     _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY = _stn_max_day, _upt_max_day
 
 
@@ -3324,6 +3680,7 @@ def join_and_materialise(
     df_inclast = globals().get("_PS1_DF_INCLAST")
     df_snrep = globals().get("_PS1_DF_SNREP")
     df_chg = globals().get("_PS1_DF_CHG")
+    df_dayd = globals().get("_PS1_DF_DAYD")
     df_mttr = aux['df_mttr']
     df_usage_ext = aux['df_usage_ext']
     df_read_tap = aux['df_read_tap']
@@ -3508,6 +3865,8 @@ def join_and_materialise(
                 if _dc in df_joined.columns:
                     df_joined = df_joined.withColumn(_dc, F.coalesce(F.col(_dc), F.lit(0.0)))
             print("Joined DOPP warning rollup on DEVICE_ID + transit_day (prior windows only)")
+
+        df_joined = _join_dayd(df_joined, df_dayd)
 
         if df_sale is not None:
             df_joined = df_joined.join(df_sale, on=["DEVICE_ID", "transit_day"], how="left")
@@ -3872,6 +4231,8 @@ def join_and_materialise(
         _select_cols = ["DEVICE_ID", *_MLFLOW_ID_COLS, "transit_day"]
         if with_label and TARGET_COL in df_joined.columns:
             _select_cols.append(F.col(TARGET_COL).cast("byte").alias(TARGET_COL))
+            # label variants ride along for the lab's --target; never features
+            _select_cols += [F.col(c).cast("byte").alias(c) for c in df_joined.columns if c.startswith("lblv_")]
         df_features = df_joined.select(
             *_select_cols,
             *[F.col(c).cast("float").alias(c) for c in FEATURE_COLS],
@@ -4480,6 +4841,8 @@ def join_and_materialise(
         _select_cols = ["DEVICE_ID", *_MLFLOW_ID_COLS, "transit_day"]
         if with_label and TARGET_COL in df_joined.columns:
             _select_cols.append(F.col(TARGET_COL).cast("byte").alias(TARGET_COL))
+            # label variants ride along for the lab's --target; never features
+            _select_cols += [F.col(c).cast("byte").alias(c) for c in df_joined.columns if c.startswith("lblv_")]
         df_features = df_joined.select(
             *_select_cols,
             *[F.col(c).cast("float").alias(c) for c in FEATURE_COLS],
@@ -4723,6 +5086,8 @@ def join_and_materialise(
                 if _dc in df_joined.columns:
                     df_joined = df_joined.withColumn(_dc, F.coalesce(F.col(_dc), F.lit(0.0)))
             print("Joined DOPP warning rollup on DEVICE_ID + transit_day (prior windows only)")
+
+        df_joined = _join_dayd(df_joined, df_dayd)
 
         if df_sale is not None:
             df_joined = df_joined.join(df_sale, on=["DEVICE_ID", "transit_day"], how="left")
@@ -5133,6 +5498,8 @@ def join_and_materialise(
         _select_cols = ["DEVICE_ID", *_MLFLOW_ID_COLS, "transit_day"]
         if with_label and TARGET_COL in df_joined.columns:
             _select_cols.append(F.col(TARGET_COL).cast("byte").alias(TARGET_COL))
+            # label variants ride along for the lab's --target; never features
+            _select_cols += [F.col(c).cast("byte").alias(c) for c in df_joined.columns if c.startswith("lblv_")]
         df_features = df_joined.select(
             *_select_cols,
             *[F.col(c).cast("float").alias(c) for c in FEATURE_COLS],

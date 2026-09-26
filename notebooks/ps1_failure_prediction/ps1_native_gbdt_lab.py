@@ -49,7 +49,7 @@ def log(msg):
 
 
 # --------------------------------------------------------------------------- data
-def load_checkpoint(fleet, ckpt_subdir):
+def load_checkpoint(fleet, ckpt_subdir, target_override=""):
     import pyarrow.dataset as ds
 
     base = os.path.join(HERE, f"ps1_{fleet.lower()}_oos_outputs", ckpt_subdir)
@@ -57,6 +57,16 @@ def load_checkpoint(fleet, ckpt_subdir):
     feats, target = list(meta["FEATURE_COLS"]), meta["TARGET"]
     dset = ds.dataset(os.path.join(base, "spark_splits"), format="parquet")
     names = set(dset.schema.names)
+    if target_override:
+        # a label variant written beside the headline label (PS1_LABEL_VARIANTS): same rows and
+        # features, only the failure days that count differ
+        variants = sorted(c for c in names if c.startswith("lblv_"))
+        if target_override not in names:
+            raise SystemExit(f"--target {target_override} is not in this checkpoint; label variants "
+                             f"present: {variants or 'none'}")
+        if target_override in feats:
+            raise SystemExit(f"--target {target_override} is a feature column, not a label")
+        target = target_override
     missing = [c for c in feats + [target, "split", "event_date"] if c not in names]
     if missing:
         raise SystemExit(f"checkpoint lacks columns {missing[:10]} -- re-run the notebook ETL")
@@ -570,6 +580,214 @@ def block_bootstrap_auc_delta(y, s1, s2, days, n_boot=200, seed=0):
     return float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))
 
 
+# --------------------------------------------------------------------------- data-quality masks
+def parse_date_ranges(spec):
+    """'2026-04-02:2026-04-10,2025-03-05' -> the listed days, sorted."""
+    days = set()
+    for part in [p.strip() for p in spec.split(",") if p.strip()]:
+        lo, _, hi = part.partition(":")
+        lo = pd.Timestamp(lo)
+        hi = pd.Timestamp(hi) if hi else lo
+        if hi < lo:
+            raise SystemExit(f"--exclude-dates range {part!r} ends before it starts")
+        days.update(pd.date_range(lo, hi, freq="D"))
+    return sorted(days)
+
+
+def thin_days(dates, floor, window=31):
+    """Days whose checkpoint row count is below `floor` x the centred rolling median: the
+    ingestion-outage signature, where a whole fleet's rows vanish together. A day with no rows
+    inside the span counts as thin; the ETL's interior mask may already have removed it."""
+    cnt = pd.Series(1, index=pd.DatetimeIndex(dates).normalize()).groupby(level=0).size()
+    full = cnt.reindex(pd.date_range(cnt.index.min(), cnt.index.max(), freq="D"), fill_value=0)
+    med = full.rolling(window, center=True, min_periods=7).median()
+    return sorted(full.index[(full < floor * med).to_numpy()]), full, med
+
+
+def mask_rows(event_dates, days, pre, post):
+    """True for rows dated in [d - pre, d + post] of a masked day d: the day itself, the rows whose
+    `pre`-day lookahead crosses it, and the rows whose prior windows it silenced."""
+    if not days:
+        return np.zeros(len(event_dates), bool)
+    ext = set()
+    for d in days:
+        ext.update(pd.date_range(d - pd.Timedelta(days=pre), d + pd.Timedelta(days=post), freq="D"))
+    return pd.DatetimeIndex(event_dates).normalize().isin(pd.DatetimeIndex(sorted(ext)))
+
+
+def ranges_text(days):
+    """Consecutive days as 'a..b (nd)' ranges."""
+    days = sorted(pd.Timestamp(d) for d in days)
+    out, i = [], 0
+    while i < len(days):
+        j = i
+        while j + 1 < len(days) and (days[j + 1] - days[j]).days == 1:
+            j += 1
+        out.append(f"{days[i]:%Y-%m-%d}" + (f"..{days[j]:%Y-%m-%d} ({j - i + 1}d)" if j > i else ""))
+        i = j + 1
+    return ", ".join(out) or "none"
+
+
+# --------------------------------------------------------------------------- threshold policy
+# Annexure 1 Table 13; Table 14 lowers accuracy to 0.85 when data quality is below 95%.
+CONTRACT = (("accuracy", ">=", 0.90), ("precision", ">=", 0.90), ("recall", ">=", 0.80),
+            ("f1", ">=", 0.80), ("fpr", "<=", 0.10))
+
+
+def policy_score(scores, names):
+    """A probability on a fixed scale for thresholding: the chosen model's own probability, or the
+    mean of the members' probabilities for a blend. The ensemble and stack scores are ranks within
+    the scored batch, so a cut on them would not carry from one month to the next. LambdaRank
+    emits unscaled scores and joins the mean only when it is the sole member."""
+    use = [n for n in names if n != "lgbrank"] or list(names)
+    return np.mean([scores[n] for n in use], axis=0)
+
+
+def confusion(y, flag):
+    n, P = len(y), int(y.sum())
+    N, k = n - P, int(flag.sum())
+    tp = int(y[flag].sum())
+    fp = k - tp
+    prec = tp / k if k else None
+    rec = tp / P if P else 0.0
+    f1 = 2 * prec * rec / (prec + rec) if prec and prec + rec else 0.0
+    return {"flag_share": k / n if n else 0.0, "recall": rec, "precision": prec,
+            "accuracy": (tp + N - fp) / n if n else None, "fpr": fp / N if N else 0.0, "f1": f1,
+            "flagged": k, "tp": tp}
+
+
+def _cut_for_precision(y, p, target, min_flags=30):
+    """Lowest probability cut whose flagged rows reach `target` precision, with at least
+    `min_flags` rows flagged. None when no cut does."""
+    o = np.argsort(-p, kind="stable")
+    k = np.arange(1, len(o) + 1)
+    ok = np.flatnonzero((np.cumsum(y[o]) / k >= target) & (k >= min_flags))
+    return float(p[o][ok[-1]]) if len(ok) else None
+
+
+def _cut_for_recall(y, p, target):
+    """Highest probability cut whose flagged rows reach `target` recall."""
+    o = np.argsort(-p, kind="stable")
+    P = y.sum()
+    if P == 0:
+        return None
+    i = min(int(np.searchsorted(np.cumsum(y[o]) / P, target)), len(o) - 1)
+    return float(p[o][i])
+
+
+def episode_ids(dev_ids, dates, y):
+    """Approximate failure episodes among positive rows: a device's positive rows on consecutive
+    days form one run, the lead days of one failure. -1 on negative rows. Two failures whose
+    lead windows touch merge into one run, so the count is a lower bound."""
+    d = pd.DataFrame({"dev": np.asarray(dev_ids), "t": pd.DatetimeIndex(dates).normalize(),
+                      "y": np.asarray(y), "i": np.arange(len(y))})
+    pos = d[d["y"] == 1].sort_values(["dev", "t"])
+    new = (pos["dev"] != pos["dev"].shift()) | ((pos["t"] - pos["t"].shift()).dt.days != 1)
+    ep = np.full(len(d), -1)
+    ep[pos["i"].to_numpy()] = new.cumsum().to_numpy()
+    return ep
+
+
+def episode_recall(ep, flag):
+    """Share of failure episodes with at least one flagged lead day."""
+    m = ep >= 0
+    if not m.any():
+        return None, 0
+    caught = pd.Series(flag[m]).groupby(ep[m]).any()
+    return float(caught.mean()), int(len(caught))
+
+
+def threshold_policy(y, p, dates, horizon, p_high=0.90, r_med=0.50, cal_days=30, min_cal=500):
+    """Calibrated fixed cuts on the model's probability, recalibrated every month. Before each
+    month, both cuts are set on the latest `cal_days` of rows whose labels had matured by then
+    (dated <= month start - (horizon + 1)), scored as they were at the time, and applied unchanged
+    to the whole month; no row's own label ever sets its cut.
+      High   = at or above the lowest cut whose calibration precision reached p_high
+      Medium = down to the cut whose calibration recall reached r_med
+      Low    = the rest
+    A month with too few matured rows before it (the first test month) is the warm-up and is
+    left unscored: tier -1."""
+    dates = pd.DatetimeIndex(dates).normalize()
+    mon = np.asarray(dates.to_period("M").astype(str))
+    tier = np.full(len(y), -1)
+    rows = []
+    for m in sorted(set(mon)):
+        cut_end = pd.Timestamp(f"{m}-01") - pd.Timedelta(days=horizon + 1)
+        cal = np.asarray((dates <= cut_end) & (dates > cut_end - pd.Timedelta(days=cal_days))) & ~np.isnan(p)
+        idx = np.flatnonzero((mon == m) & ~np.isnan(p))
+        if cal.sum() < min_cal or not 0 < y[cal].sum() < cal.sum() or not len(idx):
+            rows.append({"month": m, "scored": False, "cal_rows": int(cal.sum())})
+            continue
+        th = _cut_for_precision(y[cal], p[cal], p_high)
+        tm = _cut_for_recall(y[cal], p[cal], r_med)
+        if th is not None and tm is not None and tm > th:  # High alone already reaches the recall target
+            tm = th
+        t = np.zeros(len(idx), int)
+        if tm is not None:
+            t[p[idx] >= tm] = 1
+        if th is not None:
+            t[p[idx] >= th] = 2
+        tier[idx] = t
+        rows.append({"month": m, "scored": True, "cal_rows": int(cal.sum()), "cut_high": th, "cut_med": tm,
+                     "high": confusion(y[idx], t == 2), "high_med": confusion(y[idx], t >= 1)})
+    return tier, rows
+
+
+def print_policy(title, y, tier, rows, ep, p_high, r_med, horizon, cal_days):
+    """The threshold-policy tables: month by month, the tiers, both policies and the contract."""
+    def _f(v, w=6, d=3):
+        return f"{v:>{w}.{d}f}" if v is not None else f"{'-':>{w}s}"
+
+    print(f"\n{title}")
+    print(f"  cuts set before each month on the latest {cal_days} days of matured rows (dated <= month start - "
+          f"{horizon + 1}d), then fixed for the month; High: precision >= {p_high:.2f} on those rows, "
+          f"Medium: down to recall {r_med:.2f}")
+    print("  month     cal rows  cut High  cut Med |  High: flag    P      R  |  High+Med: flag    P      R     FPR    acc")
+    for r in rows:
+        if not r["scored"]:
+            print(f"  {r['month']}  {r['cal_rows']:>8,}   warm-up: too few matured rows before this month")
+            continue
+        h, hm = r["high"], r["high_med"]
+        print(f"  {r['month']}  {r['cal_rows']:>8,}  {_f(r['cut_high'], 8)}  {_f(r['cut_med'], 7)} |"
+              f"  {h['flag_share']:>10.1%}  {_f(h['precision'])} {_f(h['recall'])} |"
+              f"  {hm['flag_share']:>14.1%}  {_f(hm['precision'])} {_f(hm['recall'])}  {_f(hm['fpr'])}  {_f(hm['accuracy'])}")
+    sc = tier >= 0
+    if not sc.any():
+        print("  no month could be scored")
+        return {"months": rows}
+    ys, ts = y[sc], tier[sc]
+    P = max(1, int(ys.sum()))
+    print(f"  RISK TIERS over the scored months ({int(sc.sum()):,} rows, base rate {ys.mean():.3f})")
+    print("  tier      share of rows   observed failure rate   share of all failures")
+    tiers = {}
+    for lvl, name in ((2, "High"), (1, "Medium"), (0, "Low")):
+        mk = ts == lvl
+        rate = float(ys[mk].mean()) if mk.any() else None
+        tiers[name] = {"share": float(mk.mean()), "failure_rate": rate, "share_of_failures": float(ys[mk].sum() / P)}
+        print(f"  {name:8s}  {mk.mean():>13.1%}   {_f(rate, 21)}   {ys[mk].sum() / P:>21.1%}")
+    out = {"months": rows, "tiers": tiers, "policies": {}}
+    print("  policy               flagged   recall  episode-recall  precision  accuracy    FPR      F1")
+    for key, name, flag in (("high", "flag High", ts == 2), ("high_med", "flag High+Medium", ts >= 1)):
+        c = confusion(ys, flag)
+        er, n_ep = episode_recall(ep[sc], flag)
+        c["episode_recall"], c["episodes"] = er, n_ep
+        out["policies"][key] = c
+        print(f"  {name:18s}  {c['flag_share']:>7.1%}   {c['recall']:>6.3f}  {_f(er, 14)}  {_f(c['precision'], 9)}"
+              f"  {_f(c['accuracy'], 8)}  {c['fpr']:>6.3f}  {c['f1']:>6.3f}")
+        verdict = []
+        for k, op, bound in CONTRACT:
+            v = c[k]
+            ok = v is not None and (v >= bound if op == ">=" else v <= bound)
+            verdict.append(f"{k} {'-' if v is None else f'{v:.3f}'} {'MET' if ok else 'not met'}")
+        acc_ok = c["accuracy"] is not None and c["accuracy"] >= 0.85
+        print(f"    contract (Annexure 1): " + "; ".join(verdict)
+              + f"; accuracy >= 0.85 (Table 14) {'MET' if acc_ok else 'not met'}"
+              + f"; recall >= 0.50 floor {'MET' if c['recall'] >= 0.50 else 'not met'}")
+    print(f"  episode-recall = share of failures ({n_ep:,} approximate episodes) with at least one flagged lead day; "
+          "a metric definition to agree with Cubic, reported beside row recall, never instead of it")
+    return out
+
+
 def refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, params, rounds, combine=None):
     """Production retraining, simulated: each test month is scored by models refitted -- same tuned
     params, same rounds as the final fit, nothing re-tuned -- on every row whose label had matured
@@ -596,6 +814,7 @@ def refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, params, ro
         Xp, yp, dp = Xp[o], yp[o], dp[o]
     mon = test["event_date"].dt.to_period("M").astype(str).to_numpy()
     s = np.full(len(test), np.nan)
+    pm = np.full(len(test), np.nan)  # mean member probability, for the --policy thresholds
     rows = []
     for m in sorted(set(mon)):
         idx = np.flatnonzero(mon == m)
@@ -616,12 +835,13 @@ def refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, params, ro
                             dtr=dp[:k])
             sc[n] = proba(mdl, Xt[idx])
         s[idx] = (combine or rank_mean)([sc[n] for n in names])
+        pm[idx] = policy_score({n: sc[n] for n in names}, names)
         sec = time.time() - t1
         log(f"refit {m}: trained on {k:,} rows to {pd.Timestamp(cut).date()} ({pos:,} positive), "
             f"scored {len(idx):,}, fit {sec:.0f}s")
         rows.append({"month": m, "cutoff": str(pd.Timestamp(cut).date()), "train_rows": k,
                      "positives": pos, "scored": int(len(idx)), "fit_sec": round(sec, 1)})
-    return s, rows
+    return s, rows, pm
 
 
 # --------------------------------------------------------------------------- main
@@ -668,10 +888,29 @@ def main():
     ap.add_argument("--relative-features", type=int, default=0,
                     help="add rel_<f>, f's within-day percentile rank, for the N features with the highest "
                          "solo AUC on dev rows; 0 = off")
+    ap.add_argument("--target", default="",
+                    help="score a label variant written by PS1_LABEL_VARIANTS (lblv_*) instead of the headline "
+                         "label; same rows and features, only the failure days that count differ")
+    ap.add_argument("--exclude-dates", default="",
+                    help="data-quality mask 'YYYY-MM-DD:YYYY-MM-DD,...': the days, the rows whose --horizon "
+                         "lookahead crosses them and --mask-post days after leave training and test")
+    ap.add_argument("--mask-thin", type=float, default=0.0,
+                    help="also mask days whose checkpoint row count is below this share of the 31-day rolling "
+                         "median within their split (0.5 matches the notebook's completeness guard); 0 = off")
+    ap.add_argument("--mask-post", type=int, default=0,
+                    help="with a mask: also drop N days after each masked day, whose prior windows it silenced")
+    ap.add_argument("--policy", action="store_true",
+                    help="calibrated fixed thresholds recalibrated monthly, High/Medium/Low risk tiers, and both "
+                         "policies scored against Annexure 1")
+    ap.add_argument("--policy-precision", type=float, default=0.90, help="the High tier's calibration precision")
+    ap.add_argument("--policy-recall", type=float, default=0.50, help="the Medium tier's calibration recall")
+    ap.add_argument("--policy-cal-days", type=int, default=30, help="matured days each monthly cut is set on")
     a = ap.parse_args()
     t0 = time.time()
 
-    base, meta, feats, target, df = load_checkpoint(a.fleet, a.ckpt)
+    base, meta, feats, target, df = load_checkpoint(a.fleet, a.ckpt, a.target)
+    if a.target:
+        log(f"target: label variant {target} (headline label {meta['TARGET']} not used)")
     _sig = meta.get("PS1_LABEL_SIGNATURE") or {}
     if "PS1_LABEL_HORIZON_DAYS" in _sig:  # '' is the notebook default of 3
         _ckpt_h = int(_sig.get("PS1_LABEL_HORIZON_DAYS") or 3)
@@ -685,6 +924,18 @@ def main():
         log(f"withheld {len(dropped)} features ({a.drop_preset or 'custom'}): {dropped}")
     log(f"{a.fleet}: {len(df):,} rows, {len(feats)} features, splits "
         + str(df["split"].value_counts().to_dict()))
+    mask_days = parse_date_ranges(a.exclude_dates) if a.exclude_dates else []
+    if a.mask_thin > 0:
+        # per split, so the embargo gaps between splits never read as an outage
+        thin = sorted(set().union(*[thin_days(df.loc[df["split"] == sp, "event_date"], a.mask_thin)[0]
+                                    for sp in df["split"].unique()]))
+        log(f"thin days (< {a.mask_thin:.0%} of the 31-day median row count): {ranges_text(thin)}")
+        mask_days = sorted(set(mask_days) | set(thin))
+    if mask_days:
+        mk = mask_rows(df["event_date"], mask_days, a.horizon, a.mask_post)
+        log(f"data-quality mask: {ranges_text(mask_days)}; extended {a.horizon}d before and {a.mask_post}d after "
+            f"each day; removed {int(mk.sum()):,} rows " + str(df.loc[mk, "split"].value_counts().to_dict()))
+        df = df.loc[~mk].reset_index(drop=True)
     if a.device_prior:
         if "DEVICE_ID" not in df.columns:
             raise SystemExit("--device-prior needs DEVICE_ID in the checkpoint")
@@ -902,7 +1153,23 @@ def main():
               f"  {t_['flag_share']:>7.1%}   {t_['recall']:>6.3f}  {_prec(t_)}  {t_['accuracy']:>8.3f}"
               f"  {t_['fpr']:>6.3f}  {t_['f1']:>6.3f}")
 
-    refit, s_rf = None, None
+    blend_names = models if chosen in ("ensemble", "stack") else [chosen]
+    ep_t = (episode_ids(test["DEVICE_ID"].to_numpy(), days_t, yt) if "DEVICE_ID" in test.columns
+            else np.full(len(yt), -1))
+    policy = {}
+    if a.policy:
+        p_static = policy_score(test_scores, blend_names)
+        tier, prow = threshold_policy(yt, p_static, days_t, a.horizon, a.policy_precision, a.policy_recall,
+                                      a.policy_cal_days)
+        policy["static"] = print_policy(
+            f"THRESHOLD POLICY -- {chosen} (static model), probability "
+            + ("= mean of member probabilities" if len(blend_names) > 1 else "of the model"),
+            yt, tier, prow, ep_t, a.policy_precision, a.policy_recall, a.horizon, a.policy_cal_days)
+        if a.fleet == "TVM":
+            print("  TVM is scored on all days, so a device's positive rows can run through an open outage; "
+                  "episode-recall is looser there than on the in-service fleets")
+
+    refit, s_rf, p_rf = None, None, None
     if a.refit_monthly:
         try:
             # the static figures above score all of test with one model frozen at the end of dev; this
@@ -913,8 +1180,8 @@ def main():
             combine = (lambda arrs: stack_score(meta, arrs)) if chosen == "stack" else rank_mean
             log(f"refit monthly: {', '.join(names)}, {a.horizon}-day label lag, rounds "
                 + ", ".join(f"{n} {rounds[n]}" for n in names))
-            s_rf, rf_rows = refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, best, rounds,
-                                          combine=combine)
+            s_rf, rf_rows, p_rf = refit_monthly(df, feats, target, dev, Xd, yd, test, Xt, a, names, best, rounds,
+                                                combine=combine)
             st = test_scores[chosen]
             # rank the static side within each month exactly as the refit side is ranked; ranks over all
             # of test are a different scale, and the difference would mix that into the retraining effect
@@ -963,6 +1230,15 @@ def main():
                 refit.update({"auc": r_rf["auc"], "ap": r_rf["ap"], "ci95": [rlo, rhi], "monthly": r_rf["monthly"],
                               "static_auc": r_st["auc"], "static_ap": r_st["ap"], "static_monthly": r_st["monthly"],
                               "delta_auc_ci95": [dlo, dhi], "budgets": rb})
+                if a.policy:
+                    # each month's cuts come from the rows scored in earlier months, as the monthly
+                    # retrain scored them at the time
+                    tier_r, prow_r = threshold_policy(yt, p_rf, days_t, a.horizon, a.policy_precision,
+                                                      a.policy_recall, a.policy_cal_days)
+                    policy["refit"] = print_policy(
+                        f"THRESHOLD POLICY -- {chosen} refitted monthly (production cadence)",
+                        yt, tier_r, prow_r, ep_t, a.policy_precision, a.policy_recall, a.horizon,
+                        a.policy_cal_days)
         except Exception as exc:  # the static results above must still be written
             print(f"\nREFIT MONTHLY failed ({type(exc).__name__}: {exc}); the static results are unaffected")
             refit = {"error": f"{type(exc).__name__}: {exc}"}
@@ -978,6 +1254,9 @@ def main():
                    "test": {k: {"auc": v["auc"], "ap": v["ap"], "monthly": v["monthly"]} for k, v in res.items()},
                    "operating_points": ops, "daily_budgets": budgets, "constrained_ops": cops,
                    "diagnostics": diag, **({"refit_monthly": refit} if refit else {}),
+                   **({"policy": policy} if policy else {}),
+                   **({"target": target} if a.target else {}),
+                   **({"masked_days": [str(pd.Timestamp(d).date()) for d in mask_days]} if mask_days else {}),
                    **({"relative_from": rel} if rel else {}),
                    **({"stack_coef": {**dict(zip(models, meta.coef_[0].tolist())),
                                       "intercept": float(meta.intercept_[0])}} if meta is not None else {})},

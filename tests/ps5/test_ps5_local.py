@@ -20,8 +20,17 @@ NB = ROOT / "notebooks/ps5_reliability_survival/PS5_Reliability_Survival_v5_6.ip
 LOADER = ROOT / "api/lambda/cubic-mars-ps5-rds-loader"
 
 
+def _engine_src():
+    """The engine cell, found by content: an operator cell added above it (e.g. PS5_PUBLISH) shifts its index."""
+    for c in json.loads(NB.read_text())["cells"]:
+        src = "".join(c["source"])
+        if c["cell_type"] == "code" and "def build_intervals_from_failures" in src:
+            return src
+    raise AssertionError("PS5 engine cell not found in the notebook")
+
+
 def _notebook_fn(name):
-    src = "".join(json.loads(NB.read_text())["cells"][3]["source"])
+    src = "".join(_engine_src())
     tree = ast.parse("\n".join(l for l in src.splitlines() if not l.lstrip().startswith(("%", "!"))))
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
     ns = {"weibull_survival": lambda t, k, lam: math.exp(-((max(t, 0.0) / lam) ** k))}
@@ -93,7 +102,7 @@ def test_device_weighting_stops_chronic_device_dominating():
     """P5-4. Needs numpy + scipy (present in Studio). Uses the notebook's own weibull_fit."""
     np = pytest.importorskip("numpy")
     sciopt = pytest.importorskip("scipy.optimize")
-    src = "".join(json.loads(NB.read_text())["cells"][3]["source"])
+    src = "".join(_engine_src())
     tree = ast.parse("\n".join(l for l in src.splitlines() if not l.lstrip().startswith(("%", "!"))))
     fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("weibull_fit", "weibull_nll")]
     ns = {"np": np, "math": math, "_sciopt": sciopt, "_HAS_LIFELINES": False}
@@ -111,7 +120,7 @@ def test_device_weighting_stops_chronic_device_dominating():
 def test_device_whose_last_fault_is_on_the_cutoff_day_still_gets_an_open_interval():
     """26-Sep-2026: devices faulting ON EVENT_END_DATE had no open interval and were never scored."""
     pd = pytest.importorskip("pandas")
-    src = "".join(json.loads(NB.read_text())["cells"][3]["source"])
+    src = "".join(_engine_src())
     tree = ast.parse("\n".join(l for l in src.splitlines() if not l.lstrip().startswith(("%", "!"))))
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "build_intervals_from_failures")
     ns = {"pd": pd, "CONFIG": {"EVENT_END_DATE": "2026-08-29"}}

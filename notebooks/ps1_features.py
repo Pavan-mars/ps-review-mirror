@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pyspark.sql import functions as F
+from pyspark.sql import types as T
 from pyspark.sql.window import Window
 from pyspark.storagelevel import StorageLevel
 
@@ -679,6 +680,53 @@ _PS1_DF_UPTIME = None
 # which is not the same as a measured zero -- see the join sites.
 _PS1_STN_MAX_DAY = None
 _PS1_UPT_MAX_DAY = None
+# First day, set only when a source starts AFTER the spine does. Before it the source
+# has no coverage either, so the same rule applies at the left edge.
+_PS1_STN_MIN_DAY = None
+_PS1_UPT_MIN_DAY = None
+
+
+def _as_date(value) -> _dt.date:
+    """'2024-01-01', a datetime or a date -> date, for comparing against collected days."""
+    if isinstance(value, _dt.datetime):
+        return value.date()
+    if isinstance(value, _dt.date):
+        return value
+    return _dt.date.fromisoformat(str(value)[:10])
+
+
+def _in_coverage(min_day, max_day):
+    """True on the days a source observed. Outside them a missing row means the source
+    was silent, not that the count was zero, so the row stays NULL rather than 0."""
+    cond = F.lit(True)
+    if min_day is not None:
+        cond = cond & (F.col("transit_day") >= F.lit(min_day))
+    if max_day is not None:
+        cond = cond & (F.col("transit_day") <= F.lit(max_day))
+    return cond
+
+
+def _null_prior_sums_outside_coverage(df, base_cols, min_day, max_day):
+    """NULL a prior-window sum whose window [D-w, D-1] is not wholly inside coverage.
+
+    SUM skips NULLs, so a window that runs past a frozen source's last day sums only
+    the days it still has: over the w days after the freeze the value falls toward
+    zero for every device at once -- the fleet-wide decline that teaches a model the
+    calendar date of a feed gap. Past the right edge that is every D > max_day + 1;
+    past a late start it is every D - w < min_day.
+    """
+    for _c in base_cols:
+        for _w in (7, 30):
+            _col = f"{_c}_prior_sum_{_w}d"
+            if _col not in df.columns:
+                continue
+            _ok = F.lit(True)
+            if max_day is not None:
+                _ok = _ok & (F.col("transit_day") <= F.date_add(F.lit(max_day), 1))
+            if min_day is not None:
+                _ok = _ok & (F.date_sub(F.col("transit_day"), _w) >= F.lit(min_day))
+            df = df.withColumn(_col, F.when(_ok, F.col(_col)))
+    return df
 shuffle_partitions = 200
 
 
@@ -3279,7 +3327,7 @@ def add_auxiliary(
     # that, but Spark does not -- it returns a silent zero-row match that looks
     # exactly like sparse coverage.
     df_station = None
-    _stn_max_day = None
+    _stn_min_day = _stn_max_day = None
     if _enable_station_features():
         try:
             _sn_raw = spark.read.parquet(f"{s3_silver}/station_network_daily/")
@@ -3320,17 +3368,29 @@ def add_auxiliary(
             )
             _row = df_station.agg(F.max("transit_day")).collect()
             _stn_max_day = _row[0][0] if _row else None
+            # First day from the UNFILTERED source: the table is sparse, so the first
+            # row inside the window is the first failure, not the start of coverage.
+            _stn_min_day = _base.agg(F.min(F.to_date(F.col(_st)))).collect()[0][0]
+            if _stn_max_day is None:
+                # Nothing in range. Joining it anyway would zero-fill every row with no
+                # coverage bound, i.e. assert "no station failures, ever".
+                raise ValueError(f"no rows for {cfg.device_cat} between {start_day} and the end day")
+            # A source that starts after the spine does has no coverage before its first
+            # day either; only then is the left edge a bound worth enforcing.
+            if _stn_min_day is None or _stn_min_day <= _as_date(start_day):
+                _stn_min_day = None
             print(f"silver.station_network_daily: rolled up to {len(_aggs)} facility-day "
-                  f"columns, last observed day {_stn_max_day}")
+                  f"columns, observed {_stn_min_day or start_day} .. {_stn_max_day}")
         except Exception as exc:
             df_station = None
+            _stn_min_day = _stn_max_day = None
             print(f"WARNING: silver.station_network_daily skipped ({exc})")
 
     # -- silver.device_uptime_intervals -> device-day message volume ------------
     # The day column is eod_date. This table has NO transit_day, which has already
     # broken two consumers with KeyError: ['transit_day'] not in index.
     df_uptime = None
-    _upt_max_day = None
+    _upt_min_day = _upt_max_day = None
     if _enable_uptime_features():
         try:
             _up_raw = spark.read.parquet(f"{s3_silver}/device_uptime_intervals/")
@@ -3342,14 +3402,26 @@ def add_auxiliary(
             _base = _up_raw
             _ucat = _up_lc.get("mars_device_category")
             if _ucat:
-                _base = _base.where(F.col(_ucat) == cfg.device_cat)
+                # Case-insensitive, as the station filter is: an exact match that misses
+                # on case empties the source without raising.
+                _base = _base.where(F.upper(F.col(_ucat).cast("string")) == cfg.device_cat.upper())
             _aggs = []
             for _src, _dst in (("total_msg_count", "upt_msg_count"),
                                ("distinct_message_types", "upt_msg_types"),
                                ("COMPLETE_FLAG", "upt_complete_flag")):
                 _c = _up_lc.get(_src.casefold())
-                if _c:
-                    _aggs.append(F.max(F.col(_c).cast("double")).alias(_dst))
+                if not _c:
+                    continue
+                if isinstance(_up_raw.schema[_c].dataType, T.StringType):
+                    # A 'Y'/'N' flag casts to double as NULL, which the join then fills
+                    # to a constant 0. Map the text values explicitly.
+                    _v = F.upper(F.trim(F.col(_c)))
+                    _e = (F.when(_v.isin("Y", "YES", "T", "TRUE", "1", "1.0"), F.lit(1.0))
+                          .when(_v.isin("N", "NO", "F", "FALSE", "0", "0.0"), F.lit(0.0))
+                          .otherwise(F.col(_c).cast("double")))
+                else:
+                    _e = F.col(_c).cast("double")
+                _aggs.append(F.max(_e).alias(_dst))
             if not _aggs:
                 raise KeyError("no usable uptime measure column present")
             # max, not sum: the table's QUALIFY dedup is recent and the live table
@@ -3366,17 +3438,23 @@ def add_auxiliary(
             )
             _row = df_uptime.agg(F.max("transit_day")).collect()
             _upt_max_day = _row[0][0] if _row else None
+            _upt_min_day = _base.agg(F.min(F.to_date(F.col(_uday)))).collect()[0][0]
+            if _upt_max_day is None:
+                raise ValueError(f"no rows for {cfg.device_cat} between {start_day} and the end day")
+            if _upt_min_day is None or _upt_min_day <= _as_date(start_day):
+                _upt_min_day = None
             print(f"silver.device_uptime_intervals: rolled up to {len(_aggs)} device-day "
-                  f"columns, last observed day {_upt_max_day}")
+                  f"columns, observed {_upt_min_day or start_day} .. {_upt_max_day}")
         except Exception as exc:
             df_uptime = None
+            _upt_min_day = _upt_max_day = None
             print(f"WARNING: silver.device_uptime_intervals skipped ({exc})")
 
     global _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ, _PS1_DF_KPI
     global _PS1_DF_STATION, _PS1_DF_UPTIME, _PS1_DF_DOPP, _PS1_DF_SALE, _PS1_DF_TVMEV, _PS1_DF_CDUR, _PS1_DF_INCP, _PS1_DF_EVALL
     global _PS1_DF_REP, _PS1_DF_MLED, _PS1_DF_INCLAST
     global _PS1_DF_SNREP, _PS1_DF_CHG, _PS1_DF_DAYD
-    global _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY
+    global _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY, _PS1_STN_MIN_DAY, _PS1_UPT_MIN_DAY
     _PS1_DF_WARN, _PS1_DF_AVAIL, _PS1_DF_EVQ = df_warn, df_avail, df_evq
     _PS1_DF_KPI = df_kpi
     _PS1_DF_STATION, _PS1_DF_UPTIME = df_station, df_uptime
@@ -3390,6 +3468,7 @@ def add_auxiliary(
     _PS1_DF_SNREP, _PS1_DF_CHG = df_snrep, df_chg
     _PS1_DF_DAYD = df_dayd
     _PS1_STN_MAX_DAY, _PS1_UPT_MAX_DAY = _stn_max_day, _upt_max_day
+    _PS1_STN_MIN_DAY, _PS1_UPT_MIN_DAY = _stn_min_day, _upt_min_day
 
 
 
@@ -3970,14 +4049,12 @@ def join_and_materialise(
             # day, which is a real zero. PAST its last observed day it means the source
             # stopped, which is not a zero -- filling it would tell the model that every
             # station went quiet on the day ingestion did.
-            _stn_max = globals().get("_PS1_STN_MAX_DAY")
+            _stn_cov = _in_coverage(globals().get("_PS1_STN_MIN_DAY"),
+                                    globals().get("_PS1_STN_MAX_DAY"))
             for _sc in STATION_BASE_COLS:
                 if _sc in df_joined.columns:
-                    _filled = F.coalesce(F.col(_sc), F.lit(0.0))
                     df_joined = df_joined.withColumn(
-                        _sc,
-                        _filled if _stn_max is None
-                        else F.when(F.col("transit_day") <= F.lit(_stn_max), _filled))
+                        _sc, F.when(_stn_cov, F.coalesce(F.col(_sc), F.lit(0.0))))
             if "stn_devices_failed" in df_joined.columns:
                 # Costs a scan only when there is nothing to find, which is exactly the
                 # case worth paying for: a FACILITY_ID dtype mismatch does not raise in
@@ -3996,14 +4073,19 @@ def join_and_materialise(
             # source actually covers. device_uptime_intervals is frozen -- both of its
             # bronze feeders are on a deliberate hold list -- so an unconditional fill
             # would assert "this device sent zero messages" for every day since.
-            _upt_max = globals().get("_PS1_UPT_MAX_DAY")
+            _upt_cov = _in_coverage(globals().get("_PS1_UPT_MIN_DAY"),
+                                    globals().get("_PS1_UPT_MAX_DAY"))
             for _uc in UPTIME_BASE_COLS:
                 if _uc in df_joined.columns:
-                    _filled = F.coalesce(F.col(_uc), F.lit(0.0))
                     df_joined = df_joined.withColumn(
-                        _uc,
-                        _filled if _upt_max is None
-                        else F.when(F.col("transit_day") <= F.lit(_upt_max), _filled))
+                        _uc, F.when(_upt_cov, F.coalesce(F.col(_uc), F.lit(0.0))))
+            if "upt_msg_count" in df_joined.columns:
+                # The station join's backstop, for the same reason: a DEVICE_ID that
+                # differs in form between the two sides returns a silent zero-row match.
+                if df_joined.where(F.col("upt_msg_count") > 0).limit(1).count() == 0:
+                    print("  WARNING: device_uptime_intervals matched NOTHING. Check the "
+                          "DEVICE_ID form on both sides. Every upt_* feature will be "
+                          "constant zero inside its coverage.")
             print("Joined silver.device_uptime_intervals on DEVICE_ID + transit_day")
 
         if df_evq is not None:
@@ -4262,6 +4344,14 @@ def join_and_materialise(
                     .withColumn(f"{_pcol}_prior_sum_7d", F.sum(F.col(_pcol).cast("double")).over(_w7))
                     .withColumn(f"{_pcol}_prior_sum_30d", F.sum(F.col(_pcol).cast("double")).over(_w30))
                 )
+        if df_station is not None:
+            df_joined = _null_prior_sums_outside_coverage(
+                df_joined, STATION_BASE_COLS,
+                globals().get("_PS1_STN_MIN_DAY"), globals().get("_PS1_STN_MAX_DAY"))
+        if df_uptime is not None:
+            df_joined = _null_prior_sums_outside_coverage(
+                df_joined, UPTIME_BASE_COLS,
+                globals().get("_PS1_UPT_MIN_DAY"), globals().get("_PS1_UPT_MAX_DAY"))
         if _enable_recency_trend_features():
             # Days since the family last fired: the most recent day STRICTLY before D with a
             # non-zero count (rangeBetween ends at -1 second). Never-fired and >90 days are 90.
@@ -4581,14 +4671,12 @@ def join_and_materialise(
             # day, which is a real zero. PAST its last observed day it means the source
             # stopped, which is not a zero -- filling it would tell the model that every
             # station went quiet on the day ingestion did.
-            _stn_max = globals().get("_PS1_STN_MAX_DAY")
+            _stn_cov = _in_coverage(globals().get("_PS1_STN_MIN_DAY"),
+                                    globals().get("_PS1_STN_MAX_DAY"))
             for _sc in STATION_BASE_COLS:
                 if _sc in df_joined.columns:
-                    _filled = F.coalesce(F.col(_sc), F.lit(0.0))
                     df_joined = df_joined.withColumn(
-                        _sc,
-                        _filled if _stn_max is None
-                        else F.when(F.col("transit_day") <= F.lit(_stn_max), _filled))
+                        _sc, F.when(_stn_cov, F.coalesce(F.col(_sc), F.lit(0.0))))
             if "stn_devices_failed" in df_joined.columns:
                 # Costs a scan only when there is nothing to find, which is exactly the
                 # case worth paying for: a FACILITY_ID dtype mismatch does not raise in
@@ -4607,14 +4695,19 @@ def join_and_materialise(
             # source actually covers. device_uptime_intervals is frozen -- both of its
             # bronze feeders are on a deliberate hold list -- so an unconditional fill
             # would assert "this device sent zero messages" for every day since.
-            _upt_max = globals().get("_PS1_UPT_MAX_DAY")
+            _upt_cov = _in_coverage(globals().get("_PS1_UPT_MIN_DAY"),
+                                    globals().get("_PS1_UPT_MAX_DAY"))
             for _uc in UPTIME_BASE_COLS:
                 if _uc in df_joined.columns:
-                    _filled = F.coalesce(F.col(_uc), F.lit(0.0))
                     df_joined = df_joined.withColumn(
-                        _uc,
-                        _filled if _upt_max is None
-                        else F.when(F.col("transit_day") <= F.lit(_upt_max), _filled))
+                        _uc, F.when(_upt_cov, F.coalesce(F.col(_uc), F.lit(0.0))))
+            if "upt_msg_count" in df_joined.columns:
+                # The station join's backstop, for the same reason: a DEVICE_ID that
+                # differs in form between the two sides returns a silent zero-row match.
+                if df_joined.where(F.col("upt_msg_count") > 0).limit(1).count() == 0:
+                    print("  WARNING: device_uptime_intervals matched NOTHING. Check the "
+                          "DEVICE_ID form on both sides. Every upt_* feature will be "
+                          "constant zero inside its coverage.")
             print("Joined silver.device_uptime_intervals on DEVICE_ID + transit_day")
 
         if df_evq is not None:
@@ -4872,6 +4965,14 @@ def join_and_materialise(
                     .withColumn(f"{_pcol}_prior_sum_7d", F.sum(F.col(_pcol).cast("double")).over(_w7))
                     .withColumn(f"{_pcol}_prior_sum_30d", F.sum(F.col(_pcol).cast("double")).over(_w30))
                 )
+        if df_station is not None:
+            df_joined = _null_prior_sums_outside_coverage(
+                df_joined, STATION_BASE_COLS,
+                globals().get("_PS1_STN_MIN_DAY"), globals().get("_PS1_STN_MAX_DAY"))
+        if df_uptime is not None:
+            df_joined = _null_prior_sums_outside_coverage(
+                df_joined, UPTIME_BASE_COLS,
+                globals().get("_PS1_UPT_MIN_DAY"), globals().get("_PS1_UPT_MAX_DAY"))
         if _enable_recency_trend_features():
             # Days since the family last fired: the most recent day STRICTLY before D with a
             # non-zero count (rangeBetween ends at -1 second). Never-fired and >90 days are 90.
@@ -5191,14 +5292,12 @@ def join_and_materialise(
             # day, which is a real zero. PAST its last observed day it means the source
             # stopped, which is not a zero -- filling it would tell the model that every
             # station went quiet on the day ingestion did.
-            _stn_max = globals().get("_PS1_STN_MAX_DAY")
+            _stn_cov = _in_coverage(globals().get("_PS1_STN_MIN_DAY"),
+                                    globals().get("_PS1_STN_MAX_DAY"))
             for _sc in STATION_BASE_COLS:
                 if _sc in df_joined.columns:
-                    _filled = F.coalesce(F.col(_sc), F.lit(0.0))
                     df_joined = df_joined.withColumn(
-                        _sc,
-                        _filled if _stn_max is None
-                        else F.when(F.col("transit_day") <= F.lit(_stn_max), _filled))
+                        _sc, F.when(_stn_cov, F.coalesce(F.col(_sc), F.lit(0.0))))
             if "stn_devices_failed" in df_joined.columns:
                 # Costs a scan only when there is nothing to find, which is exactly the
                 # case worth paying for: a FACILITY_ID dtype mismatch does not raise in
@@ -5217,14 +5316,19 @@ def join_and_materialise(
             # source actually covers. device_uptime_intervals is frozen -- both of its
             # bronze feeders are on a deliberate hold list -- so an unconditional fill
             # would assert "this device sent zero messages" for every day since.
-            _upt_max = globals().get("_PS1_UPT_MAX_DAY")
+            _upt_cov = _in_coverage(globals().get("_PS1_UPT_MIN_DAY"),
+                                    globals().get("_PS1_UPT_MAX_DAY"))
             for _uc in UPTIME_BASE_COLS:
                 if _uc in df_joined.columns:
-                    _filled = F.coalesce(F.col(_uc), F.lit(0.0))
                     df_joined = df_joined.withColumn(
-                        _uc,
-                        _filled if _upt_max is None
-                        else F.when(F.col("transit_day") <= F.lit(_upt_max), _filled))
+                        _uc, F.when(_upt_cov, F.coalesce(F.col(_uc), F.lit(0.0))))
+            if "upt_msg_count" in df_joined.columns:
+                # The station join's backstop, for the same reason: a DEVICE_ID that
+                # differs in form between the two sides returns a silent zero-row match.
+                if df_joined.where(F.col("upt_msg_count") > 0).limit(1).count() == 0:
+                    print("  WARNING: device_uptime_intervals matched NOTHING. Check the "
+                          "DEVICE_ID form on both sides. Every upt_* feature will be "
+                          "constant zero inside its coverage.")
             print("Joined silver.device_uptime_intervals on DEVICE_ID + transit_day")
 
         if df_evq is not None:
@@ -5484,6 +5588,14 @@ def join_and_materialise(
                     .withColumn(f"{_pcol}_prior_sum_7d", F.sum(F.col(_pcol).cast("double")).over(_w7))
                     .withColumn(f"{_pcol}_prior_sum_30d", F.sum(F.col(_pcol).cast("double")).over(_w30))
                 )
+        if df_station is not None:
+            df_joined = _null_prior_sums_outside_coverage(
+                df_joined, STATION_BASE_COLS,
+                globals().get("_PS1_STN_MIN_DAY"), globals().get("_PS1_STN_MAX_DAY"))
+        if df_uptime is not None:
+            df_joined = _null_prior_sums_outside_coverage(
+                df_joined, UPTIME_BASE_COLS,
+                globals().get("_PS1_UPT_MIN_DAY"), globals().get("_PS1_UPT_MAX_DAY"))
         if _enable_recency_trend_features():
             # Days since the family last fired: the most recent day STRICTLY before D with a
             # non-zero count (rangeBetween ends at -1 second). Never-fired and >90 days are 90.

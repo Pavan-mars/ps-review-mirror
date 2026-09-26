@@ -314,6 +314,7 @@ function useRollup(feeds) {
         MEDIUM: num(r.n_medium),
         LOW: num(r.n_low),
         median_rul: r.median_rul_days === null || r.median_rul_days === undefined ? null : Number(r.median_rul_days),
+        threshold: r.act_now_threshold === null || r.act_now_threshold === undefined ? null : Number(r.act_now_threshold),
         asof: r.feature_asof_date,
       }));
       let asof = '';
@@ -338,6 +339,7 @@ function useRollup(feeds) {
         overdue: r.filter((x) => x.is_overdue).length,
         CRITICAL: band('CRITICAL'), HIGH: band('HIGH'), MEDIUM: band('MEDIUM'), LOW: band('LOW'),
         median_rul: null,
+        threshold: r[0].act_now_threshold === null || r[0].act_now_threshold === undefined ? null : Number(r[0].act_now_threshold),
         asof: r[0].feature_asof_date,
       };
     }).filter(Boolean);
@@ -346,6 +348,28 @@ function useRollup(feeds) {
     per.forEach((p) => { const v = String(p.asof || ''); if (v > asof) asof = v; });
     return { source: 'browse', exact: capped.length === 0, per, capped, asof: asof || null };
   }, [feeds.summary.data, feeds.devices.data]);
+}
+
+// "GATE 0.90, TVM 0.90" -- the per-fleet act-now bar from ps5_act_now_policy (sql/67).
+const thresholdText = (roll) => {
+  const t = (roll ? roll.per : []).filter((p) => Number.isFinite(p.threshold));
+  return t.length ? t.map((p) => `${deviceShort(p.device_type)} ${p.threshold.toFixed(2)}`).join(', ') : 'the fleet threshold';
+};
+
+// Estimates are a snapshot at feature_asof_date. Past STALE_DAYS the day counts describe a past
+// state of the fleet, and every tab says so rather than presenting them as current.
+const STALE_DAYS = 14;
+function StaleBanner({ asof }) {
+  if (!asof) return null;
+  const age = Math.floor((Date.now() - new Date(asof).getTime()) / 86400000);
+  if (!Number.isFinite(age) || age <= STALE_DAYS) return null;
+  return (
+    <Note>
+      <strong>These estimates are {nfmt(age)} days old</strong> (as of {dfmt(asof)}). Every day count,
+      overdue flag and probability on this tab describes the fleet on that date, not today. Refresh the
+      survival run before using them to plan work.
+    </Note>
+  );
 }
 
 // A single line that appears wherever a fallback total is shown. It names
@@ -430,7 +454,7 @@ function FleetStatus({ feeds }) {
           label="Devices to act on now"
           value={nfmt(actNow)}
           unit={`of ${nfmt(fleet)} scored`}
-          sub={`Act-now means the device is already past its expected service life AND its remaining-life estimate is 30 days or less. Analysis as of ${roll.asof ? dfmt(roll.asof) : 'the date published by the feed'}.`}
+          sub={`Act-now means the model gives at least the fleet's threshold probability (${thresholdText(roll)}) of another out-of-service event within 7 days. Analysis as of ${roll.asof ? dfmt(roll.asof) : 'the date published by the feed'}.`}
           right={(
             <div style={{ textAlign: 'right' }}>
               <div style={{ ...font.micro, marginBottom: 6 }}>Share of the scored fleet</div>
@@ -535,12 +559,14 @@ function FleetStatus({ feeds }) {
           })}
         </div>
         <Note>
-          Two different concordance numbers exist for this run and they are deliberately not
-          merged. The leaderboard figure above is the out-of-time score of the best candidate
-          model. The MLflow registry reports its own, lower figure for the model actually
-          promoted -- and marks all three fleets not ready. Both are on the Model quality tab,
-          side by side. Until they agree, no remaining-life number here should be used to
-          schedule work on its own.
+          {(() => {
+            const pass = roll.per.filter((p) => best[p.device_type] && best[p.device_type].oot_cindex >= CINDEX_FLOOR)
+              .map((p) => deviceShort(p.device_type));
+            const ready = reg.some((x) => x.dashboard_ready === true);
+            return `${pass.length ? `${pass.join(', ')} clear${pass.length === 1 ? 's' : ''}` : 'No fleet clears'} the ${CINDEX_FLOOR} bar. `
+              + (ready ? '' : 'No fleet is signed off in the model registry, so ')
+              + 'these estimates are a prioritisation aid for a planner, not an automatic scheduler.';
+          })()}
         </Note>
       </Panel>
     </>
@@ -595,6 +621,8 @@ function Devices({ feeds, onAnalyse, city }) {
     { key: 'days_since_hw_oos', label: 'Days since OOS', num: true, d: 0, width: 120 },
     { key: 'n_prior_oos', label: 'Prior OOS', num: true, d: 0, width: 95 },
     { key: 'roll_fail_30d', label: 'OOS in last 30d', num: true, d: 0, width: 120 },
+    { key: 'p_oos_7d', label: 'P(OOS within 7d)', num: true, width: 140,
+      render: cell((r) => (r.p_oos_7d === null || r.p_oos_7d === undefined ? <span style={{ color: INK_3 }}>--</span> : pct(Number(r.p_oos_7d), 0))) },
     { key: 'rul_rank_in_type', label: 'Rank in fleet', num: true, d: 0, width: 110 },
     {
       key: 'act_now',
@@ -940,6 +968,17 @@ function Components({ feeds, onAnalyse }) {
       sub="Serial-numbered components carried by devices that Remaining Useful Life & SLA Breach has scored. Counts are distinct on device plus serial, never on raw rows."
       right={dropped > 0 || summaryRows > totalComponents ? <Badge tone="warning">Grain defect present</Badge> : <Badge tone="good">Grain clean</Badge>}
     >
+      {/* Decided 26-Sep-2026: the component columns stay on screen for verification, with this notice. */}
+      <Card style={{ borderLeft: `3px solid ${STATUS.critical.fill}`, marginBottom: 16 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>For verification and UAT only -- not for operational use</div>
+        <div style={{ ...font.note, marginTop: 6 }}>
+          There is no component-level failure model yet. Component remaining life, overdue flags and risk tiers are
+          derived from the host DEVICE's out-of-service model (typical gap about a day) applied to part ages of
+          months or years, and the models were fitted on data as of the analysis date shown on this tab. That is why
+          nearly every part reads as overdue. The rows are here so the data can be checked end to end; they must not
+          be used to schedule part replacement. A part's act-now flag is its host device's.
+        </div>
+      </Card>
       {(dropped > 0 || (Array.isArray(summary) && summaryRows > totalComponents)) && (
         <Card style={{ borderLeft: `3px solid ${STATUS.warning.fill}`, marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
@@ -982,8 +1021,8 @@ function Components({ feeds, onAnalyse }) {
               value={nfmt(deduped.filter((r) => r.act_now).length)}
               tone={deduped.length && deduped.filter((r) => r.act_now).length / deduped.length > 0.8 ? 'neutral' : 'warning'}
               foot={deduped.length
-                ? `${pct(deduped.filter((r) => r.act_now).length / deduped.length, 0)} of components -- past its interval with 30 days or less expected`
-                : 'Past its interval with 30 days or less expected'} />
+                ? `${pct(deduped.filter((r) => r.act_now).length / deduped.length, 0)} of components -- host device meets its fleet's act-now probability`
+                : 'Host device meets its fleet act-now probability'} />
         <Stat label="Component types" value={nfmt(byComponent.length)} foot={byComponent.slice(0, 3).map((b) => b.name).join(', ')} />
       </Grid>
 
@@ -1140,11 +1179,16 @@ function ModelQuality({ feeds }) {
             })}
           </div>
           <Note>
-            The best candidate clears {CINDEX_FLOOR} on fare gates and misses it on the other two.
-            The registry number is lower on every fleet, and no fleet is marked ready. That is a
-            promotion problem, not a modelling one: the model that got registered is not the model
-            the leaderboard scored. Until it is resolved, Remaining Useful Life & SLA Breach is a prioritisation aid for a human
-            planner, not an automatic scheduler.
+            {(() => {
+              const pass = TYPES.filter((t) => bestByType[t] >= CINDEX_FLOOR).map((t) => deviceShort(t));
+              const same = TYPES.every((t) => {
+                const r = reg.find((x) => regType(x.device_type) === t);
+                return !r || !Number.isFinite(bestByType[t]) || Math.abs(Number(r.concordance_index) - bestByType[t]) < 1e-6;
+              });
+              return `${pass.length ? `The best candidate clears ${CINDEX_FLOOR} on ${pass.join(', ')}` : `No candidate clears ${CINDEX_FLOOR}`}. `
+                + (same ? 'The registry figure is currently taken from the same leaderboard row, so the two columns agree. ' : 'The registry figure differs from the best candidate on at least one fleet. ')
+                + (reg.some((x) => x.dashboard_ready === true) ? '' : 'No fleet is signed off, so this is a prioritisation aid, not an automatic scheduler.');
+            })()}
           </Note>
         </Panel>
       </Section>
@@ -1374,7 +1418,12 @@ export default function PS5Overview({ city = 'CHI' }) {
   const [analyse, setAnalyse] = useState(null);
   const { feeds, request, refetch } = useFeeds(city);
 
-  useEffect(() => { request(VIEW_FEEDS[view] || []); }, [view, request]);
+  useEffect(() => { request(['summary', ...(VIEW_FEEDS[view] || [])]); }, [view, request]);
+  const asof = useMemo(() => {
+    let a = '';
+    (feeds.summary.data || []).forEach((r) => { const v = String(r.feature_asof_date || ''); if (v > a) a = v; });
+    return a || null;
+  }, [feeds.summary.data]);
 
   const busy = ALL_KEYS.some((k) => feeds[k].loading);
 
@@ -1413,6 +1462,7 @@ export default function PS5Overview({ city = 'CHI' }) {
         )}
       />
 
+      <StaleBanner asof={asof} />
       {view === 'overview' && <FleetStatus feeds={feeds} />}
       {view === 'devices' && <Devices feeds={feeds} onAnalyse={setAnalyse} city={city} />}
       {view === 'location' && <LocationView feeds={feeds} city={city} />}

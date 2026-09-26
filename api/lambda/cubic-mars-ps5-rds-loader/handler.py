@@ -260,7 +260,14 @@ def lambda_handler(event, context):
                                       "columns_missing": missing}
         if not dry:
             c.run("COMMIT")
-        res["status"] = "dry_run_ok" if dry else "committed"
+        # A skipped, refused or errored artifact keeps the PREVIOUS run's rows in its table while the
+        # rest are replaced, so the dashboard mixes two runs. That must not read as a clean commit.
+        _gaps = sorted(set(res["errors"]) | set(res["refused"]) | set(res["skipped"]) | set(res["no_target"]))
+        res["incomplete"] = _gaps
+        if dry:
+            res["status"] = "dry_run_ok" if not _gaps else "dry_run_incomplete"
+        else:
+            res["status"] = "committed" if not _gaps else "committed_partial"
     except Exception as e:
         if not dry:
             try:
@@ -277,5 +284,7 @@ def lambda_handler(event, context):
     # Compact line FIRST: the full dump is truncated and status serialises last,
     # so on a 15-file run the log could not answer "did it commit".
     print("PS5", res.get("status"), json.dumps(res["summary"]))
-    return {"statusCode": 200 if res.get("status") != "failed" else 500,
+    # 200 only for a complete load. A returned 500 is not a Lambda error metric -- alarm on the log line
+    # (CloudWatch metric filter: "PS5 committed_partial") to catch a scheduled run with a gap.
+    return {"statusCode": 200 if res.get("status") in ("committed", "dry_run_ok") else 500,
             "body": json.dumps(res, default=str)}

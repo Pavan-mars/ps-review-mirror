@@ -95,3 +95,38 @@ Nothing below is read by the V4 dashboard (grep of dashboard/src). **[AWS]** che
 ## 5. Local verification
 `tests/` is empty. A harness will be added: Postgres (docker) + sql/01,29–32 + fixture CSVs →
 loader (local S3 stub) → API routes → assertions; dashboard `npm run build`.
+
+## 6. Status — changes made on `review/ps5` (26-Sep-2026)
+
+Decisions (26-Sep): refit with events to 29-Aug; keep component columns with a UAT-only notice;
+act_now = P(OOS within 7 days) >= per-fleet threshold.
+
+| Fix | Change |
+|---|---|
+| P5-1 | Notebook: `EVENT_END_DATE` (default 2026-08-29, env `PS5_EVENT_END_DATE`) now bounds OOS events, censoring and `feature_asof_date`; enrichment stays windowed at `RUN_DATE` (2026-04-11). Dashboard: staleness banner on every PS5 tab when as-of > 14 days. |
+| P5-2 | Components tab: permanent "verification and UAT only" notice; component act_now = host device act_now (sql/67). |
+| P5-3 | Notebook exports `p_oos_7d`; sql/67 adds the column, `ps5_act_now_policy` (per-fleet threshold, default 0.90) and rebuilds both views; API returns `p_oos_7d`, `act_now_threshold`, p50/p90; UI shows the column and the rule. |
+| P5-5 | Notebook cell 4: `ci_fault_count` dropped; CMDB ages measured at interval start. |
+| P5-6 | Hard-coded concordance narrative replaced by text computed from the feeds. |
+| P5-7 | Loader: `committed_partial` + HTTP 500 when any artifact is skipped/refused/errored; `incomplete` lists them. |
+| Retire (code-only) | `fastapi_app/ps5_reliability_routes.py` removed; Device-360 fallback to `ps5_reliability_estimates` removed. |
+| Not done | P5-4 (per-device weighting) — needs a modelling decision after the refit; survival curves (write `ps5_weibull_params`) — next. Shadow stack retirement waits on the AWS check. |
+
+### Local checks
+```bash
+python -m pytest -q tests/ps5                      # engine p_oos_7d maths + loader partial-load status
+psql "$RDS_URL" -f tests/ps5/check_sql.sql         # sql/29-32 + 67 in a scratch schema, always ROLLBACK
+cd dashboard && npm ci && npm run build            # dashboard compiles
+```
+Verified here: the three pytest cases pass, and `check_sql.sql` passes on Postgres 16. The dashboard build could NOT be run in the review container (npm registry blocked).
+
+### Deploy order (you run these)
+1. Deploy `cubic-mars-dashboard-api` (handler + sql/67), then invoke
+   `{"action":"apply_sql","file":"67_ps5_act_now_probability.sql"}`.
+2. Deploy `cubic-mars-ps5-rds-loader`.
+3. Re-run the PS5 notebook (defaults already set; `PS5_EVENT_END_DATE=2026-08-29`), let it write to S3,
+   invoke the loader, confirm `"status": "committed"`.
+4. Read `/ps5/summary` p50/p90 of `p_oos_7d` per fleet and set thresholds:
+   `UPDATE ps5_act_now_policy SET p_threshold=<x>, note='<why>' WHERE city_id='CHI' AND device_type='<T>';`
+5. Rebuild and deploy the dashboard image.
+Until step 3 runs, `p_oos_7d` is NULL on every row, so act_now is FALSE everywhere; that is deliberate, not a guess.

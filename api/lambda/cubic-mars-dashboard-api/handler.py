@@ -1289,16 +1289,13 @@ def _device_360(city, dev):
         "SELECT feature_asof_date AS as_of_date, device_type, facility_id,"
         " risk_band, is_overdue, rul_standard_days, predicted_median_survival_days,"
         " hazard_score, current_healthy_age_days, days_since_hw_oos, roll_fail_30d,"
-        " n_prior_oos, rul_rank_in_type, n_devices_in_type, act_now "
+        " n_prior_oos, rul_rank_in_type, n_devices_in_type, act_now,"
+        " p_oos_7d, act_now_threshold "
         "FROM v_ps5_device_rul WHERE city_id=:c AND device_id=:d "
         "ORDER BY feature_asof_date DESC LIMIT 1", c=city, d=dev)
     _ps5_src = "v_ps5_device_rul"
-    if not d5:
-        d5 = _safe_rows("SELECT as_of_date, concordance_index, rul_standard_days, "
-                        "rul_conservative_days, reader_fault_count_30d, data_quality_gate_passed "
-                        "FROM ps5_reliability_estimates WHERE city_id=:c AND device_id=:d "
-                        "ORDER BY as_of_date DESC LIMIT 1", c=city, d=dev)
-        _ps5_src = "ps5_reliability_estimates"
+    # 26-Sep-2026: the fallback to ps5_reliability_estimates is gone. That table holds v1-era estimates
+    # nothing refreshes; a device the current run did not score now reads as unscored, not as a stale v1 number.
     # Serial grain, deduplicated. v_ps5_serial_dupes measures up to 25 identical
     # rows per (device, serial) on validators, every measured column constant
     # inside the repeat -- a roster fan-out. DISTINCT can only drop rows equal
@@ -1342,13 +1339,6 @@ def _device_360(city, dev):
                 "No fleet is signed off in the model registry yet, so treat this as "
                 "prioritisation rather than a schedule."
                 % (d5[0].get("rul_rank_in_type"), d5[0].get("n_devices_in_type")))
-        else:
-            ps5["source"] = _ps5_src
-            ps5["note"] = ("Device-level RUL from the legacy ps5_reliability_estimates "
-                           "table; the survival run has no row for this device. "
-                           + ("Data-quality gate PASSED."
-                              if d5[0].get("data_quality_gate_passed")
-                              else "Data-quality gate NOT passed -- indicative only."))
     else:
         ps5["found"] = False
     if cat:
@@ -2941,9 +2931,9 @@ def route(method, path, params, body, headers=None):
             " rul_standard_days, predicted_median_survival_days, hazard_score,"
             " current_healthy_age_days, days_since_hw_oos, roll_fail_30d,"
             " n_prior_oos, rul_rank_in_type, n_devices_in_type, act_now,"
-            " feature_asof_date "
+            " p_oos_7d, act_now_threshold, feature_asof_date "
             f"FROM v_ps5_device_rul WHERE {w} "
-            "ORDER BY act_now DESC, rul_standard_days ASC NULLS LAST "
+            "ORDER BY act_now DESC, p_oos_7d DESC NULLS LAST, rul_standard_days ASC NULLS LAST "
             f"LIMIT {_clamp_int((params or {}).get('limit'), 3000, 1, 12000)}", **kw))
     if path == "/ps5/serial-rul":
         dt = (params or {}).get("device_type")
@@ -2993,6 +2983,10 @@ def route(method, path, params, body, headers=None):
             "        (ORDER BY rul_standard_days))::numeric,1) AS median_rul_days,"
             " ROUND(MIN(rul_standard_days)::numeric,1) AS min_rul_days,"
             " MAX(n_devices_in_type) AS n_devices_in_type,"
+            " MAX(act_now_threshold) AS act_now_threshold,"
+            " COUNT(p_oos_7d) AS n_with_p_oos_7d,"
+            " ROUND((PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p_oos_7d))::numeric,4) AS p50_p_oos_7d,"
+            " ROUND((PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY p_oos_7d))::numeric,4) AS p90_p_oos_7d,"
             " MAX(feature_asof_date) AS feature_asof_date "
             "FROM v_ps5_device_rul WHERE city_id=:c "
             "GROUP BY device_type ORDER BY device_type", c=city))

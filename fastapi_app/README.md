@@ -47,14 +47,9 @@ That divergence is **not a defect to fix here**. Re-syncing the routes would
 make the mock resemble production more closely, which makes the hazard above
 worse, not better. Leave them different.
 
-## ps5_reliability_routes.py is not part of this app
+## PS5
 
-Nothing imports it. There is no `include_router` call anywhere in `main.py`,
-and the file's own header says it is for the dashboard-api. Unlike `main.py`,
-it *does* connect to Aurora - `boto3` + `psycopg2` + Secrets Manager - and
-reads `v_ps5_reliability_oos_latest`. It is a snippet parked in the wrong
-folder. Anyone reasoning about "what the FastAPI app does" should ignore it,
-and anyone looking for that PS5 query should look here for it.
+`ps5_reliability_routes.py` (a parked snippet reading the retired shadow views) was removed 26-Sep-2026.
 
 ## Correction on the record
 

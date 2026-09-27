@@ -555,39 +555,13 @@ CREATE TABLE schema_migrations (
 INSERT INTO schema_migrations (version, name) VALUES
   ('20260502000001', 'initial_schema_creation');
 
--- ============================================================================
--- 13. PS2/PS5 REAL MODEL OUTPUT TABLES (v3 patch, 11-Jul-2026)
--- Canonical for PS2/PS5 going forward — see header note. Full detail incl.
--- PS1/PS3/PS4 patches in CUBIC_MARS_RDS_Schema_Reference_v3_11Jul2026.md.
--- ============================================================================
+-- (27-Sep-2026) ps2_cascade_chains_daily: statement removed -- table retired (sql/62, 63, 75).
 
--- PS2 — cascade propagation windows (real: 2,198,548 cascade-days locked run, Chicago)
-CREATE TABLE ps2_cascade_chains_daily (
-  id                    BIGSERIAL    PRIMARY KEY,
-  city_id               city_code    NOT NULL REFERENCES cities(id),
-  trigger_device_id     VARCHAR(30)  NOT NULL,
-  trigger_device_type   device_type  NOT NULL,
-  toc_code              toc_company  REFERENCES toc_companies(code),
-  trigger_ts            TIMESTAMPTZ  NOT NULL,
-  window_bucket         VARCHAR(10)  NOT NULL CHECK (window_bucket IN ('0-5min','5-15min','15-30min','30-60min','60min+')),
-  device_count_in_chain SMALLINT     NOT NULL,
-  fault_count_in_chain  SMALLINT     NOT NULL,
-  hub_subsystem         VARCHAR(30),
-  cascade_duration_min  INT,
-  cascade_date          DATE         NOT NULL
-);
-CREATE INDEX idx_ps2_city_date ON ps2_cascade_chains_daily(city_id, cascade_date DESC);
+-- (27-Sep-2026) ps2_cascade_chains_daily: statement removed -- table retired (sql/62, 63, 75).
 
-CREATE TABLE ps2_facility_contagion_daily (
-  city_id                city_code    NOT NULL REFERENCES cities(id),
-  facility_id            INT          NOT NULL,
-  facility_name          VARCHAR(100),
-  contagion_date         DATE         NOT NULL,
-  device_count_cascading SMALLINT     NOT NULL,
-  contagion_rate         NUMERIC(5,4) NOT NULL,
-  is_hotspot_flag        BOOLEAN      NOT NULL DEFAULT FALSE,
-  PRIMARY KEY (city_id, facility_id, contagion_date)
-);
+
+-- (27-Sep-2026) ps2_facility_contagion_daily: statement removed -- table retired (sql/62, 63, 75).
+
 
 -- refreshed weekly, not daily — association rules are stable
 CREATE TABLE ps2_subsystem_associations (
@@ -602,15 +576,8 @@ CREATE TABLE ps2_subsystem_associations (
   computed_date          DATE         NOT NULL
 );
 
-CREATE TABLE ps2_hmm_regimes (
-  city_id                city_code    NOT NULL REFERENCES cities(id),
-  regime                 VARCHAR(20)  NOT NULL,
-  pct                    NUMERIC(5,2) NOT NULL,
-  dwell_days_min         NUMERIC(5,2),
-  dwell_days_max         NUMERIC(5,2),
-  computed_date          DATE         NOT NULL,
-  PRIMARY KEY (city_id, regime, computed_date)
-);
+-- (27-Sep-2026) ps2_hmm_regimes: statement removed -- table retired (sql/62, 63, 75).
+
 
 -- ps5_reliability_estimates retired 26-Sep-2026 (shadow PS5 stack); dropped by sql/68_ps5_shadow_drop.sql.
 

@@ -27,18 +27,10 @@ CREATE TABLE ps2_device_cascades (
   first_subsystem VARCHAR(30), last_subsystem VARCHAR(30), computed_date DATE NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_ps2_devcascades ON ps2_device_cascades (city_id, device_id, computed_date);
-CREATE TABLE IF NOT EXISTS ps2_error_codes (
-  city_id city_code NOT NULL REFERENCES cities(id),
-  error_code VARCHAR(20) NOT NULL, occurrences BIGINT, top_subsystem VARCHAR(30),
-  pct NUMERIC(7,3), computed_date DATE NOT NULL,
-  PRIMARY KEY (city_id, error_code, computed_date)
-);
-CREATE TABLE IF NOT EXISTS ps2_error_code_transitions (
-  city_id city_code NOT NULL REFERENCES cities(id),
-  from_code VARCHAR(20) NOT NULL, to_code VARCHAR(20) NOT NULL, occurrences BIGINT,
-  computed_date DATE NOT NULL,
-  PRIMARY KEY (city_id, from_code, to_code, computed_date)
-);
+-- (27-Sep-2026) ps2_error_codes: statement removed -- table retired (sql/62, 63, 75).
+
+-- (27-Sep-2026) ps2_error_code_transitions: statement removed -- table retired (sql/62, 63, 75).
+
 CREATE TABLE IF NOT EXISTS ps2_phi_matrix (
   city_id city_code NOT NULL REFERENCES cities(id),
   sub_a VARCHAR(30) NOT NULL, sub_b VARCHAR(30) NOT NULL, phi NUMERIC(12,4),

@@ -50,21 +50,11 @@ CREATE TABLE IF NOT EXISTS ps2_ignition_termination_subsystem (
 CREATE INDEX IF NOT EXISTS ix_ps2_ign_term_sub_city_date
   ON ps2_ignition_termination_subsystem (city_id, computed_date DESC);
 
-CREATE TABLE IF NOT EXISTS ps2_facility_contagion_facility (
-  id                 BIGSERIAL PRIMARY KEY,
-  city_id            city_code   NOT NULL REFERENCES cities(id),
-  facility_id        VARCHAR(120),
-  cascade_days       BIGINT,
-  distinct_devices   BIGINT,
-  contagion_rate     NUMERIC(12,6),
-  grain              VARCHAR(20),
-  run_id             VARCHAR(80),
-  notebook_version   VARCHAR(40),
-  computed_date      DATE
-);
+-- (27-Sep-2026) ps2_facility_contagion_facility statement removed -- retired (sql/62, 63, 75); no reader.
 
-CREATE INDEX IF NOT EXISTS ix_ps2_fac_contagion_city_date
-  ON ps2_facility_contagion_facility (city_id, computed_date DESC);
+
+-- (27-Sep-2026) ps2_facility_contagion_facility statement removed -- retired (sql/62, 63, 75); no reader.
+
 
 -- Read-side convenience only. The API selects the tables directly; these
 -- exist so the same "newest computed_date only" rule can be checked by hand
@@ -77,10 +67,5 @@ WHERE computed_date = (SELECT MAX(computed_date)
                        FROM ps2_ignition_termination_subsystem
                        WHERE city_id = t.city_id);
 
-CREATE OR REPLACE VIEW v_ps2_facility_contagion_facility AS
-SELECT facility_id, cascade_days, distinct_devices, contagion_rate, grain,
-       run_id, computed_date, city_id
-FROM ps2_facility_contagion_facility t
-WHERE computed_date = (SELECT MAX(computed_date)
-                       FROM ps2_facility_contagion_facility
-                       WHERE city_id = t.city_id);
+-- (27-Sep-2026) ps2_facility_contagion_facility statement removed -- retired (sql/62, 63, 75); no reader.
+

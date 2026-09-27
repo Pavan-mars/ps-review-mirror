@@ -1,42 +1,5 @@
--- =====================================================================
--- 27_ps2_device_grain.sql   27-Jul-2026
---
--- The three tables the PS2 loader reported as no_target on the 27-Jul run:
---
---     ps2_cascade_velocity_device        5 rows in S3
---     ps2_leadlag_timing_device         80 rows
---     ps2_recurrence_device          4,673 rows
---
--- no_target means the export exists and was read successfully but Aurora has
--- nowhere to put it. The loader deliberately does not invent a table -- it
--- reports the row count and the real column list so the DDL can be written
--- against the observed shape rather than a guessed one. These three are written
--- from that report plus the exports themselves; every column name and type
--- below was read off the data, not assumed.
---
--- Key uniqueness was checked before choosing each primary key:
---     cascade_velocity   5 rows -> 5 distinct window buckets
---     leadlag_timing    80 rows -> 80 distinct (sub_a, sub_b) pairs
---     recurrence     4,673 rows -> 4,673 distinct device_id
--- No collisions, so none of these repeats the ps2_network_centrality mistake of
--- a key too narrow for the grain.
--- =====================================================================
+-- (27-Sep-2026) ps2_cascade_velocity: statement removed -- table retired (sql/62, 63, 75).
 
--- Fleet cascade velocity by time window. Five rows: 0-5, 5-15, 15-30, 30-60,
--- 60+ minutes. Fleet-level, NOT per device, despite the _device suffix on the
--- export -- the suffix marks which notebook grain produced it, not the grain of
--- the result. mean_velocity_min_per_fault is minutes per fault, so LOWER is
--- faster propagation; a chart sorting this descending would rank the slowest
--- cascades as the worst, which is backwards.
-CREATE TABLE IF NOT EXISTS ps2_cascade_velocity (
-  city_id city_code NOT NULL REFERENCES cities(id),
-  window_bucket VARCHAR(16) NOT NULL,
-  n_events BIGINT,
-  mean_chain_length NUMERIC(10,3),
-  mean_velocity_min_per_fault NUMERIC(12,3),
-  computed_date DATE NOT NULL,
-  PRIMARY KEY (city_id, window_bucket, computed_date)
-);
 
 -- Lead/lag timing between subsystem pairs, in minutes. 80 rows = the ordered
 -- pairs actually observed. sub_a = sub_b rows are present and meaningful: they
@@ -87,6 +50,21 @@ CREATE INDEX IF NOT EXISTS ix_ps2_recurrence_chronic
 -- the export supplies total_impact, cascade_days and avg_impact but leaves
 -- max_impact and impact_rank null on every row, and a rank column of nulls is
 -- worse than no rank column at all.
+-- 27-Sep-2026: ps2_business_impact DDL moved here from the retired sql/07 -- v_ps2_device_cascade below reads it,
+-- and a fresh database (UAT/Prod) would otherwise never create it.
+CREATE TABLE IF NOT EXISTS ps2_business_impact (
+  city_id       city_code   NOT NULL REFERENCES cities(id),
+  device_id     VARCHAR(20) NOT NULL,
+  category      VARCHAR(12),
+  total_impact  NUMERIC(14,1),
+  cascade_days  INT,
+  avg_impact    NUMERIC(10,3),
+  max_impact    NUMERIC(12,1),
+  impact_rank   SMALLINT,
+  computed_date DATE        NOT NULL,
+  PRIMARY KEY (city_id, device_id, computed_date)
+);
+
 CREATE OR REPLACE VIEW v_ps2_device_cascade AS
 WITH latest AS (
   SELECT city_id, MAX(computed_date) AS d

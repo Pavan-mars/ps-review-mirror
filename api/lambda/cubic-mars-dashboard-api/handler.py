@@ -3040,6 +3040,23 @@ def route(method, path, params, body, headers=None):
             " tel_min, tel_max, n_feats "
             "FROM ps5_enrich_coverage WHERE city_id=:c "
             "ORDER BY device_type, pct_matched ASC NULLS FIRST", c=city))
+    if path == "/ps5/survival":
+        # 27-Sep-2026 (sql/74). The fleet's pooled Weibull, turned into what a planner reads: the chance a
+        # device that has just come back into service has another OOS within N days, and the curve S(t).
+        # Fleet-average -- one device's own risk moves with its recent history (the Cox part of the model).
+        import math
+        out = []
+        for r in rows("SELECT device_type, weibull_shape, weibull_scale, cv_cindex, gate_pass, cindex_floor,"
+                      " run_date, event_def_version, loaded_at FROM ps5_fleet_survival WHERE city_id=:c"
+                      " ORDER BY device_type", c=city):
+            k, lam = float(r["weibull_shape"]), float(r["weibull_scale"])
+            surv = lambda t: math.exp(-((t / lam) ** k))
+            r["median_days"] = round(lam * math.log(2) ** (1.0 / k), 2)
+            r["p_within"] = {str(h): round(1.0 - surv(h), 4) for h in (1, 3, 7, 14)}
+            r["hazard_trend"] = "falling" if k < 0.97 else ("rising" if k > 1.03 else "flat")
+            r["curve"] = [{"t": round(t / 4.0, 2), "s": round(surv(t / 4.0), 4)} for t in range(0, 57)]
+            out.append(r)
+        return ok(out)
     if path == "/ps5/serial-grain":
         # Grain audit, not a dashboard panel. sql/30 asserted (device_id,
         # component_serial_nbr) was unique; gates satisfied it, TVM and

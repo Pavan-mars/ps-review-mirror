@@ -154,6 +154,30 @@ def read_csv(bucket, key):
     return list(csv.DictReader(io.StringIO(body)))
 
 
+def read_json(bucket, key):
+    return json.loads(_s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode("utf-8-sig"))
+
+
+def load_fleet_survival(c, folder, dev, dry):
+    """27-Sep-2026. The fleet's pooled Weibull (sql/74) from <folder>_device_survival_params.json.
+    Returns the loaded row; raises on a missing/unreadable file so the caller marks it incomplete."""
+    p = read_json(GOLD_BUCKET, "%s/%s/%s_device_survival_params.json" % (PS5_PREFIX, folder, folder))
+    w = p.get("weibull") or {}
+    row = {"city_id": CITY_ID, "device_type": dev,
+           "weibull_shape": w.get("shape"), "weibull_scale": w.get("scale"),
+           "cv_cindex": p.get("cv_cindex"), "gate_pass": p.get("gate_pass"),
+           "cindex_floor": p.get("cindex_floor"), "run_date": p.get("run_date"),
+           "event_def_version": p.get("event_def_version")}
+    if row["weibull_shape"] is None or row["weibull_scale"] is None:
+        raise ValueError("weibull shape/scale missing from params json")
+    if not dry:
+        c.run("DELETE FROM ps5_fleet_survival WHERE city_id=:c AND device_type=:d", c=CITY_ID, d=dev)
+        cols = list(row)
+        c.run("INSERT INTO ps5_fleet_survival (%s) VALUES (%s)" % (", ".join(cols), ", ".join(":" + k for k in cols)),
+              **row)
+    return row
+
+
 def lambda_handler(event, context):
     event = event or {}
     dry  = bool(event.get("dry_run"))
@@ -258,6 +282,21 @@ def lambda_handler(event, context):
                 res["loaded"][tag] = {"table": tgt, "device": dev, "rows": len(shaped),
                                       "columns_used": use, "columns_dropped": dropped,
                                       "columns_missing": missing}
+            if only and "device_survival_params" not in only:
+                continue
+            tag = "%s/device_survival_params" % folder
+            try:
+                if not dry:
+                    c.run("SAVEPOINT sp_surv")
+                row = load_fleet_survival(c, folder, dev, dry)
+                if not dry:
+                    c.run("RELEASE SAVEPOINT sp_surv")
+                res["loaded"][tag] = {"table": "ps5_fleet_survival", "device": dev, "rows": 1,
+                                      "shape": row["weibull_shape"], "scale": row["weibull_scale"]}
+            except Exception as e:
+                if not dry:
+                    c.run("ROLLBACK TO SAVEPOINT sp_surv")
+                res["errors"][tag] = {"table": "ps5_fleet_survival", "error": str(e)[:300]}
         if not dry:
             c.run("COMMIT")
         # A skipped, refused or errored artifact keeps the PREVIOUS run's rows in its table while the

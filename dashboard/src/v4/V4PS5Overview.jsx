@@ -71,6 +71,7 @@ import AnalyseModal from './V4Device360Popup';
 import { ps5 as api } from './V4api';
 import { analyseColumn } from './V4DeviceTable';
 import { Histogram } from './V4ChartsPlus';
+import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useLocations, normFacilityId } from './V4Locations';
 
 
@@ -174,6 +175,7 @@ const VIEWS = [
   { key: 'devices', label: 'Devices' },
   { key: 'location', label: 'Location' },
   { key: 'components', label: 'Components' },
+  { key: 'survival', label: 'Time to next OOS' },
   { key: 'model', label: 'Model quality' },
   { key: 'evidence', label: 'How we know' },
 ];
@@ -216,6 +218,7 @@ const FEED_FN = {
   registry: (city) => api.status(city),
   importance: (city) => api.importance(city),
   coverage: (city) => api.coverage(city),
+  survival: (city) => api.survival(city),
   grain: (city) => api.serialGrain(city),
 };
 
@@ -226,6 +229,7 @@ const VIEW_FEEDS = {
   // endpoint, and the two tabs can never disagree about a total.
   location: ['devices', 'summary'],
   components: ['components', 'compSummary', 'grain'],
+  survival: ['survival', 'summary'],
   model: ['leaderboard', 'registry', 'importance'],
   // 'grain' and 'registry' dropped 06-Aug-2026 with the two panels that read
   // them -- two fewer round trips on this tab's first paint. Both feeds are
@@ -1110,6 +1114,74 @@ function Components({ feeds, onAnalyse }) {
 // ---------------------------------------------------------------------
 // VIEW 4 -- Model quality
 // ---------------------------------------------------------------------
+// 27-Sep-2026. Survival curves (sql/74, /ps5/survival). Fleet-average: what happens to a device of this
+// type after it comes back into service. Individual devices sit above or below the curve depending on
+// their own recent history -- that is what the Devices tab's act-now probability adds.
+function SurvivalView({ feeds }) {
+  const s = feeds.survival;
+  if (s.loading || s.idle) return <Loading height={300} label="Loading survival curves" />;
+  const fleets = (s.data || []).map((r) => ({ ...r, device_type: String(r.device_type).toUpperCase() }));
+  if (s.error || !fleets.length) {
+    return (
+      <Card><Empty>{s.error || 'No survival curves yet: ps5_fleet_survival is empty (apply sql/74, then re-run the PS5 loader).'}</Empty></Card>
+    );
+  }
+  const byT = {};
+  fleets.forEach((f) => (f.curve || []).forEach((p) => {
+    byT[p.t] = byT[p.t] || { t: p.t };
+    byT[p.t][f.device_type] = p.s;
+  }));
+  const data = Object.values(byT).sort((a, b) => a.t - b.t);
+  const trend = {
+    falling: 'risk falls the longer a device stays fault-free',
+    rising: 'risk rises the longer a device runs (wear-out)',
+    flat: 'risk is roughly constant over time',
+  };
+  return (
+    <>
+      <StaleBanner asof={fleets[0] && fleets[0].run_date} />
+      <Section accent={TAB_COLOR.ps5}
+        eyebrow="Fleet behaviour"
+        title="How long devices stay in service after an OOS"
+        sub="The share of devices still fault-free t days after coming back into service. Steeper means faster return to OOS. Fleet-average curves: one device's own risk moves with its recent history."
+      >
+        <Panel title="Survival curve by fleet" hint="Fitted Weibull, events to the model's as-of date">
+          <div style={{ height: 300 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+                <CartesianGrid stroke={LINE} strokeDasharray="3 3" />
+                <XAxis dataKey="t" type="number" domain={[0, 14]} ticks={[0, 1, 2, 3, 5, 7, 10, 14]}
+                  tick={{ fill: INK_3, fontSize: 11 }} label={{ value: 'days since returning to service', position: 'insideBottom', offset: -4, fill: INK_3, fontSize: 11 }} />
+                <YAxis domain={[0, 1]} tickFormatter={(v) => pct(v, 0)} tick={{ fill: INK_3, fontSize: 11 }} />
+                <Tooltip formatter={(v, n) => [pct(v, 1) + ' still fault-free', deviceName(n)]} labelFormatter={(t) => `day ${t}`} />
+                <Legend formatter={(n) => deviceName(n)} />
+                {fleets.map((f) => (
+                  <Line key={f.device_type} dataKey={f.device_type} stroke={deviceColor(f.device_type)} dot={false} strokeWidth={2} isAnimationActive={false} />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+        <Grid>
+          {fleets.map((f) => (
+            <Panel key={f.device_type} title={deviceName(f.device_type)} accent={deviceColor(f.device_type)}>
+              <StatRow>
+                <Stat label="Typical time to next OOS" value={nfmt(f.median_days, 1)} unit="days" flat />
+                <Stat label="OOS within 1 day" value={pct(f.p_within && f.p_within['1'], 0)} flat />
+                <Stat label="OOS within 7 days" value={pct(f.p_within && f.p_within['7'], 0)} flat />
+              </StatRow>
+              <div style={{ ...font.note, marginTop: 8 }}>
+                Shape {nfmt(f.weibull_shape, 2)}: {trend[f.hazard_trend] || ''}.
+                {f.gate_pass === false && ` Model concordance ${nfmt(f.cv_cindex, 3)} is below the ${nfmt(f.cindex_floor, 2)} floor: read this fleet's device ranking as indicative.`}
+              </div>
+            </Panel>
+          ))}
+        </Grid>
+      </Section>
+    </>
+  );
+}
+
 function ModelQuality({ feeds }) {
   const lb = feeds.leaderboard.data || [];
   const reg = feeds.registry.data || [];
@@ -1332,10 +1404,8 @@ function Evidence({ feeds }) {
           models, and until now the screen never said which. Read entirely
           from ps5_cindex_leaderboard, which is already loaded -- no new
           table, no new endpoint. The Weibull SHAPE and SCALE the notebook
-          fits, and the Cox hazard ratios, are NOT in Aurora yet:
-          ps5_weibull_params and ps5_cox_hazard_ratios are declared in
-          01_schema_core.sql and nothing writes to them. Survival curves
-          wait on that, after the PS5 run. */}
+          fits are in ps5_fleet_survival (sql/74) and drawn on the
+          'Time to next OOS' tab. */}
       <Section accent={TAB_COLOR.ps5}
         eyebrow="Method"
         title="Which survival model each fleet is fitted with"
@@ -1476,6 +1546,7 @@ export default function PS5Overview({ city = 'CHI' }) {
       {view === 'devices' && <Devices feeds={feeds} onAnalyse={setAnalyse} city={city} />}
       {view === 'location' && <LocationView feeds={feeds} city={city} />}
       {view === 'components' && <Components feeds={feeds} onAnalyse={setAnalyse} />}
+      {view === 'survival' && <SurvivalView feeds={feeds} />}
       {view === 'model' && <ModelQuality feeds={feeds} />}
       {view === 'evidence' && <Evidence feeds={feeds} />}
 

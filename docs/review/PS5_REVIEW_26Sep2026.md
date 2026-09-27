@@ -153,3 +153,10 @@ for late intervals; judge the refit on the event-history features first.
 | Retired in AWS | Lambdas `ps5-api`, `ps5-rds-loader` and API GW `b1s4xxlddb` deleted (0 invocations in 14 days); code + config archived at `s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/deploy/retired_27sep/` |
 
 Open: P5-4 weighted comparison run (`PS5_DEVICE_WEIGHTED=true`, do not publish) - compare overdue share and 1-day spread, then decide; survival-curve panel (`ps5_weibull_params`); VALIDATOR model below floor - treat its act-now list as a ranking. Re-check thresholds after every refit (counting script in this review's history: `/ps5/device-rul?limit=12000`).
+
+## 8. Follow-ups, 27-Sep-2026
+| Item | Change | How to run / check |
+|---|---|---|
+| P5-4 weighted comparison | `notebooks/ps5_reliability_survival/ps5_compare_runs.py` summarises local outputs (overdue share, median RUL, p_oos_1d p10/p50/p90 and spread, act-now at the sql/72 thresholds, best C-index) | `snapshot baseline.json` BEFORE the run, run with `PS5_DEVICE_WEIGHTED=true` and no `PS5_PUBLISH`, then `compare baseline.json` |
+| VALIDATOR below floor | Lead: `inc` (incident features) and `mnt` (maintenance ledger) join 0% of validator intervals although both tables hold data, while gates/TVMs join 93-100%. Suspected DEVICE_KEY domain mismatch for validators. TVM `mtr` 0% is expected (no M401 metric on TVMs) | diagnostic cell in the 27-Sep session notes; fix the key mapping, then refit |
+| Survival-curve panel | `sql/74_ps5_fleet_survival.sql` (table + drops never-written `ps5_weibull_params`, `ps5_cox_hazard_ratios`); loader writes one row per fleet from `<fleet>_device_survival_params.json`; `/ps5/survival` returns S(t), median days, P(OOS within 1/3/7/14 days); new "Time to next OOS" tab | apply sql/74 BEFORE deploying the loader (else the params step errors and the load reports committed_partial) |

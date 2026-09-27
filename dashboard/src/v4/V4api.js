@@ -185,6 +185,8 @@ export const ps5 = {
   leaderboard: (city) => getRows('/ps5/leaderboard', { city }),
   importance: (city) => getRows('/ps5/importance', { city }),
   coverage: (city) => getRows('/ps5/coverage', { city }),
+  // sql/74: pooled Weibull per fleet -> S(t) and P(OOS within N days of returning to service).
+  survival: (city) => getRows('/ps5/survival', { city }),
   serialGrain: (city) => getRows('/ps5/serial-grain', { city }),
   // The MLflow registry state. Its concordance_index is a DIFFERENT
   // measurement from the leaderboard oot_cindex -- promoted model vs best

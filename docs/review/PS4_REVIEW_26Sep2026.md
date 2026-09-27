@@ -48,3 +48,10 @@ Verified here: all 5 tests pass; sql/69 + 70 applied cleanly on Postgres 16 over
 - `cubic-mars-ps4-rds-loader` and rule `cubic-mars-ps4-daily-load` confirmed already deleted.
 
 Open: P4-5 comparison run - run the notebook once with `TRAIN_EXCLUDE_FAULT_DAYS=False` and once with `True` and compare candidate/actionable weeks before publishing the `True` run; check whether the legacy PS4 Feature Store group still exists (cost).
+
+## 7. P4-5 comparison, 27-Sep-2026
+The notebook now reads `PS4_TRAIN_EXCLUDE_FAULT_DAYS` (default true) and `PS4_ENABLE_S3_PUBLISH` (default true) from the
+environment, and CELL 9 prints an outcome check per fleet: for flagged vs unflagged device-days, the share followed by a
+hardware OOS in the next 1-7 days (day 0 excluded, so `signal_oos` cannot score itself), lift over the base rate and recall.
+Run twice with `PS4_ENABLE_S3_PUBLISH=false` (exclusion false, then true) and compare `[P4-5 compare]` tables; publish the
+setting with the higher lift at a workable flag volume.

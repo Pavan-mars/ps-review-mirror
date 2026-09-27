@@ -98,6 +98,8 @@ def test_loader_flags_partial_load(monkeypatch, missing):
         return [{"device_id": "D1", "component_serial_nbr": "S1", "model": "m", "feature_name": "f"}]
 
     monkeypatch.setattr(h, "read_csv", read_csv)
+    monkeypatch.setattr(h, "read_json", lambda b, k: {"weibull": {"shape": 0.9, "scale": 1.5}, "cv_cindex": 0.7,
+                                                      "gate_pass": True, "cindex_floor": 0.65, "run_date": "2026-08-29"})
     out = h.lambda_handler({}, None)
     body = json.loads(out["body"])
     if missing:
@@ -140,3 +142,25 @@ def test_device_whose_last_fault_is_on_the_cutoff_day_still_gets_an_open_interva
     open_iv = iv[iv["is_ongoing"]].set_index("DEVICE_ID")["interval_days"]
     assert set(open_iv.index) == {"A", "B"}          # A faulted on the cut-off day and is still scored
     assert open_iv["A"] == 1 and open_iv["B"] == 5
+
+
+def test_loader_writes_fleet_survival_and_flags_missing_params(monkeypatch):
+    """sql/74: one ps5_fleet_survival row per fleet; a missing params json is a partial load, never silent."""
+    h = _load_loader(monkeypatch)
+    c = _Conn()
+    monkeypatch.setattr(h, "conn", lambda: c)
+    monkeypatch.setattr(h, "target_columns", lambda _c, t: ["city_id", "device_type", "device_id"])
+    monkeypatch.setattr(h, "pk_columns", lambda _c, t: [])
+    monkeypatch.setattr(h, "rds_count", lambda _c, t: 0)
+    monkeypatch.setattr(h, "read_csv", lambda b, k: [{"device_id": "D1"}])
+
+    def read_json(bucket, key):
+        if "validators" in key:
+            raise FileNotFoundError(key)
+        return {"weibull": {"shape": 0.94, "scale": 2.0}, "cv_cindex": 0.67, "gate_pass": True}
+
+    monkeypatch.setattr(h, "read_json", read_json)
+    body = json.loads(h.lambda_handler({}, None)["body"])
+    assert body["loaded"]["gates/device_survival_params"]["shape"] == 0.94
+    assert "validators/device_survival_params" in body["incomplete"] and body["status"] == "committed_partial"
+    assert sum("INSERT INTO ps5_fleet_survival" in q for q in c.sql) == 2

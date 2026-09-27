@@ -139,7 +139,7 @@ const FEED_FN = {
 const ALL_KEYS = Object.keys(FEED_FN);
 
 const VIEWS = [
-  { key: 'impact',     label: 'Fleet impact',        feeds: ['trend', 'exposure', 'governance', 'labelSummary'] },
+  { key: 'impact',     label: 'Fleet impact',        feeds: ['trend', 'exposure', 'governance', 'labelSummary', 'precursors', 'repairs'] },
   // Cascades sits SECOND now, not fifth. It is the answer to the question the
   // problem statement is named after, and it was behind three other tabs.
   { key: 'cascades',   label: 'Cascades',            feeds: ['precursors', 'leadlag', 'topology', 'drift'] },
@@ -347,6 +347,212 @@ function FleetChips({ value, onChange, extra = 'All fleets' }) {
 // =====================================================================
 // 1. FLEET IMPACT
 // =====================================================================
+// ---------------------------------------------------------------------
+// 27-Sep-2026 enhancements: key findings, period selector, weekday profile,
+// cascade explorer. All computed in the browser from feeds this tab already
+// loads -- no new route, table or loader change.
+// ---------------------------------------------------------------------
+const PERIODS = [
+  { key: 'all', label: 'All', days: null },
+  { key: '180', label: '180 days', days: 180 },
+  { key: '90', label: '90 days', days: 90 },
+  { key: '30', label: '30 days', days: 30 },
+];
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const dayIndex = (d) => (new Date(`${String(d).slice(0, 10)}T00:00:00Z`).getUTCDay() + 6) % 7; // Mon=0
+const addDays = (d, n) => {
+  const t = new Date(`${String(d).slice(0, 10)}T00:00:00Z`);
+  t.setUTCDate(t.getUTCDate() + n);
+  return t.toISOString().slice(0, 10);
+};
+function humanLag(sec) {
+  const v = Number(sec);
+  if (!Number.isFinite(v)) return '--';
+  if (v < 90) return `${Math.round(v)} s`;
+  if (v < 5400) return `${Math.round(v / 60)} min`;
+  if (v < 172800) return `${(v / 3600).toFixed(1)} h`;
+  return `${(v / 86400).toFixed(1)} d`;
+}
+function PeriodChips({ value, onChange }) {
+  return (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {PERIODS.map((p) => <Chip key={p.key} active={value === p.key} onClick={() => onChange(p.key)}>{p.label}</Chip>)}
+    </div>
+  );
+}
+const withinPeriod = (rows, key, period) => {
+  const p = PERIODS.find((x) => x.key === period);
+  if (!p || !p.days || !rows || !rows.length) return rows;
+  const last = rows.reduce((m, r) => (String(r[key]) > m ? String(r[key]) : m), '');
+  const from = addDays(last, -(p.days - 1));
+  return rows.filter((r) => String(r[key]).slice(0, 10) >= from);
+};
+
+// Six plain-language findings, each traceable to one feed. A finding whose
+// feed has not loaded (or is empty) is simply not shown -- never a zero.
+function KeyFindings({ feeds }) {
+  const f = useMemo(() => {
+    const out = [];
+    const trend = feeds.trend.rows || [];
+    if (trend.length) {
+      const dates = [...new Set(trend.map((r) => String(r.event_date).slice(0, 10)))].sort();
+      const last = dates[dates.length - 1];
+      const hoursIn = (from, to) => sumBy(trend, oosUnion, (r) => {
+        const d = String(r.event_date).slice(0, 10); return d >= from && d <= to;
+      }) / 60;
+      const cur = hoursIn(addDays(last, -6), last);
+      const prev = hoursIn(addDays(last, -13), addDays(last, -7));
+      const chg = prev > 0 ? (cur - prev) / prev : null;
+      out.push({
+        label: 'Last 7 days vs the 7 before',
+        value: chg === null ? '--' : `${chg >= 0 ? '+' : ''}${(chg * 100).toFixed(0)}%`,
+        tone: chg === null ? 'neutral' : (chg > 0.1 ? 'critical' : (chg < -0.1 ? 'good' : 'neutral')),
+        foot: `${nfmt(cur)} device-hours out of service to ${dfmt(last)} (was ${nfmt(prev)})`,
+      });
+      const byDay = new Map();
+      trend.forEach((r) => {
+        const d = String(r.event_date).slice(0, 10);
+        const e = byDay.get(d) || { h: 0, per: {} };
+        const h = oosUnion(r) / 60; const c = String(r.device_category).toUpperCase();
+        e.h += h; e.per[c] = (e.per[c] || 0) + h; byDay.set(d, e);
+      });
+      const [wd, we] = [...byDay.entries()].sort((a, b) => b[1].h - a[1].h)[0];
+      const wf = Object.entries(we.per).sort((a, b) => b[1] - a[1])[0];
+      out.push({
+        label: 'Worst day in the window',
+        value: dfmt(wd),
+        tone: 'warning',
+        foot: `${nfmt(we.h)} device-hours out of service; ${deviceShort(wf[0])} carried ${pct(wf[1] / (we.h || 1), 0)}`,
+      });
+      const tot = sumBy(trend, oosUnion) / 60;
+      const shares = FLEETS.map((c) => [c, sumBy(trend, oosUnion, (r) => String(r.device_category).toUpperCase() === c) / 60])
+        .sort((a, b) => b[1] - a[1]);
+      out.push({
+        label: 'Fleet carrying the most downtime',
+        value: deviceShort(shares[0][0]),
+        tone: 'neutral',
+        foot: `${pct(shares[0][1] / (tot || 1), 0)} of all out-of-service hours; then ${deviceShort(shares[1][0])} ${pct(shares[1][1] / (tot || 1), 0)}`,
+      });
+    }
+    const exp = feeds.exposure.rows || [];
+    if (exp.length) {
+      const last = exp.reduce((m, r) => (String(r.event_date) > m ? String(r.event_date) : m), '').slice(0, 10);
+      const from = addDays(last, -27);
+      const inW = (r) => String(r.event_date).slice(0, 10) >= from;
+      const txn = sumBy(exp, 'transactions_exposed', inW);
+      const rev = sumBy(exp, 'revenue_cents_exposed', inW) / 100;
+      out.push({
+        label: 'Customer exposure, last 28 days',
+        value: compact(txn),
+        tone: 'warning',
+        foot: `transactions normally made on devices while they were out of service (about $${compact(rev)} of fares)`,
+      });
+    }
+    const pre = feeds.precursors.rows || [];
+    if (pre.length) {
+      const top = [...pre].sort((a, b) => num(b.priority_score) - num(a.priority_score))[0];
+      out.push({
+        label: 'Strongest early-warning pattern',
+        value: `${top.component_subsystem} → ${top.next_subsystem}`,
+        tone: 'neutral',
+        foot: `${deviceShort(top.device_category)}: precedes an OOS ${nfmt(num(top.pre_oos_lift_vs_category), 1)}x more often than the fleet baseline; typical gap ${humanLag(top.median_edge_lag_seconds)}`,
+      });
+    }
+    const rep = (feeds.repairs.rows || []).filter((r) => num(r.pre_30d_oos_onsets) + num(r.post_30d_oos_onsets) > 0);
+    if (rep.length) {
+      const better = rep.filter((r) => num(r.post_30d_oos_onsets) < num(r.pre_30d_oos_onsets)).length;
+      out.push({
+        label: 'Repairs followed by fewer outages',
+        value: pct(better / rep.length, 0),
+        tone: better / rep.length >= 0.5 ? 'good' : 'warning',
+        foot: `of ${nfmt(rep.length)} repairs with outages either side: fewer OOS onsets in the 30 days after than before`,
+      });
+    }
+    return out;
+  }, [feeds.trend.rows, feeds.exposure.rows, feeds.precursors.rows, feeds.repairs.rows]);
+
+  if (!f.length) return null;
+  return (
+    <Section accent={TAB_COLOR.ps2} eyebrow="At a glance" title="Key findings"
+      sub="Computed from the same governed feeds as the panels below. A finding appears only when its data has loaded.">
+      <Grid cols="repeat(auto-fit,minmax(250px,1fr))">
+        {f.map((x) => <Stat key={x.label} label={x.label} value={x.value} tone={x.tone} foot={x.foot} />)}
+      </Grid>
+    </Section>
+  );
+}
+
+// Average out-of-service hours per calendar day, by fleet and weekday.
+function WeekdayProfile({ rows }) {
+  const data = useMemo(() => {
+    const acc = {}; // fleet -> weekday -> {h, days:Set}
+    (rows || []).forEach((r) => {
+      const c = String(r.device_category).toUpperCase(); if (!FLEETS.includes(c)) return;
+      const d = String(r.event_date).slice(0, 10); const w = dayIndex(d);
+      acc[c] = acc[c] || {}; const e = acc[c][w] || { h: 0, days: new Set() };
+      e.h += oosUnion(r) / 60; e.days.add(d); acc[c][w] = e;
+    });
+    const out = [];
+    FLEETS.forEach((c) => WEEKDAYS.forEach((name, w) => {
+      const e = acc[c] && acc[c][w];
+      out.push({ fleet: deviceShort(c), day: name, hours: e ? e.h / e.days.size : 0 });
+    }));
+    return out;
+  }, [rows]);
+  return <HeatGrid rows={data} rowKey="fleet" colKey="day" valKey="hours" height={200} fmt={_fmt6} rowLabel="Fleet" />;
+}
+
+// Pick a subsystem: what usually comes right before it, and what follows it.
+function CascadeExplorer({ rows }) {
+  const [fleet, setFleet] = useState(null);
+  const scoped = useMemo(() => (rows || []).filter((r) => !fleet || String(r.device_category).toUpperCase() === fleet), [rows, fleet]);
+  const subsystems = useMemo(() => {
+    const vol = {};
+    scoped.forEach((r) => {
+      vol[r.component_subsystem] = (vol[r.component_subsystem] || 0) + num(r.edge_support);
+      vol[r.next_subsystem] = (vol[r.next_subsystem] || 0) + num(r.edge_support);
+    });
+    return Object.entries(vol).filter(([k]) => k && k !== 'null').sort((a, b) => b[1] - a[1]).slice(0, 14).map(([k]) => k);
+  }, [scoped]);
+  const [picked, setPicked] = useState(null);
+  const sel = picked && subsystems.includes(picked) ? picked : subsystems[0];
+  const cols = [
+    { key: 'other', label: 'Subsystem', flex: 2 },
+    { key: 'fleet', label: 'Fleet' },
+    { key: 'edge_support', label: 'Observed', num: true },
+    { key: 'pre_oos_rate', label: 'Precedes OOS', num: true, d: 3 },
+    { key: 'lift', label: 'Lift vs fleet', num: true, d: 2 },
+    { key: 'lag', label: 'Typical gap' },
+    { key: 'evidence_tier', label: 'Evidence', flex: 2 },
+  ];
+  const shape = (r, otherKey) => ({ ...r, other: r[otherKey], fleet: deviceShort(r.device_category),
+    lift: num(r.pre_oos_lift_vs_category), lag: humanLag(r.median_edge_lag_seconds) });
+  const before = useMemo(() => scoped.filter((r) => r.next_subsystem === sel).map((r) => shape(r, 'component_subsystem'))
+    .sort((a, b) => num(b.edge_support) - num(a.edge_support)), [scoped, sel]);
+  const after = useMemo(() => scoped.filter((r) => r.component_subsystem === sel).map((r) => shape(r, 'next_subsystem'))
+    .sort((a, b) => num(b.edge_support) - num(a.edge_support)), [scoped, sel]);
+  if (!subsystems.length) return null;
+  return (
+    <Section accent={TAB_COLOR.ps2} eyebrow="Explore" title="Cascade explorer"
+      sub="Pick a subsystem to see what usually fails just before it and what tends to follow. Lift above 1 means the step precedes an out-of-service event more often than is normal for that fleet.">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+        <FleetChips value={fleet} onChange={setFleet} />
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {subsystems.map((k) => <Chip key={k} active={k === sel} onClick={() => setPicked(k)}>{k}</Chip>)}
+        </div>
+      </div>
+      <Grid cols="repeat(auto-fit,minmax(420px,1fr))">
+        <Panel title={`Comes before ${sel}`} hint="Transitions ending in the selected subsystem">
+          {before.length ? <DataTable rows={before} columns={cols} height={300} pageSize={50} exportName={`ps2_before_${sel}`} /> : <Empty height={120} />}
+        </Panel>
+        <Panel title={`Follows ${sel}`} hint="Transitions starting from the selected subsystem">
+          {after.length ? <DataTable rows={after} columns={cols} height={300} pageSize={50} exportName={`ps2_after_${sel}`} /> : <Empty height={120} />}
+        </Panel>
+      </Grid>
+    </Section>
+  );
+}
+
 function ImpactView({ feeds }) {
   const trend = feeds.trend.rows;
   const exposure = feeds.exposure.rows;
@@ -396,9 +602,10 @@ function ImpactView({ feeds }) {
     });
   }, [trend, summary]);
 
-  const minutesTrend = useMemo(() => pivotByFleet(trend, 'event_date', oosUnion)
-    .map((r) => ({ ...r, GATE: r.GATE / 60, TVM: r.TVM / 60, VALIDATOR: r.VALIDATOR / 60 })), [trend]);
-  const onsetTrend = useMemo(() => pivotByFleet(trend, 'event_date', 'hardware_oos_onsets'), [trend]);
+  const [period, setPeriod] = useState('all');
+  const minutesTrend = useMemo(() => withinPeriod(pivotByFleet(trend, 'event_date', oosUnion)
+    .map((r) => ({ ...r, GATE: r.GATE / 60, TVM: r.TVM / 60, VALIDATOR: r.VALIDATOR / 60 })), 'event_date', period), [trend, period]);
+  const onsetTrend = useMemo(() => withinPeriod(pivotByFleet(trend, 'event_date', 'hardware_oos_onsets'), 'event_date', period), [trend, period]);
 
   // ZERO IS A MEASUREMENT; NO DATA IS NOT.                    23-Sep-2026
   // This gate only covered `loading`. useFeeds seeds every key idle, and an
@@ -516,6 +723,11 @@ function ImpactView({ feeds }) {
         </Card>
       </Section>
 
+      <KeyFindings feeds={feeds} />
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', margin: '4px 0 8px' }}>
+        <PeriodChips value={period} onChange={setPeriod} />
+      </div>
       <Grid cols="repeat(auto-fit,minmax(420px,1fr))">
         <Panel title="Out-of-service hours by day"
                hint="Wall-clock device-hours per day: concurrent component episodes on one device count once, attributed to the day the episode opened">
@@ -529,6 +741,13 @@ function ImpactView({ feeds }) {
           </Feed>
         </Panel>
       </Grid>
+
+      <Panel title="Which weekdays hurt most"
+             hint="Average out-of-service device-hours per calendar day, by fleet and weekday (whole window)">
+        <Feed feed={feeds.trend} height={200}>
+          {(rows) => <WeekdayProfile rows={rows} />}
+        </Feed>
+      </Panel>
 
       <Panel
         title="Evidence ladder"
@@ -1148,6 +1367,7 @@ function CascadesView({ feeds }) {
 
   return (
     <>
+      <CascadeExplorer rows={feeds.precursors.rows} />
       <Section accent={TAB_COLOR.ps2}
         eyebrow="Fault chains"
         title="What tends to come first"

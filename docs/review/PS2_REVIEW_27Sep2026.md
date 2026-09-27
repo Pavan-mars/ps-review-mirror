@@ -37,4 +37,5 @@ sql/75 applied: 32 statements, 0 failed (1 view + 31 tables; `ps2_v2_run_quality
 confirmed deleted (ResourceNotFound). Side effect found and fixed: `/ps2/status` compared every table's `city_id` with one
 parameter whose type Postgres takes from the FIRST table in its UNION; after the drop the first table's `city_id` was varchar, so
 every `city_code` table failed ("operator does not exist: city_code = text") and the route reported 0 tables. The route now
-compares `city_id::text`.
+reads every UNION column as text (`city_id`, `run_id`, `computed_date`, `notebook_version`, `as_of_ts`): loader-made tables
+store some of them as text/varchar while DDL tables use city_code/date/uuid/timestamp, and a UNION needs one type per column.

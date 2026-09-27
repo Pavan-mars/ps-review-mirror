@@ -39,3 +39,6 @@ parameter whose type Postgres takes from the FIRST table in its UNION; after the
 every `city_code` table failed ("operator does not exist: city_code = text") and the route reported 0 tables. The route now
 reads every UNION column as text (`city_id`, `run_id`, `computed_date`, `notebook_version`, `as_of_ts`): loader-made tables
 store some of them as text/varchar while DDL tables use city_code/date/uuid/timestamp, and a UNION needs one type per column.
+
+`sql/76_ps2_push_orphans.sql`: 8 tables the retired push Lambda auto-created on 26-Jul under raw source names
+(`*_device`, `ps2_network_centrality_subsystem`) plus its `ps2_load_audit` -- frozen at 2026-07-26, no reader.

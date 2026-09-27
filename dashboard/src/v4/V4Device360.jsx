@@ -490,11 +490,6 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
   const ps4Worst = ps4Weeks.length
     ? ps4Weeks.reduce((a, b) => (ps4Rank(b) > ps4Rank(a) ? b : a))
     : null;
-  // The legacy Anomaly & Outlier Analysis block and the v3 block can disagree. Say so rather than
-  // picking one -- the disagreement is the finding.
-  const ps4Note = ps4Weeks.length && Number(ps4.alert_count || 0) === 0
-    ? 'The earlier Anomaly & Outlier Analysis export reports no alert weeks for this device while the v3 weekly scoring does. Both are shown; the v3 numbers are the current generation.'
-    : undefined;
 
   const ps5Rel = (ps5 && ps5.reliability) || null;
   // 03-Aug-2026. The Remaining Useful Life & SLA Breach panel only ever rendered the CATEGORY fields --
@@ -751,7 +746,6 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
             <SourcePanel
               ps="Anomaly & Outlier Analysis" title="Anomaly detection"
               found={ps4v3.found !== undefined ? ps4v3.found : undefined}
-              note={ps4Note}
             >
               <KV k="Weeks scored" v={ps4Weeks.length || null} />
               <KV k="Actionable weeks" v={ps4Weeks.length ? ps4Weeks.filter((w) => Number(w.is_actionable_week) === 1).length : null} />
@@ -766,7 +760,6 @@ export default function Device360({ city = 'CHI', initialDevice = '' }) {
               <KV k="Cluster" v={ps4Cluster ? ps4Cluster.cluster_id : null} />
               <KV k="Cluster silhouette" v={ps4Cluster && ps4Cluster.silhouette !== undefined ? nfmt(ps4Cluster.silhouette, 2) : null} />
               <KV k="Persistent" v={ps4Persist ? `yes, ${ps4Persist.actionable_weeks} week(s)` : 'no'} />
-              <KV k="Legacy alert weeks" v={ps4.alert_count} />
             </SourcePanel>
 
             <SourcePanel

@@ -152,7 +152,7 @@ export function evidenceLines(d) {
   if (p4.alert_count) {
     const a = Number(p4.alert_count);
     out.push({
-      t: `Anomaly detected: ${n0(a)} alert${a === 1 ? '' : 's'} where this device behaved unlike its peer group`,
+      t: `Anomaly detected: ${n0(a)} actionable week${a === 1 ? '' : 's'} in the last 12 where this device behaved unlike its peer group`,
       tone: 'bad',
     });
   } else if (week && week.severity) {

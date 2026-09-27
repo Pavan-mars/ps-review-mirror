@@ -1250,10 +1250,13 @@ def _device_360(city, dev):
                        "frequency is evidence toward causation, not proof of it, "
                        "and none of it is specific to this device."),
         }
-    # ---- PS4 : device-level anomaly alerts ----
-    al = _safe_rows("SELECT detected_at,triggering_signal,anomaly_score,severity,status,description FROM ps4_anomaly_alerts WHERE city_id=:c AND device_id=:d ORDER BY detected_at DESC LIMIT 5", c=city, d=dev)
+    # ---- PS4 : actionable weeks of the current v3 run (last 12 weeks) ----
+    # 27-Sep-2026: was ps4_anomaly_alerts, which nothing ever wrote (always 0) and sql/70 drops.
+    al = _safe_rows("SELECT week_start, week_end, severity, anomaly_types, anomaly_score_max"
+                    " FROM v_ps4_weekly_device WHERE city_id=:c AND device_id=:d AND is_actionable_week=1"
+                    " AND week_start >= CURRENT_DATE - 84 ORDER BY week_start DESC", c=city, d=dev)
     out["ps4"] = {"level": "device", "alert_count": len(al), "alerts": al,
-                  "note": "PS4 anomaly ensemble (unsupervised); thresholds under recalibration."}
+                  "note": "Actionable weeks in the last 12 (PS4 v3, unsupervised: unlike its peers, not a failure probability)."}
     # ---- PS5 : category-level reliability / RUL ----
     # 27-Jul-2026. ps5_reliability_estimates is DEVICE grain and carries the two
     # RUL figures; the modal was only ever showing the category's concordance

@@ -164,3 +164,24 @@ def test_loader_writes_fleet_survival_and_flags_missing_params(monkeypatch):
     assert body["loaded"]["gates/device_survival_params"]["shape"] == 0.94
     assert "validators/device_survival_params" in body["incomplete"] and body["status"] == "committed_partial"
     assert sum("INSERT INTO ps5_fleet_survival" in q for q in c.sql) == 2
+
+
+def test_overdue_uses_device_own_history_with_fleet_fallback():
+    """P5-4 (27-Sep-2026). Runs the notebook's own overdue block: a chronic device with a tight rhythm is judged
+    against its own median gap; a device with too little recent history falls back to the fleet value."""
+    pd = pytest.importorskip("pandas")
+    np = pytest.importorskip("numpy")
+    src = _engine_src()
+    start = src.index("    # P5-4 (27-Sep-2026): overdue against the device's OWN")
+    block = "\n".join(l[4:] for l in src[start:src.index("    dev = pd.DataFrame({", start)].splitlines())
+    run = pd.Timestamp("2026-08-29")
+    rows = [("CHRONIC", run - pd.Timedelta(days=d), 0.5, 1) for d in range(1, 20)]      # 19 half-day gaps
+    rows += [("QUIET", run - pd.Timedelta(days=60), 30.0, 1)]                             # 1 gap: too few
+    Xiv = pd.DataFrame(rows, columns=["DEVICE_ID", "interval_start_date", "interval_days", "event_observed"])
+    ns = {"pd": pd, "np": np, "run": run, "Xiv": Xiv,
+          "CONFIG": {"OVERDUE_LOOKBACK_DAYS": 90, "OVERDUE_MIN_INTERVALS": 5},
+          "dids": np.array(["CHRONIC", "QUIET"]), "ages": np.array([2.0, 2.0]), "med_i": np.array([1.5, 1.5])}
+    exec(block, ns)
+    assert list(ns["od_basis"]) == ["device", "fleet"]
+    assert ns["od_ref"][0] == pytest.approx(0.5) and ns["od_ref"][1] == pytest.approx(1.5)
+    assert list(ns["ages"] > ns["od_ref"]) == [True, True]

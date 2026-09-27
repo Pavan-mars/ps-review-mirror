@@ -55,3 +55,16 @@ environment, and CELL 9 prints an outcome check per fleet: for flagged vs unflag
 hardware OOS in the next 1-7 days (day 0 excluded, so `signal_oos` cannot score itself), lift over the base rate and recall.
 Run twice with `PS4_ENABLE_S3_PUBLISH=false` (exclusion false, then true) and compare `[P4-5 compare]` tables; publish the
 setting with the higher lift at a workable flag volume.
+
+## 8. P4-5 compare, run 1 (27-Sep-2026, as_of 2026-08-29, TRAIN_EXCLUDE_FAULT_DAYS=false, not published)
+| Fleet | device-days | actionable rate | base rate OOS next 1-7d | P(OOS 7d) flagged / not | lift | recall |
+|---|---|---|---|---|---|---|
+| GATE | 16,756 | 3.1% | 77.4% | 80.8% / 77.4% | 1.04 | 2.1% |
+| TVM | 9,262 | 4.2% | 99.8% | 99.5% / 99.8% | 1.00 | 4.4% |
+| VALIDATOR | 47,177 | 4.1% | 98.8% | 93.6% / 99.0% | 0.95 | 3.4% |
+
+Finding: almost every device has a hardware OOS within any 7-day window (77-99.8%), so this outcome cannot separate
+flagged from unflagged days, and lift is ~1.0 on every fleet. The exclusion setting cannot be chosen on this measure,
+so run 2 was not needed to decide. PS4 flags are "behaves unlike its peers", not failure warnings -- which is what the
+dashboard already says. Next: an outcome that is not near-certain (e.g. an OOS count above the device's own baseline
+in the next week, or ServiceNow incidents), then repeat the comparison.

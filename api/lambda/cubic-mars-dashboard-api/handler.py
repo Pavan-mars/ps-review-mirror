@@ -1853,12 +1853,16 @@ def _ps2_v25_route(path, params, city):
                 "{ver} AS notebook_version, {asof} AS as_of_ts, COUNT(*) AS row_count "
                 "FROM {t}{where}".format(
                     t=_t,
-                    city=("city_id" if _r["has_city"] else "NULL::city_code"),
+                    # ::text on both sides (27-Sep-2026): the one :c parameter takes its type from the FIRST table in
+                    # the UNION. When the first table's city_id was city_code every comparison resolved; once sql/75
+                    # dropped it, the first was a loader-made varchar column and every city_code table failed with
+                    # "operator does not exist: city_code = text" -- /ps2/status went to 0 tables.
+                    city=("city_id::text" if _r["has_city"] else "NULL::text"),
                     run=("MAX(run_id)" if _r["has_run"] else "NULL::varchar"),
                     date=("MAX(computed_date)" if _r["has_date"] else "NULL::date"),
                     ver=("MAX(notebook_version)" if _r["has_ver"] else "NULL::varchar"),
                     asof=("MAX(as_of_ts)" if _r["has_asof"] else "NULL::timestamp"),
-                    where=(" WHERE city_id=:c GROUP BY city_id" if _r["has_city"] else ""),
+                    where=(" WHERE city_id::text=:c GROUP BY city_id" if _r["has_city"] else ""),
                 ))
         data, _count_error = [], None
         if _parts:

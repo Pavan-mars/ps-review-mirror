@@ -31,3 +31,10 @@ sql/62 and sql/63 (23-Sep) dropped 31 legacy/orphan objects, but `migrate` -- ru
 producer writes them. Device-360's cascade rank already moved to `v_ps2_device_cascade` (current). Next: repoint these readers
 to current device-grain outputs, or add the catalog/chains to the v2.5.4 export. Also: migrate lists `sql/12_ps1_serving_backfill.sql`,
 which does not exist (PS1, harmless, reported as missing).
+
+## Deployed 27-Sep (evening)
+sql/75 applied: 32 statements, 0 failed (1 view + 31 tables; `ps2_v2_run_quality` was already absent). `cubic-mars-ps2-rds-push`
+confirmed deleted (ResourceNotFound). Side effect found and fixed: `/ps2/status` compared every table's `city_id` with one
+parameter whose type Postgres takes from the FIRST table in its UNION; after the drop the first table's `city_id` was varchar, so
+every `city_code` table failed ("operator does not exist: city_code = text") and the route reported 0 tables. The route now
+compares `city_id::text`.

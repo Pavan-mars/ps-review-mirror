@@ -106,7 +106,9 @@ ALIASES = {
     # 01-Aug-2026: alias removed. Per-facility detail is not the one-row rollup.
     # Loads to ps2_facility_contagion_facility (sql/42) under its own name.
     "ps2_association_rules_device": "ps2_subsystem_associations",
-    "ps2_business_impact_device": "ps2_business_impact",
+    # 27-Sep-2026: "ps2_business_impact_device" -> ps2_business_impact removed. Nothing read the table (no route,
+    # no view, no dashboard panel) and sql/75 drops it. The family now reports under no_target like the other
+    # serial families without an Aurora home; that does not affect the load status.
     # 23-Sep-2026. ps2_hmm_regimes_device and ps2_cascade_velocity_device are
     # gone from both ends: the serial notebook no longer writes them and
     # sql/62 dropped ps2_hmm_regimes and ps2_cascade_velocity. An alias for a
@@ -140,12 +142,6 @@ COL_ALIASES = {
     "ps2_association_rules_device": {
         "antecedents": "antecedent_subsystem",
         "consequents": "consequent_subsystem",
-    },
-    "ps2_business_impact_device": {
-        # entity_id IS the device id. Without this the load put 4,673 rows into
-        # ps2_business_impact with device_id NULL -- non-empty, and useless.
-        "entity_id": "device_id",
-        "mars_device_category": "category",
     },
     "ps2_network_centrality_subsystem": {
         "subsystem": "node_id",

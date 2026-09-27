@@ -138,7 +138,7 @@ def _migrate_run(st):
 # without also re-running 25 old ones, and two of those write data:
 #
 #   sql/08_ps2_run_backfill.sql       DELETEs and re-INSERTs hardcoded PS2 rows
-#                                     for computed_date 2026-07-14
+#                                     for computed_date 2026-07-14  (retired 27-Sep-2026)
 #   sql/18_purge_ps3_bridge_test_rows DELETEs ps3_severity_predictions rows
 #
 # Adding a PS1 index should not put PS2 data at risk. This action makes the unit
@@ -233,11 +233,13 @@ def migrate(_evt):
     except Exception: pass
     _conn = None
     conn()
-    for fn in ("sql/01_schema_core.sql", "sql/02_phase1_ps2_ps5_backfill.sql",
+    # 27-Sep-2026: sql/02 and sql/08 (hand-seeded PS2 rows for 11/14-Jul, re-inserted on EVERY deploy) retired
+    # to _retired/ps2_seed_backfills; sql/10 never existed in the repo. The PS2 loader owns all ps2_* data.
+    for fn in ("sql/01_schema_core.sql",
                "sql/03_phase1b_ps3_severity.sql", "sql/04_phase1c_ps1_failure.sql",
                "sql/05_phase1d_ps2_device.sql", "sql/06_phase1d_ps3_device.sql",
-               "sql/07_phase1e_ps2_new.sql", "sql/08_ps2_run_backfill.sql",
-               "sql/09_phase1f_ps2_rich.sql", "sql/10_ps2_run_backfill_2.sql",
+               "sql/07_phase1e_ps2_new.sql",
+               "sql/09_phase1f_ps2_rich.sql",
                "sql/11_phase1g_ps1_serving.sql", "sql/12_ps1_serving_backfill.sql",
                "sql/13_phase2_device360.sql", "sql/14_phase3_dim_station.sql",
                "sql/15_phase2a_ps3_two_head.sql",

@@ -40,3 +40,11 @@ Verified here: all 5 tests pass; sql/69 + 70 applied cleanly on Postgres 16 over
    statement, so a blocked drop leaves just that object in place; re-running is safe (all `IF EXISTS`).
 3. Deploy `cubic-mars-ps4-v3-loader`; `{"action":"dry_run"}` then `{"action":"load"}`.
 4. Rebuild the dashboard. Check whether the legacy PS4 SageMaker Feature Store group still exists (cost).
+
+## 6. Deployed state, 27-Sep-2026
+- sql/69 applied (Device-360 reads the current v3 run); sql/70 applied (27 statements, 0 failed: 10 views, 16 tables, 1 type dropped). All `/ps4/*` routes return 200 after the drop.
+- `cubic-mars-ps4-v3-loader` deployed with the all-or-nothing load and the silhouette provenance fix.
+- Device-360 PS4 evidence now counts actionable weeks of the current v3 run (last 12 weeks); the always-empty `ps4_anomaly_alerts` read and the misleading "earlier export disagrees" note are gone (Chicago main `fd0df1d`).
+- `cubic-mars-ps4-rds-loader` and rule `cubic-mars-ps4-daily-load` confirmed already deleted.
+
+Open: P4-5 comparison run - run the notebook once with `TRAIN_EXCLUDE_FAULT_DAYS=False` and once with `True` and compare candidate/actionable weeks before publishing the `True` run; check whether the legacy PS4 Feature Store group still exists (cost).

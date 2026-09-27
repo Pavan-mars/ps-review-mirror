@@ -141,3 +141,15 @@ Source moved to `_retired/ps5_shadow_stack/` (see its RETIRED.md); `sql/68_ps5_s
 `ps5_cox_hazard_ratios` for the survival-curve panel. Note on the refit: enrichment is joined as-of (backward), so
 intervals after 11-Apr carry the frozen April features forward -- nothing is read past 11-Apr, but those features are stale
 for late intervals; judge the refit on the event-history features first.
+
+## 7. Deployed state, 27-Sep-2026 (end of day)
+| Layer | State |
+|---|---|
+| Notebook | refit with events to 29-Aug, P5-8 fix; 860/450/1,545 devices scored; C-index 0.673 / 0.757 / 0.630 (VALIDATOR below floor) |
+| RDS | sql/67, 71, 72 applied; thresholds GATE 0.49, TVM 0.66, VALIDATOR 0.51 on 1-day P(OOS) -> act_now 94 / 53 / 206; sql/68 applied (shadow stack dropped, 10 statements, 0 failed) |
+| Loader | `cubic-mars-ps5-rds-loader` committed, nothing incomplete |
+| API | `cubic-mars-dashboard-api` at Chicago main `fd0df1d` |
+| Dashboard | ECS `FrontEndDashboard:24` = `dashboard/reactui:fd0df1d` (rollback: `:23` = d059a4b, `:22` = 4af4f2f) |
+| Retired in AWS | Lambdas `ps5-api`, `ps5-rds-loader` and API GW `b1s4xxlddb` deleted (0 invocations in 14 days); code + config archived at `s3://cubic-mars-pm-s3-datalake-dev-artifacts-170202974600/deploy/retired_27sep/` |
+
+Open: P5-4 weighted comparison run (`PS5_DEVICE_WEIGHTED=true`, do not publish) - compare overdue share and 1-day spread, then decide; survival-curve panel (`ps5_weibull_params`); VALIDATOR model below floor - treat its act-now list as a ranking. Re-check thresholds after every refit (counting script in this review's history: `/ps5/device-rul?limit=12000`).
